@@ -1,5 +1,10 @@
 # DFIRHunter Module
 
+
+# Script (Module Global) Variables
+$script:GlobalLogIOCs = @("placeholder")
+
+
 # HUNT-LOGS: 9/5 10:03AM
 Function Hunt-Logs {
     param (
@@ -35,8 +40,134 @@ Function Hunt-Logs {
         [Parameter(Mandatory=$false)]
         [string]$FolderPath,
         [Parameter(Mandatory=$false)]
-        [string]$Aggressive
+        [string]$Aggressive,
+        [Parameter(Mandatory=$false)]
+        [ValidateSet(1,2,3)]
+        [int]$Auto
     )
+
+    # Define global IOC list if not already defined
+    if (-not (Get-Variable -Name "GlobalLogIOCs" -Scope Global -ErrorAction SilentlyContinue)) {
+        Write-Warning "GlobalLogIOCs not found. Defining default IOC list."
+        $global:GlobalLogIOCs = @("")
+    }
+
+    # Handle Auto mode
+    if ($PSBoundParameters.ContainsKey('Auto')) {
+        Write-Host "Running in Auto Mode (Level $Auto)..." -ForegroundColor Cyan
+        
+        # Define baseline parameters for each auto level
+        $baselineParams = @{}
+        $baselineLogNames = @()
+        $baselineAggressive = $false
+        
+        switch ($Auto) {
+            1 {
+                $baselineParams.StartDate = "14D"
+                $baselineParams.EndDate = "Now"
+                $baselineLogNames = @("PowerShell", "Microsoft-Windows-PowerShell/Operational", "System", "Security", "Application")
+                Write-Host "Auto Level 1: 14-day search with core log focus" -ForegroundColor Yellow
+            }
+            2 {
+                $baselineParams.StartDate = "30D"
+                $baselineParams.EndDate = "Now"
+                Write-Host "Auto Level 2: 30-day comprehensive search" -ForegroundColor Yellow
+            }
+            3 {
+                $baselineParams.StartDate = "30D"
+                $baselineParams.EndDate = "Now"
+                $baselineAggressive = $true
+                Write-Host "Auto Level 3: 30-day search with filesystem analysis" -ForegroundColor Yellow
+            }
+        }
+        
+        # Validate user parameters don't reduce scope (only allow additions)
+        if ($PSBoundParameters.ContainsKey('StartDate')) {
+            $userStartDate = ConvertTo-DateTime -InputValue $StartDate -TargetTimeZone ([System.TimeZoneInfo]::Local)
+            $baselineStartDate = ConvertTo-DateTime -InputValue $baselineParams.StartDate -TargetTimeZone ([System.TimeZoneInfo]::Local)
+            if ($userStartDate -gt $baselineStartDate) {
+                throw "Auto Mode Error: Cannot reduce search scope. StartDate '$StartDate' is more recent than baseline '$($baselineParams.StartDate)'. Use a date equal to or earlier than the baseline."
+            }
+        }
+        
+        if ($PSBoundParameters.ContainsKey('EndDate')) {
+            $userEndDate = ConvertTo-DateTime -InputValue $EndDate -TargetTimeZone ([System.TimeZoneInfo]::Local)
+            $baselineEndDate = ConvertTo-DateTime -InputValue $baselineParams.EndDate -TargetTimeZone ([System.TimeZoneInfo]::Local)
+            if ($userEndDate -lt $baselineEndDate) {
+                throw "Auto Mode Error: Cannot reduce search scope. EndDate '$EndDate' is earlier than baseline '$($baselineParams.EndDate)'. Use a date equal to or later than the baseline."
+            }
+        }
+        
+        # Validate LogNames are additive (baseline logs must be included)
+        if ($PSBoundParameters.ContainsKey('LogNames') -and $baselineLogNames.Count -gt 0) {
+            foreach ($baseLog in $baselineLogNames) {
+                if ($LogNames -notcontains $baseLog) {
+                    # Check for partial matches (case insensitive)
+                    $foundMatch = $false
+                    foreach ($userLog in $LogNames) {
+                        if ($userLog -like "*$baseLog*" -or $baseLog -like "*$userLog*") {
+                            $foundMatch = $true
+                            break
+                        }
+                    }
+                    if (-not $foundMatch) {
+                        throw "Auto Mode Error: Cannot reduce search scope. Required baseline log '$baseLog' not found in user-specified LogNames. Add baseline logs to your list or remove -LogNames to use defaults."
+                    }
+                }
+            }
+        }
+        
+        # Validate Aggressive parameter (Level 3 requires it)
+        if ($Auto -eq 3 -and $PSBoundParameters.ContainsKey('Aggressive') -and [string]::IsNullOrWhiteSpace($Aggressive)) {
+            throw "Auto Mode Error: Cannot disable Aggressive mode in Level 3. Remove -Aggressive parameter to use default, or specify a custom path."
+        }
+        
+        # Build final parameters by combining baseline with user additions
+        $finalParams = @{
+            StartDate = if ($PSBoundParameters.ContainsKey('StartDate')) { $StartDate } else { $baselineParams.StartDate }
+            EndDate = if ($PSBoundParameters.ContainsKey('EndDate')) { $EndDate } else { $baselineParams.EndDate }
+            IncludeStrings = @($global:GlobalLogIOCs) + $IncludeStrings  # Combine baseline IOCs with user additions
+            SortOrder = $SortOrder
+            XML = $XML
+            MSG = $MSG
+            MaxPrint = $MaxPrint
+            Timezone = $Timezone
+        }
+        
+        # Add LogNames (combine baseline with user additions)
+        if ($baselineLogNames.Count -gt 0) {
+            $finalParams.LogNames = $baselineLogNames + $LogNames | Select-Object -Unique
+        } elseif ($LogNames.Count -gt 0) {
+            $finalParams.LogNames = $LogNames
+        }
+        
+        # Add other optional parameters
+        if ($ExcludeStrings.Count -gt 0) { $finalParams.ExcludeStrings = $ExcludeStrings }
+        if ($EventId.Count -gt 0) { $finalParams.EventId = $EventId }
+        if ($ExcludeEventId.Count -gt 0) { $finalParams.ExcludeEventId = $ExcludeEventId }
+        if ($PSBoundParameters.ContainsKey('FolderPath')) { $finalParams.FolderPath = $FolderPath }
+        if ($PSBoundParameters.ContainsKey('Export')) { $finalParams.Export = $Export }
+        
+        # Handle Aggressive parameter for Auto Level 3
+        if ($baselineAggressive) {
+            if ($PSBoundParameters.ContainsKey('Aggressive') -and ![string]::IsNullOrWhiteSpace($Aggressive)) {
+                $finalParams.Aggressive = $Aggressive  # User specified custom path
+            } else {
+                $finalParams.Aggressive = ""  # Default aggressive search
+            }
+        } elseif ($PSBoundParameters.ContainsKey('Aggressive')) {
+            $finalParams.Aggressive = $Aggressive  # User added aggressive search
+        }
+        
+        Write-Host "Baseline IOCs: $($global:GlobalLogIOCs.Count)" -ForegroundColor Green
+        if ($IncludeStrings.Count -gt 0) {
+            Write-Host "Additional User IOCs: $($IncludeStrings.Count)" -ForegroundColor Green
+        }
+        Write-Host "Total Search Strings: $($finalParams.IncludeStrings.Count)" -ForegroundColor Green
+        
+        # Recursively call Hunt-Logs with final parameters
+        return Hunt-Logs @finalParams
+    }
 
     # Validate Aggressive parameter requires IncludeStrings
     if ($PSBoundParameters.ContainsKey('Aggressive') -and $IncludeStrings.Count -eq 0) {
