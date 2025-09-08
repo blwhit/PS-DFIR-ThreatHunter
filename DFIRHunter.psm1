@@ -1,11 +1,12 @@
-# DFIRHunter Module
+# DFIR-Hunter Module
 
 
-# Script (Module Global) Variables
-$script:GlobalLogIOCs = @("placeholder")
+# Script Variables
+$script:IOCLogStrings = @("placeholder")
 
 
-# HUNT-LOGS: 9/5 10:03AM
+
+# HUNT-LOGS
 Function Hunt-Logs {
     param (
         [Parameter(Mandatory=$false)]
@@ -47,9 +48,9 @@ Function Hunt-Logs {
     )
 
     # Define global IOC list if not already defined
-    if (-not (Get-Variable -Name "GlobalLogIOCs" -Scope Global -ErrorAction SilentlyContinue)) {
-        Write-Warning "GlobalLogIOCs not found. Defining default IOC list."
-        $global:GlobalLogIOCs = @("")
+    if (-not (Get-Variable -Name "IOCLogStrings" -Scope Script -ErrorAction SilentlyContinue)) {
+        Write-Warning "IOCLogStrings not found. Defining empty IOC list."
+        $IOCLogStrings = @("")
     }
 
     # Handle Auto mode
@@ -126,7 +127,7 @@ Function Hunt-Logs {
         $finalParams = @{
             StartDate = if ($PSBoundParameters.ContainsKey('StartDate')) { $StartDate } else { $baselineParams.StartDate }
             EndDate = if ($PSBoundParameters.ContainsKey('EndDate')) { $EndDate } else { $baselineParams.EndDate }
-            IncludeStrings = @($global:GlobalLogIOCs) + $IncludeStrings  # Combine baseline IOCs with user additions
+            IncludeStrings = @($global:IOCLogStrings) + $IncludeStrings  # Combine baseline IOCs with user additions
             SortOrder = $SortOrder
             XML = $XML
             MSG = $MSG
@@ -159,7 +160,7 @@ Function Hunt-Logs {
             $finalParams.Aggressive = $Aggressive  # User added aggressive search
         }
         
-        Write-Host "Baseline IOCs: $($global:GlobalLogIOCs.Count)" -ForegroundColor Green
+        Write-Host "Baseline IOCs: $($global:IOCLogStrings.Count)" -ForegroundColor Green
         if ($IncludeStrings.Count -gt 0) {
             Write-Host "Additional User IOCs: $($IncludeStrings.Count)" -ForegroundColor Green
         }
