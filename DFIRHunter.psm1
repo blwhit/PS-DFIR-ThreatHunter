@@ -549,53 +549,54 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
     $targetTimeZone = if ([string]::IsNullOrWhiteSpace($Timezone)) { $systemTimeZone } else { Get-TimezoneInfo -TimezoneName $Timezone }
 
     # Function to parse time strings and convert to target timezone for search queries
-    function ConvertTo-DateTime {
-        param($InputValue, $TargetTimeZone)
-        
-        if ($InputValue -is [datetime]) {
-            # Convert to target timezone for internal processing, then back to system time for search
-            if ($TargetTimeZone.Id -ne $systemTimeZone.Id) {
-                $convertedTime = [System.TimeZoneInfo]::ConvertTime($InputValue, $TargetTimeZone, $systemTimeZone)
-                return $convertedTime
-            }
-            return $InputValue
+function ConvertTo-DateTime {
+    param($InputValue, $TargetTimeZone)
+    
+    if ($InputValue -is [datetime]) {
+        # Convert to target timezone for internal processing, then back to system time for search
+        if ($TargetTimeZone.Id -ne $systemTimeZone.Id) {
+            $convertedTime = [System.TimeZoneInfo]::ConvertTime($InputValue, $TargetTimeZone, $systemTimeZone)
+            return $convertedTime
         }
-        
-        if ($InputValue -is [string]) {
-            $InputValue = $InputValue.Trim()
-            
-            if ($InputValue.ToLower() -eq 'now') {
-                return Get-Date
-            }
-            
-            if ($InputValue -match '^(\d+)([DHMdhm])$') {
-                $number = [int]$matches[1]
-                $unit = $matches[2].ToUpper()
-                
-                $currentTime = Get-Date
-                switch ($unit) {
-                    'D' { return $currentTime.AddDays(-$number) }
-                    'H' { return $currentTime.AddHours(-$number) }
-                    'M' { return $currentTime.AddMinutes(-$number) }
-                }
-            } else {
-                try {
-                    $parsedDate = [datetime]$InputValue
-                    # If user specified a timezone, interpret the input date as being in that timezone
-                    if ($TargetTimeZone.Id -ne $systemTimeZone.Id) {
-                        # Convert from target timezone to system timezone for search
-                        $convertedTime = [System.TimeZoneInfo]::ConvertTime($parsedDate, $TargetTimeZone, $systemTimeZone)
-                        return $convertedTime
-                    }
-                    return $parsedDate
-                } catch {
-                    throw "Invalid date format: $InputValue. Use datetime, 'now', or relative format like '1D', '4H', or '10m'"
-                }
-            }
-        }
-        
-        throw "Invalid date input: $InputValue"
+        return $InputValue
     }
+    
+    if ($InputValue -is [string]) {
+        $InputValue = $InputValue.Trim()
+        
+        if ($InputValue.ToLower() -eq 'now') {
+            return Get-Date
+        }
+        
+        if ($InputValue -match '^\d+[DHMdhm]$') {
+            $number = [int]($InputValue -replace '[DHMdhm]$','')
+            $unit = ($InputValue -replace '^\d+','').ToUpper()
+            
+            $currentTime = Get-Date
+            switch ($unit) {
+                'D' { return $currentTime.AddDays(-$number) }
+                'H' { return $currentTime.AddHours(-$number) }
+                'M' { return $currentTime.AddMinutes(-$number) }
+                default { throw "Invalid time unit: $unit. Use D, H, or M." }
+            }
+        } else {
+            try {
+                $parsedDate = [datetime]$InputValue
+                # If user specified a timezone, interpret the input date as being in that timezone
+                if ($TargetTimeZone.Id -ne $systemTimeZone.Id) {
+                    # Convert from target timezone to system timezone for search
+                    $convertedTime = [System.TimeZoneInfo]::ConvertTime($parsedDate, $TargetTimeZone, $systemTimeZone)
+                    return $convertedTime
+                }
+                return $parsedDate
+            } catch {
+                throw "Invalid date format: $InputValue. Use datetime, 'now', or relative format like '1D', '4H', or '10m'"
+            }
+        }
+    }
+    
+    throw "Invalid date input: $InputValue"
+}
 
     # Function to format datetime with timezone for display
     function Format-DateTimeWithTimeZone {
