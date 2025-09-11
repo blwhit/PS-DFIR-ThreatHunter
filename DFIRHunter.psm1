@@ -4,7 +4,7 @@
 # Module Manifest:
 # =================
 # Hunt-All
-# Hunt-Logs
+# Hunt-Logs ----> (Fix or Remove 'Preview' functionality)
 # Hunt-Files
 # Hunt-Persistence
 # Hunt-Browser
@@ -1288,10 +1288,6 @@ Function Hunt-Files {
         [int]$Auto,
         
         [Parameter(Mandatory=$false)]
-        [int]$Preview = 0,
-        
-        [Parameter(Mandatory=$false)]
-        [ValidateSet("FILE", "F", "DIR", "DIRECTORY", "D")]
         [string]$Type = "",
         
         [Parameter(Mandatory=$false)]
@@ -1496,59 +1492,7 @@ Function Hunt-Files {
         return $streams
     }
 
-    # FIXED: Content preview function - now properly generates preview
-    function Get-ContentPreview {
-        param($FilePath, $MaxSize, $PreviewLength)
-        
-        if ($PreviewLength -le 0) { 
-            return '' 
-        }
-        
-        try {
-            $fileInfo = Get-Item -Path $FilePath -Force -ErrorAction Stop
-            if ($fileInfo.Length -gt $MaxSize -or $fileInfo.Length -eq 0) { 
-                return '' 
-            }
-            
-            # Read a reasonable chunk of the file for preview
-            $chunkSize = [Math]::Min($fileInfo.Length, $PreviewLength * 4)
-            $bytes = New-Object byte[] $chunkSize
-            
-            $fileStream = [System.IO.File]::OpenRead($FilePath)
-            $bytesRead = $fileStream.Read($bytes, 0, $chunkSize)
-            $fileStream.Close()
-            
-            if ($bytesRead -eq 0) { 
-                return '' 
-            }
-            
-            # Try UTF-8 first, fallback to ASCII
-            try {
-                $content = [System.Text.Encoding]::UTF8.GetString($bytes, 0, $bytesRead)
-                # Check for null bytes indicating binary content
-                if ($content.Contains([char]0)) {
-                    throw "Binary content detected"
-                }
-            } catch {
-                $content = [System.Text.Encoding]::ASCII.GetString($bytes, 0, $bytesRead)
-            }
-            
-            # Clean content for display
-            $cleanContent = $content -replace '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\xFF]', '?' 
-            $cleanContent = $cleanContent -replace '[\r\n\t]+', ' '
-            $cleanContent = $cleanContent.Trim()
-            
-            if ($cleanContent.Length -le $PreviewLength) { 
-                return $cleanContent 
-            } else { 
-                return $cleanContent.Substring(0, $PreviewLength) + "..."
-            }
-        } catch {
-            return ''
-        }
-    }
-
-    # Content matching function
+    # Content matching function - optimized
     function Get-ContentFromFile {
         param($FilePath, $StreamName = '', $MaxSize)
         
@@ -1560,7 +1504,7 @@ Function Hunt-Files {
             }
             
             $fileInfo = Get-Item -Path $FilePath -Force -ErrorAction Stop
-            if ($fileInfo.Length -gt $MaxSize) { 
+            if ($fileInfo.Length -gt $MaxSize -or $fileInfo.Length -eq 0) { 
                 return '' 
             }
             
@@ -1571,7 +1515,7 @@ Function Hunt-Files {
         }
     }
 
-    # Hash computation function
+    # Hash computation function - optimized
     function Get-FileHashCustom {
         param($FilePath, $StreamName = '', $Algorithm)
         
@@ -1596,17 +1540,17 @@ Function Hunt-Files {
         Write-Error "MaxSizeMB must be greater than 0"
         return
     }
-    if ($Preview -lt 0) {
-        Write-Error "Preview must be 0 or greater"
-        return
-    }
 
-    # Normalize Type parameter
+    # Normalize Type parameter - now case insensitive
     $filterType = ""
     if (![string]::IsNullOrWhiteSpace($Type)) {
         switch ($Type.ToUpper()) {
             { $_ -in @("FILE", "F") } { $filterType = "FILE" }
             { $_ -in @("DIR", "DIRECTORY", "D") } { $filterType = "DIR" }
+            default { 
+                Write-Error "Invalid Type parameter. Valid values: FILE, F, DIR, DIRECTORY, D (case insensitive)"
+                return
+            }
         }
     }
 
@@ -1631,13 +1575,14 @@ Function Hunt-Files {
         $searchPaths = @($searchPath)
     }
 
-    # Date range handling
+    # Date range handling - simplified logic
     $hasDateRange = $null -ne $StartDate -or $EndDate -ne "Now"
     $hasOtherCriteria = $Extensions.Count -gt 0 -or $Content.Count -gt 0 -or $Names.Count -gt 0 -or $Hashes.Count -gt 0 -or $Hidden -or $Recycled -or $Streams -or $Auto
     
     if (!$hasDateRange -and !$hasOtherCriteria) {
         $StartDate = (Get-Date).AddDays(-7)
         $EndDate = Get-Date
+        $hasDateRange = $true
     } elseif ($null -ne $StartDate -and $EndDate -eq "Now") {
         $EndDate = Get-Date
     } elseif ($null -eq $StartDate -and $EndDate -ne "Now") {
@@ -1648,7 +1593,7 @@ Function Hunt-Files {
     $parsedStartDate = $null
     $parsedEndDate = $null
     
-    if ($null -ne $StartDate -or $EndDate -ne "Now") {
+    if ($hasDateRange) {
         try {
             $parsedStartDate = if ($null -ne $StartDate) { ConvertTo-DateTime -InputValue $StartDate -TargetTimeZone $targetTimeZone } else { $null }
             $parsedEndDate = if ($EndDate -ne "Now") { ConvertTo-DateTime -InputValue $EndDate -TargetTimeZone $targetTimeZone } else { ConvertTo-DateTime -InputValue $EndDate -TargetTimeZone $targetTimeZone }
@@ -1687,7 +1632,7 @@ Function Hunt-Files {
         }
     }
 
-    # Normalize extensions
+    # Normalize extensions and names
     if ($Extensions.Count -gt 0) {
         $Extensions = @($Extensions | ForEach-Object { 
             $ext = $_.ToLower().Trim()
@@ -1695,7 +1640,6 @@ Function Hunt-Files {
         })
     }
 
-    # Normalize names
     if ($Names.Count -gt 0) {
         $Names = @($Names | ForEach-Object { $_.Trim() })
     }
@@ -1713,7 +1657,7 @@ Function Hunt-Files {
 
     Write-Progress -Activity "Hunt-Files" -Status "Scanning filesystem..." -PercentComplete 30
 
-    # Main scanning loop
+    # Main scanning loop - optimized
     foreach ($currentSearchPath in $searchPaths) {
         try {
             $searchSubPaths = @($currentSearchPath)
@@ -1730,10 +1674,10 @@ Function Hunt-Files {
 
             foreach ($subPath in $searchSubPaths) {
                 try {
-                    # Get all items with optimized parameters
+                    # Optimized file enumeration
                     $pathItems = @(Get-ChildItem -Path $subPath -Recurse -Force -ErrorAction SilentlyContinue)
                     
-                    # Filter out system folders if not included
+                    # Filter out system folders if not included - optimized check
                     if (-not $IncludeSystemFolders -and -not $Recycled) {
                         $pathItems = @($pathItems | Where-Object {
                             $itemPath = $_.FullName
@@ -1749,11 +1693,10 @@ Function Hunt-Files {
                             $matchedNames = @()
                             $finalHash = ""
                             $sha256 = ""
-                            $preview = ""
                             $streamInfo = ""
                             $alternateStreams = @()
 
-                            # Check attributes
+                            # Check attributes - optimized
                             $itemIsHidden = ($item.Attributes -band [System.IO.FileAttributes]::Hidden) -ne 0
                             $itemIsRecycleBin = ($item.FullName -like "*`$Recycle.Bin*" -or $item.FullName -like "*RECYCLER*")
 
@@ -1767,7 +1710,7 @@ Function Hunt-Files {
                                 }
                             }
 
-                            # Special switches - additive
+                            # Special switches - additive logic
                             $specialSwitchMatch = $false
 
                             if ($Hidden -and $itemIsHidden) {
@@ -1795,7 +1738,7 @@ Function Hunt-Files {
 
                             # Regular search criteria
                             if (-not $specialSwitchMatch) {
-                                # Date range matching
+                                # Date range matching - optimized
                                 if ($parsedStartDate -and $parsedEndDate) {
                                     $dateMatches = @()
                                     
@@ -1814,21 +1757,17 @@ Function Hunt-Files {
                                     }
                                 }
 
-                                # Name matching
+                                # Name matching - optimized
                                 if ($Names.Count -gt 0) {
                                     $fileName = $item.Name
-                                    foreach ($namePattern in $Names) {
-                                        if ($fileName -like "*$namePattern*") {
-                                            $matchedNames += $namePattern
-                                        }
-                                    }
+                                    $matchedNames = @($Names | Where-Object { $fileName -like "*$_*" })
                                     
                                     if ($matchedNames.Count -gt 0) {
                                         $itemMatchReasons += "Name:$($matchedNames -join ',')"
                                     }
                                 }
 
-                                # Extension matching
+                                # Extension matching - optimized
                                 if ($Extensions.Count -gt 0 -and -not $isDirectory) {
                                     $itemExt = $item.Extension.ToLower()
                                     if ($Extensions -contains $itemExt) {
@@ -1836,8 +1775,8 @@ Function Hunt-Files {
                                     }
                                 }
 
-                                # Content matching
-                                if ($Content.Count -gt 0 -and -not $isDirectory -and $item.Length -le $maxSizeBytes) {
+                                # Content matching - check file size first for performance
+                                if ($Content.Count -gt 0 -and -not $isDirectory -and $item.Length -le $maxSizeBytes -and $item.Length -gt 0) {
                                     $allStreamMatches = @()
                                     
                                     try {
@@ -1852,7 +1791,7 @@ Function Hunt-Files {
                                         
                                         # Check alternate streams
                                         foreach ($stream in $alternateStreams) {
-                                            if ($stream.Size -le $maxSizeBytes) {
+                                            if ($stream.Size -le $maxSizeBytes -and $stream.Size -gt 0) {
                                                 $streamContent = Get-ContentFromFile -FilePath $item.FullName -StreamName $stream.StreamName -MaxSize $maxSizeBytes
                                                 if (![string]::IsNullOrEmpty($streamContent)) {
                                                     $streamContentMatches = @($Content | Where-Object { $streamContent -like "*$_*" })
@@ -1872,7 +1811,7 @@ Function Hunt-Files {
                                     }
                                 }
 
-                                # Hash matching
+                                # Hash matching - optimized
                                 if ($normalizedHashes.Count -gt 0 -and -not $isDirectory) {
                                     $hashMatches = @()
                                     
@@ -1926,11 +1865,6 @@ Function Hunt-Files {
 
                             # Include item if any criteria matched
                             if ($itemMatchReasons.Count -gt 0) {
-                                # FIXED: Generate preview for matched files when Preview parameter is set
-                                if (-not $isDirectory -and $Preview -gt 0) {
-                                    $preview = Get-ContentPreview -FilePath $item.FullName -MaxSize $maxSizeBytes -PreviewLength $Preview
-                                }
-
                                 if ($isDirectory) {
                                     $foldersMatched++
                                 } else {
@@ -1961,7 +1895,6 @@ Function Hunt-Files {
                                     MatchReason = ($itemMatchReasons -join " | ")
                                     MatchedContent = ($matchedContent -join ', ')
                                     MatchedNames = ($matchedNames -join ', ')
-                                    Preview = $preview
                                     IsHidden = $itemIsHidden
                                     IsRecycleBin = $itemIsRecycleBin
                                     StreamInfo = $streamInfo
@@ -2004,9 +1937,8 @@ Function Hunt-Files {
     }
 
     foreach ($result in $sortedResults) {
-        $previewSize = if ($Preview -gt 0 -and ![string]::IsNullOrWhiteSpace($result.Preview)) { $result.Preview.Length } else { 0 }
         $streamInfoSize = if (![string]::IsNullOrEmpty($result.StreamInfo)) { $result.StreamInfo.Length } else { 0 }
-        $eventOutputSize = 600 + $result.FullPath.Length + $result.MatchReason.Length + $result.MatchedContent.Length + $previewSize + $streamInfoSize
+        $eventOutputSize = 500 + $result.FullPath.Length + $result.MatchReason.Length + $result.MatchedContent.Length + $streamInfoSize
         
         if ($MaxPrint -gt 0 -and ($totalOutputChars + $eventOutputSize -gt $MaxPrint)) {
             $remainingResults = $sortedResults.Count - ([array]::IndexOf($sortedResults, $result))
@@ -2045,11 +1977,6 @@ Function Hunt-Files {
         
         if (![string]::IsNullOrWhiteSpace($result.MatchedNames)) {
             Write-Host "Name Match   : $($result.MatchedNames)" -ForegroundColor Green
-        }
-        
-        # FIXED: Preview now properly displays when Preview > 0 and content exists
-        if ($Preview -gt 0 -and ![string]::IsNullOrWhiteSpace($result.Preview)) {
-            Write-Host "Preview      : $($result.Preview)" -ForegroundColor DarkCyan
         }
         
         # Show stream information
