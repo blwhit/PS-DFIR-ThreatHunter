@@ -1,10 +1,23 @@
 # DFIR-Hunter Module
 
+# ------------------
+# Module Manifest:
+# =================
+# Hunt-All
+# Hunt-Logs
+# Hunt-Files
+# Hunt-Persistence
+# Hunt-Browser
+# Hunt-Browser
+# Hunt-Task
+# Hunt-AMSI
+# Hunt-ETW
+# Hunt-Registry
+# Hunt-Export
+# -------------------
 
 # Script Variables
 $script:IOCLogStrings = @("placeholder")
-
-
 
 # HUNT-LOGS
 Function Hunt-Logs {
@@ -12,7 +25,7 @@ Function Hunt-Logs {
         [Parameter(Mandatory=$false)]
         $StartDate,
         [Parameter(Mandatory=$false)]
-        $EndDate,
+        $EndDate="Now",
         [Parameter(Mandatory=$false)]
         [string[]]$IncludeStrings = @(),
         [Parameter(Mandatory=$false)]
@@ -48,9 +61,9 @@ Function Hunt-Logs {
     )
 
     # Define global IOC list if not already defined
-    if (-not (Get-Variable -Name "IOCLogStrings" -Scope Script -ErrorAction SilentlyContinue)) {
-        Write-Warning "IOCLogStrings not found. Defining empty IOC list."
-        $IOCLogStrings = @("")
+    if (-not (Get-Variable -Name "GlobalLogIOCs" -Scope Global -ErrorAction SilentlyContinue)) {
+        Write-Warning "GlobalLogIOCs not found. Defining default IOC list."
+        $global:GlobalLogIOCs = @("")
     }
 
     # Handle Auto mode
@@ -127,7 +140,7 @@ Function Hunt-Logs {
         $finalParams = @{
             StartDate = if ($PSBoundParameters.ContainsKey('StartDate')) { $StartDate } else { $baselineParams.StartDate }
             EndDate = if ($PSBoundParameters.ContainsKey('EndDate')) { $EndDate } else { $baselineParams.EndDate }
-            IncludeStrings = @($global:IOCLogStrings) + $IncludeStrings  # Combine baseline IOCs with user additions
+            IncludeStrings = @($global:GlobalLogIOCs) + $IncludeStrings  # Combine baseline IOCs with user additions
             SortOrder = $SortOrder
             XML = $XML
             MSG = $MSG
@@ -160,7 +173,7 @@ Function Hunt-Logs {
             $finalParams.Aggressive = $Aggressive  # User added aggressive search
         }
         
-        Write-Host "Baseline IOCs: $($global:IOCLogStrings.Count)" -ForegroundColor Green
+        Write-Host "Baseline IOCs: $($global:GlobalLogIOCs.Count)" -ForegroundColor Green
         if ($IncludeStrings.Count -gt 0) {
             Write-Host "Additional User IOCs: $($IncludeStrings.Count)" -ForegroundColor Green
         }
@@ -549,54 +562,53 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
     $targetTimeZone = if ([string]::IsNullOrWhiteSpace($Timezone)) { $systemTimeZone } else { Get-TimezoneInfo -TimezoneName $Timezone }
 
     # Function to parse time strings and convert to target timezone for search queries
-function ConvertTo-DateTime {
-    param($InputValue, $TargetTimeZone)
-    
-    if ($InputValue -is [datetime]) {
-        # Convert to target timezone for internal processing, then back to system time for search
-        if ($TargetTimeZone.Id -ne $systemTimeZone.Id) {
-            $convertedTime = [System.TimeZoneInfo]::ConvertTime($InputValue, $TargetTimeZone, $systemTimeZone)
-            return $convertedTime
-        }
-        return $InputValue
-    }
-    
-    if ($InputValue -is [string]) {
-        $InputValue = $InputValue.Trim()
+    function ConvertTo-DateTime {
+        param($InputValue, $TargetTimeZone)
         
-        if ($InputValue.ToLower() -eq 'now') {
-            return Get-Date
+        if ($InputValue -is [datetime]) {
+            # Convert to target timezone for internal processing, then back to system time for search
+            if ($TargetTimeZone.Id -ne $systemTimeZone.Id) {
+                $convertedTime = [System.TimeZoneInfo]::ConvertTime($InputValue, $TargetTimeZone, $systemTimeZone)
+                return $convertedTime
+            }
+            return $InputValue
         }
         
-        if ($InputValue -match '^\d+[DHMdhm]$') {
-            $number = [int]($InputValue -replace '[DHMdhm]$','')
-            $unit = ($InputValue -replace '^\d+','').ToUpper()
+        if ($InputValue -is [string]) {
+            $InputValue = $InputValue.Trim()
             
-            $currentTime = Get-Date
-            switch ($unit) {
-                'D' { return $currentTime.AddDays(-$number) }
-                'H' { return $currentTime.AddHours(-$number) }
-                'M' { return $currentTime.AddMinutes(-$number) }
-                default { throw "Invalid time unit: $unit. Use D, H, or M." }
+            if ($InputValue.ToLower() -eq 'now') {
+                return Get-Date
             }
-        } else {
-            try {
-                $parsedDate = [datetime]$InputValue
-                # If user specified a timezone, interpret the input date as being in that timezone
-                if ($TargetTimeZone.Id -ne $systemTimeZone.Id) {
-                    # Convert from target timezone to system timezone for search
-                    $convertedTime = [System.TimeZoneInfo]::ConvertTime($parsedDate, $TargetTimeZone, $systemTimeZone)
-                    return $convertedTime
+            
+            if ($InputValue -match '^(\d+)([DHMdhm])$') {
+                $number = [int]$matches[1]
+                $unit = $matches[2].ToUpper()
+                
+                $currentTime = Get-Date
+                switch ($unit) {
+                    'D' { return $currentTime.AddDays(-$number) }
+                    'H' { return $currentTime.AddHours(-$number) }
+                    'M' { return $currentTime.AddMinutes(-$number) }
                 }
-                return $parsedDate
-            } catch {
-                throw "Invalid date format: $InputValue. Use datetime, 'now', or relative format like '1D', '4H', or '10m'"
+            } else {
+                try {
+                    $parsedDate = [datetime]$InputValue
+                    # If user specified a timezone, interpret the input date as being in that timezone
+                    if ($TargetTimeZone.Id -ne $systemTimeZone.Id) {
+                        # Convert from target timezone to system timezone for search
+                        $convertedTime = [System.TimeZoneInfo]::ConvertTime($parsedDate, $TargetTimeZone, $systemTimeZone)
+                        return $convertedTime
+                    }
+                    return $parsedDate
+                } catch {
+                    throw "Invalid date format: $InputValue. Use datetime, 'now', or relative format like '1D', '4H', or '10m'"
+                }
             }
         }
+        
+        throw "Invalid date input: $InputValue"
     }
-    
-    throw "Invalid date input: $InputValue"
-}
 
     # Function to format datetime with timezone for display
     function Format-DateTimeWithTimeZone {
@@ -1220,4 +1232,864 @@ function ConvertTo-DateTime {
         Write-Host "`n[X] No Filesystem Logs Found" -ForegroundColor Red
     }
     Write-Host "`n"
+}
+
+# HUNT-FILES
+Function Hunt-Files {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$false)]
+        $StartDate,
+        
+        [Parameter(Mandatory=$false)]
+        $EndDate="Now",
+        
+        [Parameter(Mandatory=$false)]
+        [string[]]$Extensions = @(),
+        
+        [Parameter(Mandatory=$false)]
+        [string[]]$Content = @(),
+        
+        [Parameter(Mandatory=$false)]
+        [string[]]$Names = @(),
+        
+        [Parameter(Mandatory=$false)]
+        [string[]]$Hashes = @(),
+        
+        [Parameter(Mandatory=$false)]
+        [int]$MaxSizeMB = 30,
+        
+        [Parameter(Mandatory=$false)]
+        [string]$Timezone = "",
+        
+        [Parameter(Mandatory=$false)]
+        [string]$Path = "",
+        
+        [Parameter(Mandatory=$false)]
+        [switch]$AllDrives,
+        
+        [Parameter(Mandatory=$false)]
+        [switch]$IncludeSystemFolders,
+        
+        [Parameter(Mandatory=$false)]
+        [switch]$Hidden,
+        
+        [Parameter(Mandatory=$false)]
+        [switch]$Recycled,
+        
+        [Parameter(Mandatory=$false)]
+        [switch]$Streams,
+        
+        [Parameter(Mandatory=$false)]
+        [int]$MaxPrint = 0,
+        
+        [Parameter(Mandatory=$false)]
+        [ValidateSet(1,2,3)]
+        [int]$Auto,
+        
+        [Parameter(Mandatory=$false)]
+        [int]$Preview = 0,
+        
+        [Parameter(Mandatory=$false)]
+        [ValidateSet("FILE", "F", "DIR", "DIRECTORY", "D")]
+        [string]$Type = "",
+        
+        [Parameter(Mandatory=$false)]
+        [switch]$VerboseOutput
+    )
+
+    Write-Progress -Activity "Hunt-Files" -Status "Initializing..." -PercentComplete 0
+
+    # Auto mode configurations
+    if ($Auto) {
+        $suspiciousExtensions = @(
+            '.exe', '.dll', '.sys', '.scr', '.ocx', '.drv', '.com', '.pif', '.cpl',
+            '.ps1', '.psm1', '.ps1xml', '.psc1', '.psd1',
+            '.bat', '.cmd', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.hta',
+            '.py', '.pyc', '.pyo', '.rb', '.pl', '.php', '.asp', '.aspx', '.jsp',
+            '.zip', '.rar', '.7z', '.iso', '.img', '.cab', '.gz', '.tar', '.bz2',
+            '.doc', '.docx', '.docm', '.dot', '.dotm', '.xls', '.xlsx', '.xlsm', 
+            '.xlt', '.xltm', '.xlam', '.ppt', '.pptx', '.pptm', '.pot', '.potm',
+            '.rtf', '.pub', '.one', '.odt', '.ods', '.odp',
+            '.jar', '.class', '.war', '.ear',
+            '.lnk', '.url', '.website',
+            '.inf', '.reg', '.ini', '.xml', '.cfg', '.conf', '.config',
+            '.msi', '.msp', '.mst',
+            '.tmp', '.temp', '.bin', '.dat', '.log', '.dmp',
+            '.db', '.sqlite', '.mdb', '.accdb',
+            '.cer', '.crt', '.pem', '.p12', '.pfx', '.key',
+            '.application', '.gadget', '.msc', '.ws'
+        )
+        
+        switch ($Auto) {
+            1 {
+                if (!$StartDate -and $EndDate -eq "Now") {
+                    $StartDate = (Get-Date).AddDays(-3)
+                    $EndDate = Get-Date
+                }
+                $Extensions = @('.exe', '.dll', '.ps1', '.js', '.vbs', '.bat', '.cmd', '.scr')
+            }
+            2 {
+                if (!$StartDate -and $EndDate -eq "Now") {
+                    $StartDate = (Get-Date).AddDays(-7)
+                    $EndDate = Get-Date
+                }
+                $Extensions = $suspiciousExtensions
+                $IncludeSystemFolders = $true
+            }
+            3 {
+                if (!$StartDate -and $EndDate -eq "Now") {
+                    $StartDate = (Get-Date).AddDays(-30)
+                    $EndDate = Get-Date
+                }
+                $Extensions = $suspiciousExtensions
+                $IncludeSystemFolders = $true
+            }
+        }
+    }
+
+    # Timezone handling
+    $systemTimeZone = [System.TimeZoneInfo]::Local
+    
+    function Get-TimezoneInfo {
+        param($TimezoneName)
+        
+        $timezoneMap = @{
+            'UTC' = 'UTC'; 'GMT' = 'GMT Standard Time'
+            'EST' = 'Eastern Standard Time'; 'CST' = 'Central Standard Time'
+            'MST' = 'Mountain Standard Time'; 'PST' = 'Pacific Standard Time'
+            'EDT' = 'Eastern Standard Time'; 'CDT' = 'Central Standard Time'
+            'MDT' = 'Mountain Standard Time'; 'PDT' = 'Pacific Standard Time'
+        }
+        
+        $mappedName = if ($timezoneMap.ContainsKey($TimezoneName.ToUpper())) { 
+            $timezoneMap[$TimezoneName.ToUpper()] 
+        } else { 
+            $TimezoneName 
+        }
+        
+        try {
+            if ($mappedName -eq 'UTC') {
+                return [System.TimeZoneInfo]::Utc
+            } else {
+                return [System.TimeZoneInfo]::FindSystemTimeZoneById($mappedName)
+            }
+        } catch {
+            throw "Invalid timezone: $TimezoneName"
+        }
+    }
+
+    $targetTimeZone = if ([string]::IsNullOrWhiteSpace($Timezone)) { 
+        $systemTimeZone 
+    } else { 
+        Get-TimezoneInfo -TimezoneName $Timezone 
+    }
+
+    # Date conversion function
+    function ConvertTo-DateTime {
+        param($InputValue, $TargetTimeZone)
+        
+        if ($InputValue -is [datetime]) {
+            if ($TargetTimeZone.Id -ne $systemTimeZone.Id) {
+                return [System.TimeZoneInfo]::ConvertTime($InputValue, $TargetTimeZone, $systemTimeZone)
+            }
+            return $InputValue
+        }
+        
+        if ($InputValue -is [string]) {
+            $InputValue = $InputValue.Trim()
+            
+            if ($InputValue.ToLower() -eq 'now') {
+                return Get-Date
+            }
+            
+            # Handle relative time formats (1D, 4H, 10M)
+            if ($InputValue -match '^(\d+)([DHMdhm])$') {
+                $number = [int]$matches[1]
+                $unit = $matches[2].ToUpper()
+                
+                $currentTime = Get-Date
+                switch ($unit) {
+                    'D' { return $currentTime.AddDays(-$number) }
+                    'H' { return $currentTime.AddHours(-$number) }
+                    'M' { return $currentTime.AddMinutes(-$number) }
+                }
+            }
+            
+            # Parse regular datetime strings
+            try {
+                $parsedDate = [datetime]$InputValue
+                if ($TargetTimeZone.Id -ne $systemTimeZone.Id) {
+                    return [System.TimeZoneInfo]::ConvertTime($parsedDate, $TargetTimeZone, $systemTimeZone)
+                }
+                return $parsedDate
+            } catch {
+                throw "Invalid date format: $InputValue"
+            }
+        }
+        
+        throw "Invalid date input: $InputValue"
+    }
+
+    # Datetime formatting function
+    function Format-DateTimeWithTimeZone {
+        param($DateTime, $TargetTimeZone)
+        
+        if ($TargetTimeZone.Id -eq $systemTimeZone.Id) {
+            $convertedTime = $DateTime
+            $tzAbbrev = Get-TimezoneAbbreviation -TimeZone $systemTimeZone -DateTime $DateTime
+        } else {
+            $convertedTime = [System.TimeZoneInfo]::ConvertTime($DateTime, $systemTimeZone, $TargetTimeZone)
+            $tzAbbrev = Get-TimezoneAbbreviation -TimeZone $TargetTimeZone -DateTime $convertedTime
+        }
+        
+        return $convertedTime.ToString("yyyy-MM-dd HH:mm:ss") + " $tzAbbrev"
+    }
+
+    # Timezone abbreviation function
+    function Get-TimezoneAbbreviation {
+        param($TimeZone, $DateTime)
+        
+        if ($TimeZone.Id -eq 'UTC') { 
+            return 'UTC' 
+        }
+        
+        $isDST = $TimeZone.IsDaylightSavingTime($DateTime)
+        
+        if ($TimeZone.StandardName -like "*Eastern*") { 
+            if ($isDST) { return 'EDT' } else { return 'EST' }
+        }
+        elseif ($TimeZone.StandardName -like "*Central*") { 
+            if ($isDST) { return 'CDT' } else { return 'CST' }
+        }
+        elseif ($TimeZone.StandardName -like "*Mountain*") { 
+            if ($isDST) { return 'MDT' } else { return 'MST' }
+        }
+        elseif ($TimeZone.StandardName -like "*Pacific*") { 
+            if ($isDST) { return 'PDT' } else { return 'PST' }
+        }
+        else { 
+            return $TimeZone.StandardName.Split(' ')[0] 
+        }
+    }
+
+    # Stream handling function - optimized for PS5+
+    function Get-FileStreams {
+        param($FilePath)
+        
+        $streams = @()
+        try {
+            if ($PSVersionTable.PSVersion.Major -ge 5) {
+                $allStreams = @(Get-Item -Path $FilePath -Stream * -ErrorAction SilentlyContinue 2>$null)
+                foreach ($stream in $allStreams) {
+                    if ($stream.Stream -ne ':$DATA') {
+                        $streams += [PSCustomObject]@{
+                            StreamName = $stream.Stream
+                            Size = $stream.Length
+                        }
+                    }
+                }
+            }
+        } catch {
+            # Return empty if we can't get streams
+        }
+        return $streams
+    }
+
+    # FIXED: Content preview function - now properly generates preview
+    function Get-ContentPreview {
+        param($FilePath, $MaxSize, $PreviewLength)
+        
+        if ($PreviewLength -le 0) { 
+            return '' 
+        }
+        
+        try {
+            $fileInfo = Get-Item -Path $FilePath -Force -ErrorAction Stop
+            if ($fileInfo.Length -gt $MaxSize -or $fileInfo.Length -eq 0) { 
+                return '' 
+            }
+            
+            # Read a reasonable chunk of the file for preview
+            $chunkSize = [Math]::Min($fileInfo.Length, $PreviewLength * 4)
+            $bytes = New-Object byte[] $chunkSize
+            
+            $fileStream = [System.IO.File]::OpenRead($FilePath)
+            $bytesRead = $fileStream.Read($bytes, 0, $chunkSize)
+            $fileStream.Close()
+            
+            if ($bytesRead -eq 0) { 
+                return '' 
+            }
+            
+            # Try UTF-8 first, fallback to ASCII
+            try {
+                $content = [System.Text.Encoding]::UTF8.GetString($bytes, 0, $bytesRead)
+                # Check for null bytes indicating binary content
+                if ($content.Contains([char]0)) {
+                    throw "Binary content detected"
+                }
+            } catch {
+                $content = [System.Text.Encoding]::ASCII.GetString($bytes, 0, $bytesRead)
+            }
+            
+            # Clean content for display
+            $cleanContent = $content -replace '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\xFF]', '?' 
+            $cleanContent = $cleanContent -replace '[\r\n\t]+', ' '
+            $cleanContent = $cleanContent.Trim()
+            
+            if ($cleanContent.Length -le $PreviewLength) { 
+                return $cleanContent 
+            } else { 
+                return $cleanContent.Substring(0, $PreviewLength) + "..."
+            }
+        } catch {
+            return ''
+        }
+    }
+
+    # Content matching function
+    function Get-ContentFromFile {
+        param($FilePath, $StreamName = '', $MaxSize)
+        
+        try {
+            $streamPath = if ([string]::IsNullOrEmpty($StreamName) -or $StreamName -eq ':$DATA') {
+                $FilePath
+            } else {
+                "${FilePath}:${StreamName}"
+            }
+            
+            $fileInfo = Get-Item -Path $FilePath -Force -ErrorAction Stop
+            if ($fileInfo.Length -gt $MaxSize) { 
+                return '' 
+            }
+            
+            $content = Get-Content -Path $streamPath -Raw -Encoding UTF8 -ErrorAction Stop
+            return $content
+        } catch {
+            return ''
+        }
+    }
+
+    # Hash computation function
+    function Get-FileHashCustom {
+        param($FilePath, $StreamName = '', $Algorithm)
+        
+        try {
+            $streamPath = if ([string]::IsNullOrEmpty($StreamName) -or $StreamName -eq ':$DATA') {
+                $FilePath
+            } else {
+                "${FilePath}:${StreamName}"
+            }
+            
+            $hash = Get-FileHash -Path $streamPath -Algorithm $Algorithm -ErrorAction Stop
+            return $hash.Hash.ToLower()
+        } catch {
+            return ""
+        }
+    }
+
+    Write-Progress -Activity "Hunt-Files" -Status "Validating parameters..." -PercentComplete 10
+
+    # Parameter validation
+    if ($MaxSizeMB -le 0) {
+        Write-Error "MaxSizeMB must be greater than 0"
+        return
+    }
+    if ($Preview -lt 0) {
+        Write-Error "Preview must be 0 or greater"
+        return
+    }
+
+    # Normalize Type parameter
+    $filterType = ""
+    if (![string]::IsNullOrWhiteSpace($Type)) {
+        switch ($Type.ToUpper()) {
+            { $_ -in @("FILE", "F") } { $filterType = "FILE" }
+            { $_ -in @("DIR", "DIRECTORY", "D") } { $filterType = "DIR" }
+        }
+    }
+
+    # Determine search paths
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        if ($AllDrives) {
+            try {
+                $searchPaths = @(Get-PSDrive -PSProvider FileSystem -ErrorAction Stop | Where-Object { $_.Used -ge 0 } | ForEach-Object { $_.Root })
+            } catch {
+                Write-Error "Failed to get drive information: $($_.Exception.Message)"
+                return
+            }
+        } else {
+            $searchPaths = @("$((Get-Location).Drive.Name):\")
+        }
+    } else {
+        $searchPath = $Path.TrimEnd('\')
+        if (-not (Test-Path $searchPath)) {
+            Write-Error "Specified path does not exist: $searchPath"
+            return
+        }
+        $searchPaths = @($searchPath)
+    }
+
+    # Date range handling
+    $hasDateRange = $null -ne $StartDate -or $EndDate -ne "Now"
+    $hasOtherCriteria = $Extensions.Count -gt 0 -or $Content.Count -gt 0 -or $Names.Count -gt 0 -or $Hashes.Count -gt 0 -or $Hidden -or $Recycled -or $Streams -or $Auto
+    
+    if (!$hasDateRange -and !$hasOtherCriteria) {
+        $StartDate = (Get-Date).AddDays(-7)
+        $EndDate = Get-Date
+    } elseif ($null -ne $StartDate -and $EndDate -eq "Now") {
+        $EndDate = Get-Date
+    } elseif ($null -eq $StartDate -and $EndDate -ne "Now") {
+        throw "EndDate specified but StartDate is missing. Please provide both dates or neither."
+    }
+
+    # Convert dates
+    $parsedStartDate = $null
+    $parsedEndDate = $null
+    
+    if ($null -ne $StartDate -or $EndDate -ne "Now") {
+        try {
+            $parsedStartDate = if ($null -ne $StartDate) { ConvertTo-DateTime -InputValue $StartDate -TargetTimeZone $targetTimeZone } else { $null }
+            $parsedEndDate = if ($EndDate -ne "Now") { ConvertTo-DateTime -InputValue $EndDate -TargetTimeZone $targetTimeZone } else { ConvertTo-DateTime -InputValue $EndDate -TargetTimeZone $targetTimeZone }
+        } catch {
+            throw "Date parsing error: $($_.Exception.Message)"
+        }
+    }
+
+    # Validate search criteria
+    $hasSearchCriteria = $parsedStartDate -or $parsedEndDate -or $Extensions.Count -gt 0 -or $Content.Count -gt 0 -or $Names.Count -gt 0 -or $Hashes.Count -gt 0 -or $Auto -or $Hidden -or $Recycled -or $Streams
+    
+    if (-not $hasSearchCriteria) {
+        Write-Error "At least one search criteria must be provided"
+        return
+    }
+
+    Write-Progress -Activity "Hunt-Files" -Status "Processing criteria..." -PercentComplete 20
+
+    # Normalize search criteria
+    $normalizedHashes = @{}
+    foreach ($hash in $Hashes) {
+        try {
+            $cleanHash = $hash.Trim().ToLower() -replace '[^a-f0-9]', ''
+            $hashType = switch ($cleanHash.Length) {
+                32  { 'MD5' }
+                40  { 'SHA1' }
+                64  { 'SHA256' }
+                default { 
+                    Write-Warning "Invalid hash format: $hash"
+                    continue 
+                }
+            }
+            $normalizedHashes[$cleanHash] = $hashType
+        } catch {
+            Write-Warning "Error processing hash '$hash': $($_.Exception.Message)"
+        }
+    }
+
+    # Normalize extensions
+    if ($Extensions.Count -gt 0) {
+        $Extensions = @($Extensions | ForEach-Object { 
+            $ext = $_.ToLower().Trim()
+            if (-not $ext.StartsWith('.')) { ".$ext" } else { $ext }
+        })
+    }
+
+    # Normalize names
+    if ($Names.Count -gt 0) {
+        $Names = @($Names | ForEach-Object { $_.Trim() })
+    }
+
+    $maxSizeBytes = [long]$MaxSizeMB * 1MB
+    $systemFolders = @("$env:windir", "$env:ProgramFiles", "${env:ProgramFiles(x86)}")
+
+    # Initialize counters
+    $filesMatched = 0
+    $foldersMatched = 0
+    $streamMatches = 0
+    $totalStreamsFound = 0
+    $results = @()
+    $totalOutputChars = 0
+
+    Write-Progress -Activity "Hunt-Files" -Status "Scanning filesystem..." -PercentComplete 30
+
+    # Main scanning loop
+    foreach ($currentSearchPath in $searchPaths) {
+        try {
+            $searchSubPaths = @($currentSearchPath)
+            
+            # Add recycle bin paths if needed
+            if ($Recycled -or $currentSearchPath -match '^[A-Za-z]:\\$') {
+                $driveLetter = $currentSearchPath.Substring(0, 1)
+                $recycleBinPaths = @("${driveLetter}:\`$Recycle.Bin", "${driveLetter}:\RECYCLER")
+                $availableRecycleBinPaths = @($recycleBinPaths | Where-Object { Test-Path $_ })
+                if ($Recycled -or $availableRecycleBinPaths.Count -gt 0) {
+                    $searchSubPaths += $availableRecycleBinPaths
+                }
+            }
+
+            foreach ($subPath in $searchSubPaths) {
+                try {
+                    # Get all items with optimized parameters
+                    $pathItems = @(Get-ChildItem -Path $subPath -Recurse -Force -ErrorAction SilentlyContinue)
+                    
+                    # Filter out system folders if not included
+                    if (-not $IncludeSystemFolders -and -not $Recycled) {
+                        $pathItems = @($pathItems | Where-Object {
+                            $itemPath = $_.FullName
+                            -not ($systemFolders | Where-Object { $itemPath.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) })
+                        })
+                    }
+
+                    foreach ($item in $pathItems) {
+                        try {
+                            $isDirectory = $item.PSIsContainer
+                            $itemMatchReasons = @()
+                            $matchedContent = @()
+                            $matchedNames = @()
+                            $finalHash = ""
+                            $sha256 = ""
+                            $preview = ""
+                            $streamInfo = ""
+                            $alternateStreams = @()
+
+                            # Check attributes
+                            $itemIsHidden = ($item.Attributes -band [System.IO.FileAttributes]::Hidden) -ne 0
+                            $itemIsRecycleBin = ($item.FullName -like "*`$Recycle.Bin*" -or $item.FullName -like "*RECYCLER*")
+
+                            # Get streams only when needed
+                            if (-not $isDirectory -and ($Streams -or $Content.Count -gt 0)) {
+                                try {
+                                    $alternateStreams = @(Get-FileStreams -FilePath $item.FullName)
+                                    $totalStreamsFound += $alternateStreams.Count
+                                } catch {
+                                    # Continue if we can't get stream info
+                                }
+                            }
+
+                            # Special switches - additive
+                            $specialSwitchMatch = $false
+
+                            if ($Hidden -and $itemIsHidden) {
+                                $itemMatchReasons += "Hidden"
+                                $specialSwitchMatch = $true
+                            }
+
+                            if ($Recycled -and $itemIsRecycleBin) {
+                                $itemMatchReasons += "Deleted"
+                                $specialSwitchMatch = $true
+                            }
+
+                            if ($Streams -and -not $isDirectory -and $alternateStreams.Count -gt 0) {
+                                $streamNames = ($alternateStreams | ForEach-Object { $_.StreamName }) -join ','
+                                $itemMatchReasons += "ADS:$streamNames"
+                                $streamMatches++
+                                $specialSwitchMatch = $true
+                                
+                                $streamDetails = @()
+                                foreach ($stream in $alternateStreams) {
+                                    $streamDetails += "$($stream.StreamName)($($stream.Size) bytes)"
+                                }
+                                $streamInfo = $streamDetails -join ';'
+                            }
+
+                            # Regular search criteria
+                            if (-not $specialSwitchMatch) {
+                                # Date range matching
+                                if ($parsedStartDate -and $parsedEndDate) {
+                                    $dateMatches = @()
+                                    
+                                    if ($item.CreationTime -ge $parsedStartDate -and $item.CreationTime -le $parsedEndDate) {
+                                        $dateMatches += "Created"
+                                    }
+                                    if ($item.LastWriteTime -ge $parsedStartDate -and $item.LastWriteTime -le $parsedEndDate) {
+                                        $dateMatches += "Modified"
+                                    }
+                                    if ($item.LastAccessTime -ge $parsedStartDate -and $item.LastAccessTime -le $parsedEndDate) {
+                                        $dateMatches += "Accessed"
+                                    }
+                                    
+                                    if ($dateMatches.Count -gt 0) {
+                                        $itemMatchReasons += "Date:$($dateMatches -join '/')"
+                                    }
+                                }
+
+                                # Name matching
+                                if ($Names.Count -gt 0) {
+                                    $fileName = $item.Name
+                                    foreach ($namePattern in $Names) {
+                                        if ($fileName -like "*$namePattern*") {
+                                            $matchedNames += $namePattern
+                                        }
+                                    }
+                                    
+                                    if ($matchedNames.Count -gt 0) {
+                                        $itemMatchReasons += "Name:$($matchedNames -join ',')"
+                                    }
+                                }
+
+                                # Extension matching
+                                if ($Extensions.Count -gt 0 -and -not $isDirectory) {
+                                    $itemExt = $item.Extension.ToLower()
+                                    if ($Extensions -contains $itemExt) {
+                                        $itemMatchReasons += "Ext:$itemExt"
+                                    }
+                                }
+
+                                # Content matching
+                                if ($Content.Count -gt 0 -and -not $isDirectory -and $item.Length -le $maxSizeBytes) {
+                                    $allStreamMatches = @()
+                                    
+                                    try {
+                                        # Check main stream
+                                        $fileContent = Get-ContentFromFile -FilePath $item.FullName -MaxSize $maxSizeBytes
+                                        if (![string]::IsNullOrEmpty($fileContent)) {
+                                            $mainStreamMatches = @($Content | Where-Object { $fileContent -like "*$_*" })
+                                            if ($mainStreamMatches.Count -gt 0) {
+                                                $allStreamMatches += $mainStreamMatches | ForEach-Object { "$_(:DATA)" }
+                                            }
+                                        }
+                                        
+                                        # Check alternate streams
+                                        foreach ($stream in $alternateStreams) {
+                                            if ($stream.Size -le $maxSizeBytes) {
+                                                $streamContent = Get-ContentFromFile -FilePath $item.FullName -StreamName $stream.StreamName -MaxSize $maxSizeBytes
+                                                if (![string]::IsNullOrEmpty($streamContent)) {
+                                                    $streamContentMatches = @($Content | Where-Object { $streamContent -like "*$_*" })
+                                                    if ($streamContentMatches.Count -gt 0) {
+                                                        $allStreamMatches += $streamContentMatches | ForEach-Object { "$_($($stream.StreamName))" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        
+                                        if ($allStreamMatches.Count -gt 0) {
+                                            $itemMatchReasons += "Content:$($allStreamMatches -join ',')"
+                                            $matchedContent = $allStreamMatches
+                                        }
+                                    } catch {
+                                        # Skip files we can't read
+                                    }
+                                }
+
+                                # Hash matching
+                                if ($normalizedHashes.Count -gt 0 -and -not $isDirectory) {
+                                    $hashMatches = @()
+                                    
+                                    try {
+                                        # Check main stream
+                                        foreach ($hashEntry in $normalizedHashes.GetEnumerator()) {
+                                            $targetHash = $hashEntry.Key
+                                            $algo = $hashEntry.Value
+                                            
+                                            $computedHash = Get-FileHashCustom -FilePath $item.FullName -Algorithm $algo
+                                            if ($computedHash -eq $targetHash) {
+                                                $hashMatches += "$algo($targetHash):DATA"
+                                                if ([string]::IsNullOrEmpty($finalHash)) {
+                                                    $finalHash = $computedHash
+                                                }
+                                            }
+                                        }
+                                        
+                                        # Check alternate streams
+                                        foreach ($stream in $alternateStreams) {
+                                            foreach ($hashEntry in $normalizedHashes.GetEnumerator()) {
+                                                $targetHash = $hashEntry.Key
+                                                $algo = $hashEntry.Value
+                                                
+                                                $computedHash = Get-FileHashCustom -FilePath $item.FullName -StreamName $stream.StreamName -Algorithm $algo
+                                                if ($computedHash -eq $targetHash) {
+                                                    $hashMatches += "$algo($targetHash):$($stream.StreamName)"
+                                                    if ([string]::IsNullOrEmpty($finalHash)) {
+                                                        $finalHash = $computedHash
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        
+                                        if ($hashMatches.Count -gt 0) {
+                                            $itemMatchReasons += "Hash:$($hashMatches -join ',')"
+                                        }
+                                        
+                                        # Always compute SHA256 for matched files if not already done
+                                        if ($itemMatchReasons.Count -gt 0 -and [string]::IsNullOrEmpty($sha256)) {
+                                            $sha256 = Get-FileHashCustom -FilePath $item.FullName -Algorithm 'SHA256'
+                                            if ([string]::IsNullOrEmpty($finalHash)) {
+                                                $finalHash = $sha256
+                                            }
+                                        }
+                                    } catch {
+                                        # Skip files we can't hash
+                                    }
+                                }
+                            }
+
+                            # Include item if any criteria matched
+                            if ($itemMatchReasons.Count -gt 0) {
+                                # FIXED: Generate preview for matched files when Preview parameter is set
+                                if (-not $isDirectory -and $Preview -gt 0) {
+                                    $preview = Get-ContentPreview -FilePath $item.FullName -MaxSize $maxSizeBytes -PreviewLength $Preview
+                                }
+
+                                if ($isDirectory) {
+                                    $foldersMatched++
+                                } else {
+                                    $filesMatched++
+                                    # Compute SHA256 for files if not done yet
+                                    if ([string]::IsNullOrEmpty($sha256)) {
+                                        try {
+                                            $sha256 = Get-FileHashCustom -FilePath $item.FullName -Algorithm 'SHA256'
+                                            if ([string]::IsNullOrEmpty($finalHash)) {
+                                                $finalHash = $sha256
+                                            }
+                                        } catch {
+                                            # Skip if can't compute hash
+                                        }
+                                    }
+                                }
+                                
+                                $result = [PSCustomObject]@{
+                                    FullPath = $item.FullName
+                                    Name = $item.Name
+                                    IsDirectory = $isDirectory
+                                    SizeMB = if ($isDirectory) { 0 } else { [math]::Round($item.Length / 1MB, 4) }
+                                    CreationTime = $item.CreationTime
+                                    LastWriteTime = $item.LastWriteTime
+                                    LastAccessTime = $item.LastAccessTime
+                                    Hash = $finalHash
+                                    SHA256 = $sha256
+                                    MatchReason = ($itemMatchReasons -join " | ")
+                                    MatchedContent = ($matchedContent -join ', ')
+                                    MatchedNames = ($matchedNames -join ', ')
+                                    Preview = $preview
+                                    IsHidden = $itemIsHidden
+                                    IsRecycleBin = $itemIsRecycleBin
+                                    StreamInfo = $streamInfo
+                                    AlternateStreamCount = $alternateStreams.Count
+                                }
+                                
+                                $results += $result
+                            }
+                        } catch {
+                            if ($VerboseOutput) {
+                                Write-Warning "Error processing item $($item.FullName): $($_.Exception.Message)"
+                            }
+                        }
+                    }
+                } catch {
+                    if ($VerboseOutput) {
+                        Write-Warning "Error accessing path $subPath : $($_.Exception.Message)"
+                    }
+                }
+            }
+        } catch {
+            if ($VerboseOutput) {
+                Write-Warning "Error accessing path $currentSearchPath : $($_.Exception.Message)"
+            }
+        }
+    }
+
+    Write-Progress -Activity "Hunt-Files" -Status "Displaying results..." -PercentComplete 80
+
+    # Sort and display results
+    $sortedResults = @($results | Sort-Object LastWriteTime -Descending)
+
+    # Apply Type filter before displaying results
+    if (![string]::IsNullOrWhiteSpace($filterType)) {
+        if ($filterType -eq "FILE") {
+            $sortedResults = @($sortedResults | Where-Object { -not $_.IsDirectory })
+        } elseif ($filterType -eq "DIR") {
+            $sortedResults = @($sortedResults | Where-Object { $_.IsDirectory })
+        }
+    }
+
+    foreach ($result in $sortedResults) {
+        $previewSize = if ($Preview -gt 0 -and ![string]::IsNullOrWhiteSpace($result.Preview)) { $result.Preview.Length } else { 0 }
+        $streamInfoSize = if (![string]::IsNullOrEmpty($result.StreamInfo)) { $result.StreamInfo.Length } else { 0 }
+        $eventOutputSize = 600 + $result.FullPath.Length + $result.MatchReason.Length + $result.MatchedContent.Length + $previewSize + $streamInfoSize
+        
+        if ($MaxPrint -gt 0 -and ($totalOutputChars + $eventOutputSize -gt $MaxPrint)) {
+            $remainingResults = $sortedResults.Count - ([array]::IndexOf($sortedResults, $result))
+            Write-Host ""
+            Write-Host "Output truncated: MaxPrint limit ($MaxPrint characters) reached. $remainingResults more items available." -ForegroundColor DarkRed
+            break
+        }
+
+        $totalOutputChars += $eventOutputSize
+
+        $itemType = if ($result.IsDirectory) { "[DIR]" } else { "[FILE]" }
+        
+        Write-Host ""
+        Write-Host "----------------------------------------" -ForegroundColor Gray
+        Write-Host "Type         : $itemType" -ForegroundColor Yellow
+        Write-Host "Path         : $($result.FullPath)" -ForegroundColor Cyan
+        Write-Host "Filename     : $($result.Name)" -ForegroundColor White
+        
+        if (-not $result.IsDirectory) {
+            Write-Host "Size         : $($result.SizeMB) MB" -ForegroundColor White
+        }
+        
+        Write-Host "Created      : $(Format-DateTimeWithTimeZone -DateTime $result.CreationTime -TargetTimeZone $targetTimeZone)" -ForegroundColor White
+        Write-Host "Modified     : $(Format-DateTimeWithTimeZone -DateTime $result.LastWriteTime -TargetTimeZone $targetTimeZone)" -ForegroundColor White
+        Write-Host "Accessed     : $(Format-DateTimeWithTimeZone -DateTime $result.LastAccessTime -TargetTimeZone $targetTimeZone)" -ForegroundColor White
+        
+        if (-not $result.IsDirectory -and ![string]::IsNullOrWhiteSpace($result.SHA256)) {
+            Write-Host "SHA256       : $($result.SHA256)" -ForegroundColor Gray
+        }
+        
+        Write-Host "Match        : $($result.MatchReason)" -ForegroundColor Red
+        
+        if (![string]::IsNullOrWhiteSpace($result.MatchedContent)) {
+            Write-Host "Content Match: $($result.MatchedContent)" -ForegroundColor Green
+        }
+        
+        if (![string]::IsNullOrWhiteSpace($result.MatchedNames)) {
+            Write-Host "Name Match   : $($result.MatchedNames)" -ForegroundColor Green
+        }
+        
+        # FIXED: Preview now properly displays when Preview > 0 and content exists
+        if ($Preview -gt 0 -and ![string]::IsNullOrWhiteSpace($result.Preview)) {
+            Write-Host "Preview      : $($result.Preview)" -ForegroundColor DarkCyan
+        }
+        
+        # Show stream information
+        if ($result.AlternateStreamCount -gt 0) {
+            Write-Host "Streams [$($result.AlternateStreamCount)]  : $($result.StreamInfo)" -ForegroundColor Green
+        }
+        
+        # Show special attributes
+        $attributes = @()
+        if ($result.IsHidden) { $attributes += "Hidden" }
+        if ($result.IsRecycleBin) { $attributes += "Recycle Bin" }
+        if ($attributes.Count -gt 0) {
+            Write-Host "Attributes   : $($attributes -join ', ')" -ForegroundColor DarkYellow
+        }
+    }
+
+    Write-Progress -Activity "Hunt-Files" -Status "Complete" -PercentComplete 100
+
+    # Summary
+    if ($results.Count -eq 0) {
+        Write-Host "[!] No items found matching the specified criteria." -ForegroundColor Yellow
+    } else {
+        $totalMatched = $filesMatched + $foldersMatched
+        $displayedCount = $sortedResults.Count
+        
+        $summaryParts = @()
+        if (![string]::IsNullOrWhiteSpace($filterType)) {
+            $filterDescription = if ($filterType -eq "FILE") { "files" } else { "directories" }
+            $summaryParts += "[+] Search completed. Found $totalMatched total items ($filesMatched files, $foldersMatched folders). Showing $displayedCount $filterDescription."
+        } else {
+            $summaryParts += "[+] Search completed. Found $totalMatched matching items ($filesMatched files, $foldersMatched folders)."
+        }
+        
+        if ($Streams -and $streamMatches -gt 0) {
+            $summaryParts += "Files with ADS: $streamMatches. Total ADS discovered: $totalStreamsFound"
+        }
+        
+        Write-Host "$($summaryParts -join ' ')" -ForegroundColor Green
+    }
+
+    Write-Progress -Completed -Activity "Hunt-Files"
+    Write-Host ""
 }
