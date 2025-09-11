@@ -3,17 +3,16 @@
 # ------------------
 # Module Manifest:
 # =================
-# Hunt-All
-# Hunt-Logs ----> (Fix or Remove 'Preview' functionality)
-# Hunt-Files
-# Hunt-Persistence
-# Hunt-Browser
-# Hunt-Browser
-# Hunt-Task
-# Hunt-AMSI
-# Hunt-ETW
-# Hunt-Registry
-# Hunt-Export
+# []  Hunt-All
+# [X] Hunt-Logs
+# [X] Hunt-Files
+# []  Hunt-Persistence
+# []  Hunt-Browser
+# []  Hunt-Tasks
+# []  Hunt-AMSI
+# []  Hunt-ETW
+# []  Hunt-Registry
+# []  Hunt-Export
 # -------------------
 
 # Script Variables
@@ -61,9 +60,9 @@ Function Hunt-Logs {
     )
 
     # Define global IOC list if not already defined
-    if (-not (Get-Variable -Name "GlobalLogIOCs" -Scope Global -ErrorAction SilentlyContinue)) {
-        Write-Warning "GlobalLogIOCs not found. Defining default IOC list."
-        $global:GlobalLogIOCs = @("")
+    if (-not (Get-Variable -Name "IOCLogStrings" -Scope Global -ErrorAction SilentlyContinue)) {
+        Write-Warning "IOCLogStrings not found. Defining default IOC list."
+        $script:IOCLogStrings = @("")
     }
 
     # Handle Auto mode
@@ -140,7 +139,7 @@ Function Hunt-Logs {
         $finalParams = @{
             StartDate = if ($PSBoundParameters.ContainsKey('StartDate')) { $StartDate } else { $baselineParams.StartDate }
             EndDate = if ($PSBoundParameters.ContainsKey('EndDate')) { $EndDate } else { $baselineParams.EndDate }
-            IncludeStrings = @($global:GlobalLogIOCs) + $IncludeStrings  # Combine baseline IOCs with user additions
+            IncludeStrings = @($script:IOCLogStrings) + $IncludeStrings  # Combine baseline IOCs with user additions
             SortOrder = $SortOrder
             XML = $XML
             MSG = $MSG
@@ -173,7 +172,7 @@ Function Hunt-Logs {
             $finalParams.Aggressive = $Aggressive  # User added aggressive search
         }
         
-        Write-Host "Baseline IOCs: $($global:GlobalLogIOCs.Count)" -ForegroundColor Green
+        Write-Host "Baseline IOCs: $($script:IOCLogStrings.Count)" -ForegroundColor Green
         if ($IncludeStrings.Count -gt 0) {
             Write-Host "Additional User IOCs: $($IncludeStrings.Count)" -ForegroundColor Green
         }
