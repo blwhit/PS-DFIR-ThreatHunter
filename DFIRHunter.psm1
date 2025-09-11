@@ -1233,6 +1233,9 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
     Write-Host "`n"
 }
 
+
+
+
 # HUNT-FILES
 Function Hunt-Files {
     [CmdletBinding()]
@@ -1250,7 +1253,7 @@ Function Hunt-Files {
         [string[]]$Content = @(),
         
         [Parameter(Mandatory=$false)]
-        [string[]]$Names = @(),
+        [string[]]$Filters = @(),
         
         [Parameter(Mandatory=$false)]
         [string[]]$Hashes = @(),
@@ -1576,7 +1579,7 @@ Function Hunt-Files {
 
     # Date range handling - simplified logic
     $hasDateRange = $null -ne $StartDate -or $EndDate -ne "Now"
-    $hasOtherCriteria = $Extensions.Count -gt 0 -or $Content.Count -gt 0 -or $Names.Count -gt 0 -or $Hashes.Count -gt 0 -or $Hidden -or $Recycled -or $Streams -or $Auto
+    $hasOtherCriteria = $Extensions.Count -gt 0 -or $Content.Count -gt 0 -or $Filters.Count -gt 0 -or $Hashes.Count -gt 0 -or $Hidden -or $Recycled -or $Streams -or $Auto
     
     if (!$hasDateRange -and !$hasOtherCriteria) {
         $StartDate = (Get-Date).AddDays(-7)
@@ -1602,7 +1605,7 @@ Function Hunt-Files {
     }
 
     # Validate search criteria
-    $hasSearchCriteria = $parsedStartDate -or $parsedEndDate -or $Extensions.Count -gt 0 -or $Content.Count -gt 0 -or $Names.Count -gt 0 -or $Hashes.Count -gt 0 -or $Auto -or $Hidden -or $Recycled -or $Streams
+    $hasSearchCriteria = $parsedStartDate -or $parsedEndDate -or $Extensions.Count -gt 0 -or $Content.Count -gt 0 -or $Filters.Count -gt 0 -or $Hashes.Count -gt 0 -or $Auto -or $Hidden -or $Recycled -or $Streams
     
     if (-not $hasSearchCriteria) {
         Write-Error "At least one search criteria must be provided"
@@ -1639,8 +1642,8 @@ Function Hunt-Files {
         })
     }
 
-    if ($Names.Count -gt 0) {
-        $Names = @($Names | ForEach-Object { $_.Trim() })
+    if ($Filters.Count -gt 0) {
+        $Filters = @($Filters | ForEach-Object { $_.Trim() })
     }
 
     $maxSizeBytes = [long]$MaxSizeMB * 1MB
@@ -1757,9 +1760,9 @@ Function Hunt-Files {
                                 }
 
                                 # Name matching - optimized
-                                if ($Names.Count -gt 0) {
+                                if ($Filters.Count -gt 0) {
                                     $fileName = $item.Name
-                                    $matchedNames = @($Names | Where-Object { $fileName -like "*$_*" })
+                                    $matchedNames = @($Filters | Where-Object { $fileName -like "*$_*" })
                                     
                                     if ($matchedNames.Count -gt 0) {
                                         $itemMatchReasons += "Name:$($matchedNames -join ',')"
