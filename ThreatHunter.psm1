@@ -131,6 +131,7 @@ $script:GlobalLogIOCs = @(
 
 # Function Exports
 
+
 function Hunt-All {
     <#
     .SYNOPSIS
@@ -215,6 +216,42 @@ function Hunt-All {
         [string]$Timezone = ""
     )
 	
+
+    # Helper function to process Search parameter with 'all' support
+    function Expand-SearchTerms {
+        param([hashtable]$SearchHash)
+    
+        $expanded = @{}
+    
+        # If 'all' key exists, add it to every category
+        $allTerms = @()
+        if ($SearchHash.ContainsKey('all')) {
+            $allTerms = @($SearchHash['all'])
+        }
+    
+        # Process each search category
+        $categories = @('browser', 'file', 'log', 'task', 'reg', 'service', 'persistence')
+        foreach ($category in $categories) {
+            $terms = @()
+        
+            # Add category-specific terms
+            if ($SearchHash.ContainsKey($category)) {
+                $terms += $SearchHash[$category]
+            }
+        
+            # Add 'all' terms to every category
+            $terms += $allTerms
+        
+            if ($terms.Count -gt 0) {
+                $expanded[$category] = $terms | Select-Object -Unique
+            }
+        }
+    
+        return $expanded
+    }
+
+    $expandedSearch = Expand-SearchTerms -SearchHash $Search
+
     # Helper function: Get System Information
     function Get-SystemInformation {
         param(
@@ -295,6 +332,23 @@ function Hunt-All {
             $sysInfo.LocalTime = Get-Date
             $sysInfo.TimeZone = Get-TimeZone
             $sysInfo.Uptime = (Get-Date) - $sysInfo.BootTime
+
+            # Volume Shadow Copy information
+            Write-Host "  [-] Checking Volume Shadow Copies..." -ForegroundColor DarkGray
+            try {
+                $sysInfo.ShadowCopies = Get-CimInstance -ClassName Win32_ShadowCopy -ErrorAction SilentlyContinue | 
+                Select-Object ID, InstallDate, VolumeName, @{N = 'SizeMB'; E = { [math]::Round($_.AllocatedSpace / 1MB, 2) } }
+                $sysInfo.ShadowCopyCount = if ($sysInfo.ShadowCopies) { $sysInfo.ShadowCopies.Count } else { 0 }
+                
+                # Check if VSS service is running
+                $vssService = Get-Service -Name VSS -ErrorAction SilentlyContinue
+                $sysInfo.VSSServiceStatus = if ($vssService) { $vssService.Status } else { "Not Found" }
+            }
+            catch {
+                $sysInfo.ShadowCopies = @()
+                $sysInfo.ShadowCopyCount = 0
+                $sysInfo.VSSServiceStatus = "Error"
+            }
         
             # Security software
             Write-Host "  [-] Checking security software..." -ForegroundColor DarkGray
@@ -328,6 +382,28 @@ function Hunt-All {
                 Write-Host "$($sysInfo.Uptime.Days)d $($sysInfo.Uptime.Hours)h $($sysInfo.Uptime.Minutes)m" -ForegroundColor White
                 Write-Host "Time Zone        : " -NoNewline -ForegroundColor Yellow
                 Write-Host $sysInfo.TimeZone.DisplayName -ForegroundColor White
+
+                # Display VSS info
+                if ($sysInfo.ShadowCopyCount -ne $null) {
+                    Write-Host ""
+                    Write-Host "--- Volume Shadow Copies ---" -ForegroundColor Yellow
+                    Write-Host "VSS Service      : " -NoNewline -ForegroundColor Yellow
+                    $vssColor = if ($sysInfo.VSSServiceStatus -eq "Running") { "Green" } else { "Red" }
+                    Write-Host $sysInfo.VSSServiceStatus -ForegroundColor $vssColor
+                    Write-Host "Shadow Copies    : " -NoNewline -ForegroundColor Yellow
+                    $countColor = if ($sysInfo.ShadowCopyCount -eq 0) { "Red" } else { "Green" }
+                    Write-Host "$($sysInfo.ShadowCopyCount) found" -ForegroundColor $countColor
+                    
+                    if ($sysInfo.ShadowCopies -and $sysInfo.ShadowCopies.Count -gt 0) {
+                        Write-Host ""
+                        foreach ($shadow in $sysInfo.ShadowCopies) {
+                            Write-Host "  ID: $($shadow.ID)" -ForegroundColor DarkGray
+                            Write-Host "    Created: $($shadow.InstallDate)" -ForegroundColor DarkGray
+                            Write-Host "    Volume: $($shadow.VolumeName)" -ForegroundColor DarkGray
+                            Write-Host "    Size: $($shadow.SizeMB) MB" -ForegroundColor DarkGray
+                        }
+                    }
+                }
             
                 Write-Host ""
                 Write-Host "--- Users ---" -ForegroundColor Yellow
@@ -764,8 +840,10 @@ function Hunt-All {
         $html += @"
     
     </div>
-    
     <script>
+        // Store CSV data in memory
+        const csvData = {};
+        
         function showTab(tabName) {
             // Hide all tabs
             const tabs = document.querySelectorAll('.tab-content');
@@ -776,27 +854,82 @@ function Hunt-All {
             buttons.forEach(btn => btn.classList.remove('active'));
             
             // Show selected tab
-            document.getElementById(tabName + '-tab').classList.add('active');
+            const selectedTab = document.getElementById(tabName + '-tab');
+            if (selectedTab) {
+                selectedTab.classList.add('active');
+            }
+            
+            // Set button active
             event.target.classList.add('active');
             
             // Load data if not already loaded
-            loadTabData(tabName);
+            if (!csvData[tabName]) {
+                loadTabData(tabName);
+            }
         }
         
         function loadTabData(tabName) {
-            // This would load CSV data via fetch in a real implementation
-            // For static HTML, data would be embedded
+            const dataDiv = document.getElementById(tabName + '-data');
+            if (!dataDiv) return;
+            
+            // CSV file mapping
+            const csvFiles = {
+                'system': ['SystemInfo_Summary.csv', 'SystemInfo_Processes.csv', 'SystemInfo_NetworkConnections.csv'],
+                'persistence': ['Persistence.csv'],
+                'files': ['Files_All.csv', 'Files_Recycled.csv', 'Files_ADS.csv'],
+                'registry': ['Registry_Run_Keys.csv'],
+                'browser': ['Browser.csv'],
+                'logs': ['EventLogs.csv'],
+                'services': ['Services.csv'],
+                'tasks': ['ScheduledTasks.csv']
+            };
+            
+            const files = csvFiles[tabName] || [];
+            if (files.length === 0) {
+                dataDiv.innerHTML = '<p>No data files configured for this tab.</p>';
+                return;
+            }
+            
+            dataDiv.innerHTML = '<p>Loading ' + files.length + ' data file(s)...</p>';
+            
+            // Since we can't load external files in a standalone HTML,
+            // we'll embed instructions for users
+            dataDiv.innerHTML = `
+                <div style="padding: 20px; background: #2c3e50; border-radius: 8px; margin: 20px 0;">
+                    <h3 style="color: #3498db;">Data Files for ${tabName}</h3>
+                    <p style="color: #ecf0f1;">The following CSV files contain the forensic data:</p>
+                    <ul style="color: #bdc3c7;">
+                        ${files.map(f => '<li>' + f + ' (located in CSV_Data folder)</li>').join('')}
+                    </ul>
+                    <p style="color: #e74c3c; margin-top: 15px;">
+                        <strong>Note:</strong> Due to browser security restrictions, CSV files cannot be automatically loaded.
+                        Please open the CSV files directly using Excel, PowerShell, or a text editor.
+                    </p>
+                    <p style="color: #95a5a6; font-size: 0.9em;">
+                        Tip: You can use PowerShell to view data:<br>
+                        <code style="background: #1a1a1a; padding: 5px; display: block; margin-top: 5px;">
+                            Import-Csv "CSV_Data\\${files[0]}" | Out-GridView
+                        </code>
+                    </p>
+                </div>
+            `;
+            
+            csvData[tabName] = true;
         }
         
+        // Load first tab on page load
+        window.addEventListener('DOMContentLoaded', function() {
+            loadTabData('system');
+        });
+        
         function sortTable(table, column) {
-            // Table sorting implementation
             const tbody = table.querySelector('tbody');
             const rows = Array.from(tbody.querySelectorAll('tr'));
             
             rows.sort((a, b) => {
                 const aVal = a.children[column].textContent;
                 const bVal = b.children[column].textContent;
-                return aVal.localeCompare(bVal);
+                return aVal.localeCompare(bVal, undefined, {numeric: true});
             });
             
             rows.forEach(row => tbody.appendChild(row));
@@ -835,6 +968,12 @@ function Hunt-All {
     if ($Auto -and $Aggressive) {
         Write-Error "Cannot use both -Auto and -Aggressive modes simultaneously"
         return
+    }
+
+    # Set default StartDate if not specified (10 days ago)
+    if (-not $PSBoundParameters.ContainsKey('StartDate') -and -not $Auto) {
+        $StartDate = (Get-Date).AddDays(-10)
+        Write-Verbose "No StartDate specified, defaulting to 10 days ago: $StartDate"
     }
     
     # Set default mode if none specified
@@ -957,14 +1096,14 @@ function Hunt-All {
             }
             
             # Add search terms if provided
-            if ($Search.ContainsKey('persistence') -or $Search.ContainsKey('all')) {
+            if ($expandedSearch.ContainsKey('persistence') -or $expandedSearch.ContainsKey('all')) {
                 $searchTerms = @()
-                if ($Search.ContainsKey('persistence')) { $searchTerms += $Search['persistence'] }
-                if ($Search.ContainsKey('all')) { $searchTerms += $Search['all'] }
+                if ($expandedSearch.ContainsKey('persistence')) { $searchTerms += $Search['persistence'] }
+                if ($expandedSearch.ContainsKey('all')) { $searchTerms += $Search['all'] }
                 $persistenceParams['Search'] = $searchTerms
             }
             
-            $forensicData.Persistence = Hunt-Persistence @persistenceParams
+            $forensicData.Persistence = Hunt-Persistence @persistenceParams -PassThru -Quiet
         }
         catch {
             Write-Warning "Persistence collection failed: $($_.Exception.Message)"
@@ -980,41 +1119,46 @@ function Hunt-All {
                 PassThru  = $true
                 Quiet     = $true
                 OutputCSV = Join-Path $csvDir "Files_All.csv"
+                Path      = "C:\"  # Only scan C:\ drive
             }
-            
+    
             if ($Aggressive) {
                 $fileParams['IncludeSystemFolders'] = $true
             }
-            
-            # Add file search terms
-            if ($Search.ContainsKey('file') -or $Search.ContainsKey('all')) {
-                $searchTerms = @()
-                if ($Search.ContainsKey('file')) { $searchTerms += $Search['file'] }
-                if ($Search.ContainsKey('all')) { $searchTerms += $Search['all'] }
-                $fileParams['Search'] = $searchTerms
+    
+            # Add file search terms using expanded search
+            if ($expandedSearch.ContainsKey('file')) {
+                $fileParams['Search'] = $expandedSearch['file']
             }
             
+            # Cache the main file scan results
+            Write-Host "[+] Performing main file system scan..." -ForegroundColor Yellow
+            $allFiles = Hunt-Files @fileParams
+    
+            # Reuse cached results for recycled and ADS scans instead of re-scanning
+            Write-Host "[+] Filtering recycled files from cache..." -ForegroundColor Yellow
+            $recycledFiles = $allFiles | Where-Object { $_.IsRecycleBin -eq $true }
+    
+            Write-Host "[+] Filtering files with alternate data streams from cache..." -ForegroundColor Yellow
+            $adsFiles = $allFiles | Where-Object { $_.AlternateStreamCount -gt 0 }
+    
+            # Export recycled and ADS to separate CSVs
+            if ($recycledFiles) {
+                $recycledFiles | Export-Csv -Path (Join-Path $csvDir "Files_Recycled.csv") -NoTypeInformation
+            }
+            if ($adsFiles) {
+                $adsFiles | Export-Csv -Path (Join-Path $csvDir "Files_ADS.csv") -NoTypeInformation
+            }
+    
             $forensicData.Files = @{
-                All = Hunt-Files @fileParams
+                All      = $allFiles
+                Recycled = $recycledFiles
+                ADS      = $adsFiles
             }
-            
-            # Get recycled files
-            Write-Host "[+] Scanning recycle bin..." -ForegroundColor Yellow
-            $fileParams['Recycled'] = $true
-            $fileParams['OutputCSV'] = Join-Path $csvDir "Files_Recycled.csv"
-            $forensicData.Files.Recycled = Hunt-Files @fileParams
-            
-            # Get ADS files
-            Write-Host "[+] Scanning for alternate data streams..." -ForegroundColor Yellow
-            $fileParams.Remove('Recycled')
-            $fileParams['Streams'] = $true
-            $fileParams['OutputCSV'] = Join-Path $csvDir "Files_ADS.csv"
-            $forensicData.Files.ADS = Hunt-Files @fileParams
         }
         catch {
             Write-Warning "File system scan failed: $($_.Exception.Message)"
-        }
-        
+        }        
         # Collect Registry Data
         Write-Progress -Activity "Forensic Dump" -Status "Analyzing registry..." -PercentComplete 35
         Write-Host "[+] Analyzing registry..." -ForegroundColor Yellow
@@ -1043,10 +1187,10 @@ function Hunt-All {
             }
             
             # Add browser search terms
-            if ($Search.ContainsKey('browser') -or $Search.ContainsKey('all')) {
+            if ($expandedSearch.ContainsKey('browser') -or $expandedSearch.ContainsKey('all')) {
                 $searchTerms = @()
-                if ($Search.ContainsKey('browser')) { $searchTerms += $Search['browser'] }
-                if ($Search.ContainsKey('all')) { $searchTerms += $Search['all'] }
+                if ($expandedSearch.ContainsKey('browser')) { $searchTerms += $Search['browser'] }
+                if ($expandedSearch.ContainsKey('all')) { $searchTerms += $Search['all'] }
                 $browserParams['Search'] = $searchTerms
             }
             
@@ -1060,9 +1204,10 @@ function Hunt-All {
         Write-Progress -Activity "Forensic Dump" -Status "Analyzing event logs..." -PercentComplete 55
         Write-Host "[+] Analyzing event logs..." -ForegroundColor Yellow
         try {
+            # Convert dates before passing to Hunt-Logs
             $logParams = @{
-                StartDate = $StartDate
-                EndDate   = $EndDate
+                StartDate = $parsedStartDate.ToString("yyyy-MM-dd HH:mm:ss")
+                EndDate   = $parsedEndDate.ToString("yyyy-MM-dd HH:mm:ss")
                 PassThru  = $true
                 Quiet     = $true
                 OutputCSV = Join-Path $csvDir "EventLogs.csv"
@@ -1076,10 +1221,10 @@ function Hunt-All {
             }
             
             # Add log search terms
-            if ($Search.ContainsKey('log') -or $Search.ContainsKey('all')) {
+            if ($expandedSearch.ContainsKey('log') -or $expandedSearch.ContainsKey('all')) {
                 $searchTerms = @()
-                if ($Search.ContainsKey('log')) { $searchTerms += $Search['log'] }
-                if ($Search.ContainsKey('all')) { $searchTerms += $Search['all'] }
+                if ($expandedSearch.ContainsKey('log')) { $searchTerms += $Search['log'] }
+                if ($expandedSearch.ContainsKey('all')) { $searchTerms += $Search['all'] }
                 $logParams['Search'] = $searchTerms
             }
             
@@ -1100,10 +1245,10 @@ function Hunt-All {
             }
             
             # Add service search terms
-            if ($Search.ContainsKey('service') -or $Search.ContainsKey('all')) {
+            if ($expandedSearch.ContainsKey('service') -or $expandedSearch.ContainsKey('all')) {
                 $searchTerms = @()
-                if ($Search.ContainsKey('service')) { $searchTerms += $Search['service'] }
-                if ($Search.ContainsKey('all')) { $searchTerms += $Search['all'] }
+                if ($expandedSearch.ContainsKey('service')) { $searchTerms += $Search['service'] }
+                if ($expandedSearch.ContainsKey('all')) { $searchTerms += $Search['all'] }
                 $serviceParams['Search'] = $searchTerms
             }
             
@@ -1125,10 +1270,10 @@ function Hunt-All {
             }
             
             # Add task search terms
-            if ($Search.ContainsKey('task') -or $Search.ContainsKey('all')) {
+            if ($expandedSearch.ContainsKey('task') -or $expandedSearch.ContainsKey('all')) {
                 $searchTerms = @()
-                if ($Search.ContainsKey('task')) { $searchTerms += $Search['task'] }
-                if ($Search.ContainsKey('all')) { $searchTerms += $Search['all'] }
+                if ($expandedSearch.ContainsKey('task')) { $searchTerms += $Search['task'] }
+                if ($expandedSearch.ContainsKey('all')) { $searchTerms += $Search['all'] }
                 $taskParams['Search'] = $searchTerms -join '*'
             }
             
