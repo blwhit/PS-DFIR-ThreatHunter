@@ -9305,6 +9305,28 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
         }
     }
 
+    # LNK shortcut resolution function
+    function Get-LnkTarget {
+        param($LnkPath)
+        
+        try {
+            $shell = New-Object -ComObject WScript.Shell
+            $shortcut = $shell.CreateShortcut($LnkPath)
+            $targetPath = $shortcut.TargetPath
+            
+            # Release COM object
+            [System.Runtime.Interopservices.Marshal]::ReleaseComObject($shell) | Out-Null
+            
+            if (![string]::IsNullOrWhiteSpace($targetPath) -and (Test-Path $targetPath -ErrorAction SilentlyContinue)) {
+                return $targetPath
+            }
+            return ""
+        }
+        catch {
+            return ""
+        }
+    }
+
     Write-Progress -Activity "Hunt-Files" -Status "Validating parameters..." -PercentComplete 10
 
     # Parameter validation
@@ -9354,10 +9376,9 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
     $hasDateRange = $null -ne $StartDate -or $EndDate -ne "Now"
     $hasOtherCriteria = $Extensions.Count -gt 0 -or $Content.Count -gt 0 -or $Search.Count -gt 0 -or $Hashes.Count -gt 0 -or $Hidden -or $Recycled -or $Streams -or $Auto
 
-    if (!$hasDateRange -and !$hasOtherCriteria -and !$Aggressive) {
-        $StartDate = (Get-Date).AddDays(-7)
-        $EndDate = Get-Date
-        $hasDateRange = $true
+    # Only enforce date requirements in Auto mode
+    if ($Auto -and !$hasDateRange) {
+        # Auto mode sets its own dates, this is already handled above
     }
     elseif ($null -ne $StartDate -and $EndDate -eq "Now") {
         $EndDate = Get-Date
@@ -9370,7 +9391,7 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
     $parsedStartDate = $null
     $parsedEndDate = $null
 
-    if ($hasDateRange -or $Aggressive) {
+    if ($hasDateRange) {
         try {
             $parsedStartDate = if ($null -ne $StartDate) { ConvertTo-DateTime -InputValue $StartDate -TargetTimeZone $targetTimeZone } else { $null }
             $parsedEndDate = if ($EndDate -ne "Now") { ConvertTo-DateTime -InputValue $EndDate -TargetTimeZone $targetTimeZone } else { ConvertTo-DateTime -InputValue $EndDate -TargetTimeZone $targetTimeZone }
@@ -9379,13 +9400,12 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
             throw "Date parsing error: $($_.Exception.Message)"
         }
     }
-    # Validate search criteria
-    $hasSearchCriteria = $null -ne $parsedStartDate -or $null -ne $parsedEndDate -or $Extensions.Count -gt 0 -or $Content.Count -gt 0 -or $Search.Count -gt 0 -or $Hashes.Count -gt 0 -or $Auto -or $Hidden -or $Recycled -or $Streams -or $Aggressive
-
-    if (-not $hasSearchCriteria) {
-        Write-Error "At least one search criteria must be provided"
-        return
-    }
+    
+    # If no criteria specified, treat as "return all files"
+    $hasSearchCriteria = $null -ne $parsedStartDate -or $null -ne $parsedEndDate -or $Extensions.Count -gt 0 -or $Content.Count -gt 0 -or $Search.Count -gt 0 -or $Hashes.Count -gt 0 -or $Auto -or $Hidden -or $Recycled -or $Streams
+    
+    # Set a flag for "match everything" mode
+    $matchEverything = -not $hasSearchCriteria
 
     Write-Progress -Activity "Hunt-Files" -Status "Processing criteria..." -PercentComplete 20
 
@@ -9438,16 +9458,22 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
     # Main scanning loop - optimized
     foreach ($currentSearchPath in $searchPaths) {
         try {
-            $searchSubPaths = @($currentSearchPath)
-                
-            # Add recycle bin paths if needed
-            if ($Recycled -or $currentSearchPath -match '^[A-Za-z]:\\$') {
+            $searchSubPaths = @()
+            
+            # If -Recycled is specified, ONLY search recycle bin paths
+            if ($Recycled) {
                 $driveLetter = $currentSearchPath.Substring(0, 1)
                 $recycleBinPaths = @("${driveLetter}:\`$Recycle.Bin", "${driveLetter}:\RECYCLER")
-                $availableRecycleBinPaths = @($recycleBinPaths | Where-Object { Test-Path $_ })
-                if ($Recycled -or $availableRecycleBinPaths.Count -gt 0) {
-                    $searchSubPaths += $availableRecycleBinPaths
+                $searchSubPaths = @($recycleBinPaths | Where-Object { Test-Path $_ })
+            
+                if ($searchSubPaths.Count -eq 0) {
+                    Write-Warning "No recycle bin found on drive ${driveLetter}:"
+                    continue
                 }
+            }
+            else {
+                # Normal search path
+                $searchSubPaths = @($currentSearchPath)
             }
 
             foreach ($subPath in $searchSubPaths) {
@@ -9477,7 +9503,6 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                             $itemMatchReasons = @()
                             $matchedContent = @()
                             $matchedNames = @()
-                            $finalHash = ""
                             $sha256 = ""
                             $streamInfo = ""
                             $alternateStreams = @()
@@ -9639,9 +9664,6 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                                         $computedHash = Get-FileHashCustom -FilePath $item.FullName -Algorithm $algo
                                         if (![string]::IsNullOrEmpty($computedHash) -and $computedHash -eq $targetHash) {
                                             $hashMatches += "$algo($targetHash):DATA"
-                                            if ([string]::IsNullOrEmpty($finalHash)) {
-                                                $finalHash = $computedHash
-                                            }
                                         }
                                     }
                                             
@@ -9654,9 +9676,6 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                                             $computedHash = Get-FileHashCustom -FilePath $item.FullName -StreamName $stream.StreamName -Algorithm $algo
                                             if (![string]::IsNullOrEmpty($computedHash) -and $computedHash -eq $targetHash) {
                                                 $hashMatches += "$algo($targetHash):$($stream.StreamName)"
-                                                if ([string]::IsNullOrEmpty($finalHash)) {
-                                                    $finalHash = $computedHash
-                                                }
                                             }
                                         }
                                     }
@@ -9669,9 +9688,6 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                                     if ($itemMatchReasons.Count -gt 0 -and [string]::IsNullOrEmpty($sha256)) {
                                         try {
                                             $sha256 = Get-FileHashCustom -FilePath $item.FullName -Algorithm 'SHA256'
-                                            if ([string]::IsNullOrEmpty($finalHash)) {
-                                                $finalHash = $sha256
-                                            }
                                         }
                                         catch {
                                             if ($VerboseOutput) {
@@ -9686,8 +9702,8 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                             }
                             
 
-                            # Include item if any criteria matched
-                            if ($itemMatchReasons.Count -gt 0 -or $specialSwitchMatch) {
+                            # Include item if any criteria matched OR if in match-everything mode
+                            if ($itemMatchReasons.Count -gt 0 -or $specialSwitchMatch -or $matchEverything) {
                                 if ($isDirectory) {
                                     $foldersMatched++
                                 }
@@ -9697,9 +9713,6 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                                     if ([string]::IsNullOrEmpty($sha256)) {
                                         try {
                                             $sha256 = Get-FileHashCustom -FilePath $item.FullName -Algorithm 'SHA256'
-                                            if ([string]::IsNullOrEmpty($finalHash)) {
-                                                $finalHash = $sha256
-                                            }
                                         }
                                         catch {
                                             # Skip if can't compute hash
@@ -9707,6 +9720,21 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                                     }
                                 }
                                     
+                                # Handle LNK files
+                                $lnkTarget = ""
+                                $lnkTargetHash = ""
+                                if (-not $isDirectory -and $item.Extension.ToLower() -eq '.lnk') {
+                                    try {
+                                        $lnkTarget = Get-LnkTarget -LnkPath $item.FullName
+                                        if (![string]::IsNullOrWhiteSpace($lnkTarget)) {
+                                            $lnkTargetHash = Get-FileHashCustom -FilePath $lnkTarget -Algorithm 'SHA256'
+                                        }
+                                    }
+                                    catch {
+                                        # Continue if LNK resolution fails
+                                    }
+                                }
+                                
                                 $result = [PSCustomObject]@{
                                     FullPath             = $item.FullName
                                     Name                 = $item.Name
@@ -9715,7 +9743,6 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                                     CreationTime         = $item.CreationTime
                                     LastWriteTime        = $item.LastWriteTime
                                     LastAccessTime       = $item.LastAccessTime
-                                    Hash                 = $finalHash
                                     SHA256               = $sha256
                                     MatchReason          = ($itemMatchReasons -join " | ")
                                     MatchedContent       = ($matchedContent -join ', ')
@@ -9724,6 +9751,8 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                                     IsRecycleBin         = $itemIsRecycleBin
                                     StreamInfo           = $streamInfo
                                     AlternateStreamCount = $alternateStreams.Count
+                                    LnkTarget            = $lnkTarget
+                                    LnkTargetSHA256      = $lnkTargetHash
                                 }
                                     
                                 $results += $result
@@ -9799,6 +9828,13 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
         
             if (-not $result.IsDirectory -and ![string]::IsNullOrWhiteSpace($result.SHA256)) {
                 Write-Host "SHA256       : $($result.SHA256)" -ForegroundColor Gray
+            }
+
+            if (![string]::IsNullOrWhiteSpace($result.LnkTarget)) {
+                Write-Host "LNK Target   : $($result.LnkTarget)" -ForegroundColor Magenta
+                if (![string]::IsNullOrWhiteSpace($result.LnkTargetSHA256)) {
+                    Write-Host "Target SHA256: $($result.LnkTargetSHA256)" -ForegroundColor Gray
+                }
             }
         
             Write-Host "Match        : $($result.MatchReason)" -ForegroundColor Red
@@ -9881,7 +9917,6 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                     LastWriteTime        = Format-DateTimeWithTimeZone -DateTime $result.LastWriteTime -TargetTimeZone $targetTimeZone
                     LastAccessTime       = Format-DateTimeWithTimeZone -DateTime $result.LastAccessTime -TargetTimeZone $targetTimeZone
                     SHA256               = Sanitize-CSVValue $result.SHA256
-                    Hash                 = Sanitize-CSVValue $result.Hash
                     MatchReason          = Sanitize-CSVValue $result.MatchReason
                     MatchedContent       = Sanitize-CSVValue $result.MatchedContent
                     MatchedNames         = Sanitize-CSVValue $result.MatchedNames
@@ -9889,6 +9924,8 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                     IsRecycleBin         = $result.IsRecycleBin
                     StreamInfo           = Sanitize-CSVValue $result.StreamInfo
                     AlternateStreamCount = $result.AlternateStreamCount
+                    LnkTarget            = Sanitize-CSVValue $result.LnkTarget
+                    LnkTargetSHA256      = Sanitize-CSVValue $result.LnkTargetSHA256
                 }
             }
         
