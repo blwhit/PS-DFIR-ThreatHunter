@@ -9480,13 +9480,28 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                 try {
                     # Optimized file enumeration
                     try {
-                        $pathItems = @(Get-ChildItem -Path $subPath -Recurse -Force -ErrorAction SilentlyContinue)
+                        # Apply date filter at enumeration level if dates specified
+                        if ($null -ne $parsedStartDate -and $null -ne $parsedEndDate) {
+                            $pathItems = @(Get-ChildItem -Path $subPath -Recurse -Force -ErrorAction SilentlyContinue |
+                                Where-Object {
+                                    ($_.LastWriteTime -ge $parsedStartDate -and $_.LastWriteTime -le $parsedEndDate) -or
+                                    ($_.CreationTime -ge $parsedStartDate -and $_.CreationTime -le $parsedEndDate) -or
+                                    ($_.LastAccessTime -ge $parsedStartDate -and $_.LastAccessTime -le $parsedEndDate)
+                                })
+                        }
+                        else {
+                            $pathItems = @(Get-ChildItem -Path $subPath -Recurse -Force -ErrorAction SilentlyContinue)
+                        }
                     }
                     catch {
                         if ($VerboseOutput) {
                             Write-Warning "Error enumerating path $subPath : $($_.Exception.Message)"
                         }
                         continue
+                    }
+                    # Skip recycle bin metadata files ($I files) - we only need $R files
+                    if ($Recycled) {
+                        $pathItems = @($pathItems | Where-Object { $_.Name -notlike '$I*' })
                     }
                         
                     # Filter out system folders if not included - optimized check
