@@ -5759,7 +5759,7 @@ Requires PowerShell 5.0+. Administrator privileges recommended for complete log 
                 LastModifiedDate = $LogEvent.LastModifiedDate
                 Match            = $Match  # This is correct
                 Text             = $LogEvent.Text
-                Hostname         = $env:COMPUTERNAME
+                Hostname         = Se([Net.Dns]::GetHostByName($env:computerName)).HostNamearch
                 TimeCreated      = $null
                 FormattedTime    = ""
                 LogName          = "FileSystem"
@@ -5798,7 +5798,7 @@ Requires PowerShell 5.0+. Administrator privileges recommended for complete log 
                 ProcessId        = $LogEvent.ProcessId
                 ThreadId         = $LogEvent.ThreadId
                 UserId           = $LogEvent.UserId
-                Hostname         = $env:COMPUTERNAME
+                Hostname         = Se([Net.Dns]::GetHostByName($env:computerName)).HostNamearch
                 FilePath         = ""      # Always blank for EventLog
                 FileName         = ""      # Always blank for EventLog  
                 CreationDate     = $null   # Always null for EventLog
@@ -6300,9 +6300,9 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
     # Function to get timezone info by name/abbreviation
     function Get-TimezoneInfo {
         param($TimezoneName)
-        
+    
         $TimezoneName = $TimezoneName.ToUpper()
-        
+    
         $timezoneMap = @{
             'UTC' = 'UTC'
             'GMT' = 'GMT Standard Time'
@@ -6315,19 +6315,109 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
             'MDT' = 'Mountain Standard Time'
             'PDT' = 'Pacific Standard Time'
         }
-        
+    
         $mappedName = if ($timezoneMap.ContainsKey($TimezoneName)) { $timezoneMap[$TimezoneName] } else { $TimezoneName }
-        
+    
         try {
             if ($mappedName -eq 'UTC') {
                 return [System.TimeZoneInfo]::Utc
             }
-            else {
-                return [System.TimeZoneInfo]::FindSystemTimeZoneById($mappedName)
-            }
+            return [System.TimeZoneInfo]::FindSystemTimeZoneById($mappedName)
         }
         catch {
-            throw "Invalid timezone: $TimezoneName"
+            Write-Warning "Invalid timezone '$TimezoneName', using system local time"
+            return $systemTimeZone
+        }
+    }
+
+    $targetTimeZone = if ([string]::IsNullOrWhiteSpace($Timezone)) { $systemTimeZone } else { Get-TimezoneInfo -TimezoneName $Timezone }
+
+    # Function to parse time strings - treats input as being in target timezone, converts to system time for queries
+    function ConvertTo-DateTime {
+        param($InputValue, $TargetTimeZone)
+    
+        $resultTime = $null
+    
+        try {
+            if ($InputValue -is [datetime]) {
+                $resultTime = $InputValue
+            }
+            elseif ($InputValue -is [string]) {
+                $InputValue = $InputValue.Trim()
+            
+                if ($InputValue.ToLower() -eq 'now') {
+                    $resultTime = Get-Date
+                }
+                elseif ($InputValue -match '^(\d+)([DHMdhm])$') {
+                    $number = [int]$matches[1]
+                    $unit = $matches[2].ToUpper()
+                
+                    $currentTime = Get-Date
+                    switch ($unit) {
+                        'D' { $resultTime = $currentTime.AddDays(-$number) }
+                        'H' { $resultTime = $currentTime.AddHours(-$number) }
+                        'M' { $resultTime = $currentTime.AddMinutes(-$number) }
+                    }
+                }
+                else {
+                    $resultTime = [datetime]$InputValue
+                }
+            }
+            else {
+                throw "Unsupported input type"
+            }
+        
+            # Convert from target timezone to system timezone for log queries
+            if ($TargetTimeZone.Id -ne $systemTimeZone.Id) {
+                $resultTime = [System.TimeZoneInfo]::ConvertTime(
+                    [DateTime]::SpecifyKind($resultTime, [DateTimeKind]::Unspecified),
+                    $TargetTimeZone,
+                    $systemTimeZone
+                )
+            }
+        
+            return $resultTime
+        }
+        catch {
+            throw "Invalid date format: $InputValue. Use datetime, 'now', or relative format like '7D', '24H', '30M'"
+        }
+    }
+
+    # Function to format datetime - converts from system time back to target timezone for display
+    function Format-DateTimeWithTimeZone {
+        param($DateTime, $TargetTimeZone)
+    
+        try {
+            $convertedTime = if ($TargetTimeZone.Id -eq $systemTimeZone.Id) {
+                $DateTime
+            }
+            else {
+                [System.TimeZoneInfo]::ConvertTime($DateTime, $systemTimeZone, $TargetTimeZone)
+            }
+        
+            $tzAbbrev = if ($TargetTimeZone.Id -eq 'UTC') { 
+                'UTC' 
+            }
+            elseif ($TargetTimeZone.StandardName -like "*Eastern*") { 
+                if ($TargetTimeZone.IsDaylightSavingTime($convertedTime)) { 'EDT' } else { 'EST' } 
+            }
+            elseif ($TargetTimeZone.StandardName -like "*Central*") { 
+                if ($TargetTimeZone.IsDaylightSavingTime($convertedTime)) { 'CDT' } else { 'CST' } 
+            }
+            elseif ($TargetTimeZone.StandardName -like "*Mountain*") { 
+                if ($TargetTimeZone.IsDaylightSavingTime($convertedTime)) { 'MDT' } else { 'MST' } 
+            }
+            elseif ($TargetTimeZone.StandardName -like "*Pacific*") { 
+                if ($TargetTimeZone.IsDaylightSavingTime($convertedTime)) { 'PDT' } else { 'PST' } 
+            }
+            else { 
+                $TargetTimeZone.StandardName.Split(' ')[0] 
+            }
+        
+            return $convertedTime.ToString("yyyy-MM-dd HH:mm:ss") + " $tzAbbrev"
+        }
+        catch {
+            return $DateTime.ToString("yyyy-MM-dd HH:mm:ss")
         }
     }
 
