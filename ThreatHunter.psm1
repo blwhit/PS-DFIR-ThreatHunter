@@ -504,6 +504,56 @@ function Hunt-All {
         return $sysInfo
     }
 
+    function ConvertTo-DateTime {
+        param($InputValue, $TargetTimeZone)
+        
+        if ($InputValue -is [datetime]) {
+            # Convert to target timezone for internal processing, then back to system time for search
+            if ($TargetTimeZone.Id -ne $systemTimeZone.Id) {
+                $convertedTime = [System.TimeZoneInfo]::ConvertTime($InputValue, $TargetTimeZone, $systemTimeZone)
+                return $convertedTime
+            }
+            return $InputValue
+        }
+        
+        if ($InputValue -is [string]) {
+            $InputValue = $InputValue.Trim()
+            
+            if ($InputValue.ToLower() -eq 'now') {
+                return Get-Date
+            }
+            
+            if ($InputValue -match '^(\d+)([DHMdhm])$') {
+                $number = [int]$matches[1]
+                $unit = $matches[2].ToUpper()
+                
+                $currentTime = Get-Date
+                switch ($unit) {
+                    'D' { return $currentTime.AddDays(-$number) }
+                    'H' { return $currentTime.AddHours(-$number) }
+                    'M' { return $currentTime.AddMinutes(-$number) }
+                }
+            }
+            else {
+                try {
+                    $parsedDate = [datetime]$InputValue
+                    # If user specified a timezone, interpret the input date as being in that timezone
+                    if ($TargetTimeZone.Id -ne $systemTimeZone.Id) {
+                        # Convert from target timezone to system timezone for search
+                        $convertedTime = [System.TimeZoneInfo]::ConvertTime($parsedDate, $TargetTimeZone, $systemTimeZone)
+                        return $convertedTime
+                    }
+                    return $parsedDate
+                }
+                catch {
+                    throw "Invalid date format: $InputValue. Use datetime, 'now', or relative format like '1D', '4H', or '10m'"
+                }
+            }
+        }
+        
+        throw "Invalid date input: $InputValue"
+    }
+
     # Helper function: Perform IOC Search
     function Invoke-IOCSearch {
         param(
@@ -1103,7 +1153,8 @@ function Hunt-All {
                 $persistenceParams['Search'] = $searchTerms
             }
             
-            $forensicData.Persistence = Hunt-Persistence @persistenceParams -PassThru -Quiet
+            $forensicData.Persistence = Hunt-Persistence @persistenceParams
+
         }
         catch {
             Write-Warning "Persistence collection failed: $($_.Exception.Message)"
@@ -1199,6 +1250,10 @@ function Hunt-All {
         catch {
             Write-Warning "Browser history extraction failed: $($_.Exception.Message)"
         }
+
+        # Parse dates for event log collection
+        $parsedStartDate = ConvertTo-DateTime -InputValue $StartDate -TargetTimeZone ([System.TimeZoneInfo]::Local)
+        $parsedEndDate = ConvertTo-DateTime -InputValue $EndDate -TargetTimeZone ([System.TimeZoneInfo]::Local)
         
         # Collect Event Logs
         Write-Progress -Activity "Forensic Dump" -Status "Analyzing event logs..." -PercentComplete 55
