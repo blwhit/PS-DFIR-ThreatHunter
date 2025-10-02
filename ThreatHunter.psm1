@@ -1,10 +1,9 @@
 #requires -version 5.0
-
+# ----------------------------------------------------------------
 # DFIR-Hunter Module
-
-# ------------------
-# Module Manifest (Completed):
-# =================
+# ------------------------
+# [ Module Manifest ]
+# ====================
 # [X] Hunt-Persistence
 # [X] Hunt-Logs
 # [X] Hunt-Files
@@ -13,46 +12,33 @@
 # [X] Hunt-Registry
 # [X] Hunt-Services
 # [X] Hunt-VirusTotal
-#
-# [...] 
-#
-#
-#
-# Get PowerShell History - Shell Console History [  "Get-Content (Get-PSReadlineOption).HistorySavePath"  ]
-# Get Run MRU key
-# Get-DnsClientCache
-# Function for getting system info (listing if in domain, timezone, basic system info i like to use)
-#
-#
-# Make each function be able to export to CSV, then add all to an HTML website
-# 
-# []  Hunt-All: Auto mode for all
-# []  Hunt-All -ForensicDump.... Use each function to build a forensic report of a machine in CSV/html/JS/webpage format (i.e. all tasks, all files with their hash, all autoruns, all logs, etc.)
-#
-# []  *Hunt-All --------> Also add generic filename recursive searching. User can input hashtable of IOCs, and it will call the subfucntions appropriately
-
-
-# Hunt-All
-
-
-# -------------------
-
-# add signatures functionality to the hunt-files feature 
-
+# [...] Hunt-ForensicDump
+# -----------------------------
 
 #   Global Notes:
-# -----------------
-
-# - Finish the "Hunt-All" handler. Auto hunting and ForensicImaging and Output to HTML report.
+# -------------------
+# - Maybe create "Hunt-All" handler. Auto hunting and wrapper for sub-functions
 # - Make Wiki
-# - Review each function: Give full description for wiki page (every parameter and feature), and give examples, and make sure to LIST ANY NECESSARY ASSEMBLY IMPORTS (need this for the module manifest)
-# - Compile and publish Executable as well??? (maybe for the forensic collection/exporting)
-# - Rename and standardize variable names!
-# - Do another review of all fucntions for critical errors (i updated the variables to match eachother)
-# - For the final export forensic image--- try get an HTML with pages like ("Autoruns',"Filesystem","SystemInfo")-- and run multiple subqueries for the files tab; get things like Recyeld files, ADS files, deleted files, etc.... each tab has complete output-- use multiple subfunction runs with -PassThru...
-# - Will have to spend genuine time building and tuning the IOC and string lists
+# - Sspend genuine time building and tuning the IOC and string lists
+# - FIX persistence hunter. Registry loading/unloading needs reviewed, and unloading needs fixed
+# - add signatures functionality to the hunt-files cmdlet, display certi/sig status
 
-# ---------------------------------------------------------
+
+#   Full Review/Pass-Through
+# -----------------------------
+# - Review each function: Give full description for wiki page (every parameter and feature), and give examples, and make sure to LIST ANY NECESSARY ASSEMBLY IMPORTS (need this for the module manifest)
+# - Have AI teach you and tell you everything about each subfunction
+# - Learn and document every single function, and every feature inside each function
+# - Re-Learn how to use each function, audit paramter usage and input parameter features
+# - Have AI write a WIKI page for every single function/cmdlet
+# - Use AI to audit and scrutinize cmdlets... ask strong question to investigate if usage/functionality is actually working or correct
+# - Do a general review check for any critical errors
+# - Rename and standardize any variable names
+
+# ----------------------------------------------------------------
+# ----------------------------------------------------------------
+# ----------------------------------------------------------------
+
 # Script Variables
 
 # Hunt-Persistence
@@ -130,16 +116,15 @@ $script:GlobalLogIOCs = @(
 
 
 # Function Exports
-function Hunt-All {
+function Hunt-ForensicDump {
     <#
     .SYNOPSIS
-    Hunt-All orchestrates comprehensive DFIR data collection using all Hunt modules.
+    Hunt-ForensicDump performs comprehensive DFIR data collection and generates forensic reports.
     
     .DESCRIPTION
-    Hunt-All is a master function that coordinates all Hunt-* modules for comprehensive
-    forensic data collection, IOC searching, and HTML report generation. It supports
-    multiple modes of operation and can generate a complete forensic dump with an
-    interactive HTML report containing system info, persistence, filesystem, registry,
+    Hunt-ForensicDump is a master function that coordinates all Hunt-* modules for comprehensive
+    forensic data collection and HTML report generation. It creates a complete forensic snapshot
+    with an interactive HTML report containing system info, persistence, filesystem, registry,
     browser history, event logs, services, and scheduled tasks.
 
     MODES:
@@ -157,28 +142,19 @@ function Hunt-All {
     DATE RANGES:
     - Specify exact dates: -StartDate "2024-01-01" -EndDate "2024-12-31"
     - Relative formats: -StartDate "7D" (7 days), "24H" (24 hours), "30M" (30 minutes)
-    - All time: -StartDate "AllTime" or omit -StartDate with -ForensicDump
+    - All time: -StartDate "AllTime" or omit -StartDate
     
     .PARAMETER StartDate
-    Start date for searches. Accepts datetime, relative formats (3D, 24H), or 'Now'.
+    Start date for searches. Accepts datetime, relative formats (3D, 24H), or 'AllTime'.
     
     .PARAMETER EndDate
     End date for searches. Defaults to 'Now'.
     
     .PARAMETER Auto
-    Run in automatic mode with balanced detection settings.
+    Run in automatic mode with balanced detection settings. This is the default.
     
     .PARAMETER Aggressive
     Run in aggressive mode with comprehensive detection settings.
-    
-    .PARAMETER ForensicDump
-    Generate complete forensic dump with HTML report and CSV exports.
-    
-    .PARAMETER SystemInfo
-    Display comprehensive system information.
-    
-    .PARAMETER Search
-    Hashtable of IOC searches by type: @{browser='string';file='string';log='string';task='string';reg='string'}
     
     .PARAMETER ExportLogs
     Export all EVTX files to archive.
@@ -198,20 +174,23 @@ function Hunt-All {
     .PARAMETER AllFields
     Show all fields in HTML report (disable field omission for cleaner display).
     
-    .EXAMPLE
-    Hunt-All -ForensicDump -StartDate "7D" -Auto
+    .PARAMETER Timezone
+    Timezone identifier for timestamp conversion. Default: system timezone.
     
     .EXAMPLE
-    Hunt-All -ForensicDump -Config @('Persistence', 'Files', 'Logs') -StartDate "30D"
+    Hunt-ForensicDump -StartDate "7D" -Auto
     
     .EXAMPLE
-    Hunt-All -Search @{file='*.exe';log='powershell';reg='malware'} -Aggressive
+    Hunt-ForensicDump -Config @('Persistence', 'Files', 'Logs') -StartDate "30D"
     
     .EXAMPLE
-    Hunt-All -SystemInfo
+    Hunt-ForensicDump -Aggressive -StartDate "AllTime"
     
     .EXAMPLE
-    Hunt-All -ForensicDump -StartDate "AllTime" -MaxRows 10000 -MaxChars 300
+    Hunt-ForensicDump -StartDate "AllTime" -MaxRows 10000 -MaxChars 300
+    
+    .EXAMPLE
+    Hunt-ForensicDump -ExportLogs -OutputDir "C:\Evidence\Case001"
     #>
     [CmdletBinding()]
     param(
@@ -226,15 +205,6 @@ function Hunt-All {
         
         [Parameter(Mandatory = $false)]
         [switch]$Aggressive,
-        
-        [Parameter(Mandatory = $false)]
-        [switch]$ForensicDump,
-        
-        [Parameter(Mandatory = $false)]
-        [switch]$SystemInfo,
-        
-        [Parameter(Mandatory = $false)]
-        [hashtable]$Search = @{},
         
         [Parameter(Mandatory = $false)]
         [switch]$ExportLogs,
@@ -258,42 +228,11 @@ function Hunt-All {
         [Parameter(Mandatory = $false)]
         [string]$Timezone = ""
     )
-    # Helper function to process Search parameter with 'all' support
-    function Expand-SearchTerms {
-        param([hashtable]$SearchHash)
-    
-        $expanded = @{}
-    
-        $allTerms = @()
-        if ($SearchHash.ContainsKey('all')) {
-            $allTerms = @($SearchHash['all'])
-        }
-    
-        $categories = @('browser', 'file', 'log', 'task', 'reg', 'service', 'persistence')
-        foreach ($category in $categories) {
-            $terms = @()
-        
-            if ($SearchHash.ContainsKey($category)) {
-                $terms += $SearchHash[$category]
-            }
-        
-            $terms += $allTerms
-        
-            if ($terms.Count -gt 0) {
-                $expanded[$category] = $terms | Select-Object -Unique
-            }
-        }
-    
-        return $expanded
-    }
-
-    $expandedSearch = Expand-SearchTerms -SearchHash $Search
 
     # Helper function: Get System Information
     function Get-SystemInformation {
         param(
-            [string]$OutputDir,
-            [switch]$ForensicDump
+            [string]$OutputDir
         )
     
         $sysInfo = @{}
@@ -320,7 +259,9 @@ function Hunt-All {
                     $sysInfo.PSHistory = Get-Content $histPath -ErrorAction SilentlyContinue
                 }
             }
-            catch {}
+            catch {
+                $sysInfo.PSHistory = @()
+            }
         
             Write-Host "  [-] Getting Run MRU..." -ForegroundColor DarkGray
             try {
@@ -329,13 +270,17 @@ function Hunt-All {
                     $sysInfo.RunMRU = $runMRU.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } | Select-Object Name, Value
                 }
             }
-            catch {}
+            catch {
+                $sysInfo.RunMRU = @()
+            }
         
             Write-Host "  [-] Getting DNS cache..." -ForegroundColor DarkGray
             try {
-                $sysInfo.DNSCache = Get-DnsClientCache -ErrorAction SilentlyContinue
+                $sysInfo.DNSCache = Get-DnsClientCache -ErrorAction SilentlyContinue | Where-Object { $_ -ne $null }
             }
-            catch {}
+            catch {
+                $sysInfo.DNSCache = @()
+            }
         
             Write-Host "  [-] Enumerating users and sessions..." -ForegroundColor DarkGray
             $sysInfo.LoggedOnUsers = Get-CimInstance Win32_LoggedOnUser -ErrorAction SilentlyContinue
@@ -381,138 +326,36 @@ function Hunt-All {
                 $sysInfo.AntiVirus = Get-CimInstance -Namespace root\SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction SilentlyContinue
                 $sysInfo.DefenderStatus = Get-MpComputerStatus -ErrorAction SilentlyContinue
             }
-            catch {}
-        
-            if (-not $ForensicDump) {
-                Write-Host ""
-                Write-Host "========================================" -ForegroundColor Cyan
-                Write-Host "         SYSTEM INFORMATION" -ForegroundColor Yellow
-                Write-Host "========================================" -ForegroundColor Cyan
-            
-                Write-Host ""
-                Write-Host "--- Basic Info ---" -ForegroundColor Yellow
-                Write-Host "Hostname         : " -NoNewline -ForegroundColor Yellow
-                Write-Host $env:COMPUTERNAME -ForegroundColor White
-                Write-Host "Domain           : " -NoNewline -ForegroundColor Yellow
-                Write-Host "$($sysInfo.Domain) (Joined: $($sysInfo.IsDomainJoined))" -ForegroundColor White
-                Write-Host "OS               : " -NoNewline -ForegroundColor Yellow
-                Write-Host "$($sysInfo.OSInfo.Caption) $($sysInfo.OSInfo.Version)" -ForegroundColor White
-                Write-Host "Architecture     : " -NoNewline -ForegroundColor Yellow
-                Write-Host $sysInfo.OSInfo.OSArchitecture -ForegroundColor White
-                Write-Host "Boot Time        : " -NoNewline -ForegroundColor Yellow
-                Write-Host $sysInfo.BootTime -ForegroundColor White
-                Write-Host "Uptime           : " -NoNewline -ForegroundColor Yellow
-                Write-Host "$($sysInfo.Uptime.Days)d $($sysInfo.Uptime.Hours)h $($sysInfo.Uptime.Minutes)m" -ForegroundColor White
-                Write-Host "Time Zone        : " -NoNewline -ForegroundColor Yellow
-                Write-Host $sysInfo.TimeZone.DisplayName -ForegroundColor White
-
-                if ($null -ne $sysInfo.ShadowCopyCount) {
-                    Write-Host ""
-                    Write-Host "--- Volume Shadow Copies ---" -ForegroundColor Yellow
-                    Write-Host "VSS Service      : " -NoNewline -ForegroundColor Yellow
-                    $vssColor = if ($sysInfo.VSSServiceStatus -eq "Running") { "Green" } else { "Red" }
-                    Write-Host $sysInfo.VSSServiceStatus -ForegroundColor $vssColor
-                    Write-Host "Shadow Copies    : " -NoNewline -ForegroundColor Yellow
-                    $countColor = if ($sysInfo.ShadowCopyCount -eq 0) { "Red" } else { "Green" }
-                    Write-Host "$($sysInfo.ShadowCopyCount) found" -ForegroundColor $countColor
-                    
-                    if ($sysInfo.ShadowCopies -and $sysInfo.ShadowCopies.Count -gt 0) {
-                        Write-Host ""
-                        foreach ($shadow in $sysInfo.ShadowCopies) {
-                            Write-Host "  ID: $($shadow.ID)" -ForegroundColor DarkGray
-                            Write-Host "    Created: $($shadow.InstallDate)" -ForegroundColor DarkGray
-                            Write-Host "    Volume: $($shadow.VolumeName)" -ForegroundColor DarkGray
-                            Write-Host "    Size: $($shadow.SizeMB) MB" -ForegroundColor DarkGray
-                        }
-                    }
-                }
-            
-                Write-Host ""
-                Write-Host "--- Users ---" -ForegroundColor Yellow
-                Write-Host "Local Users      : " -NoNewline -ForegroundColor Yellow
-                Write-Host ($sysInfo.LocalUsers.Name -join ", ") -ForegroundColor White
-                Write-Host "Local Admins     : " -NoNewline -ForegroundColor Yellow
-                Write-Host ($sysInfo.LocalAdmins.Name -join ", ") -ForegroundColor White
-            
-                Write-Host ""
-                Write-Host "--- Network ---" -ForegroundColor Yellow
-                Write-Host "Active Connections: " -NoNewline -ForegroundColor Yellow
-                Write-Host "$($sysInfo.NetworkConnections.Count) connections" -ForegroundColor White
-                Write-Host "Network Adapters : " -NoNewline -ForegroundColor Yellow
-                Write-Host (($sysInfo.NetworkAdapters | Where-Object Status -eq "Up" | ForEach-Object { $_.Name }) -join ", ") -ForegroundColor White
-            
-                Write-Host ""
-                Write-Host "--- Processes ---" -ForegroundColor Yellow
-                Write-Host "Running Processes: " -NoNewline -ForegroundColor Yellow
-                Write-Host "$($sysInfo.Processes.Count) processes" -ForegroundColor White
-            
-                $topProcs = $sysInfo.Processes | Sort-Object WS -Descending | Select-Object -First 10
-                Write-Host ""
-                Write-Host "Top 10 by Memory:" -ForegroundColor DarkYellow
-                foreach ($proc in $topProcs) {
-                    Write-Host "  $($proc.ProcessName)".PadRight(25) -NoNewline -ForegroundColor DarkGray
-                    Write-Host "PID: $($proc.Id)".PadRight(15) -NoNewline -ForegroundColor DarkGray
-                    Write-Host "$([math]::Round($proc.WS/1MB, 2)) MB" -ForegroundColor DarkGray
-                }
-            
-                Write-Host ""
-                Write-Host "--- Security ---" -ForegroundColor Yellow
-                if ($sysInfo.DefenderStatus) {
-                    Write-Host "Windows Defender : " -NoNewline -ForegroundColor Yellow
-                    Write-Host "Enabled: $($sysInfo.DefenderStatus.RealTimeProtectionEnabled)" -ForegroundColor White
-                }
-                if ($sysInfo.AntiVirus) {
-                    foreach ($av in $sysInfo.AntiVirus) {
-                        Write-Host "AntiVirus        : " -NoNewline -ForegroundColor Yellow
-                        Write-Host $av.displayName -ForegroundColor White
-                    }
-                }
-            
-                if ($sysInfo.PSHistory -and $sysInfo.PSHistory.Count -gt 0) {
-                    Write-Host ""
-                    Write-Host "--- Recent PowerShell History (Last 10) ---" -ForegroundColor Yellow
-                    $sysInfo.PSHistory | Select-Object -Last 10 | ForEach-Object {
-                        Write-Host "  $_" -ForegroundColor DarkGray
-                    }
-                }
-            
-                if ($sysInfo.DNSCache -and $sysInfo.DNSCache.Count -gt 0) {
-                    Write-Host ""
-                    Write-Host "--- DNS Cache (Sample) ---" -ForegroundColor Yellow
-                    $sysInfo.DNSCache | Select-Object -First 10 | ForEach-Object {
-                        Write-Host "  $($_.Name)".PadRight(50) -NoNewline -ForegroundColor DarkGray
-                        Write-Host "$($_.Type)".PadRight(10) -NoNewline -ForegroundColor DarkGray
-                        Write-Host $_.Data -ForegroundColor DarkGray
-                    }
-                }
+            catch {
+                $sysInfo.AntiVirus = @()
+                $sysInfo.DefenderStatus = $null
             }
-            else {
-                if ($OutputDir) {
-                    if ($sysInfo.Processes) {
-                        $sysInfo.Processes | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_Processes.csv") -NoTypeInformation
-                    }
-                    if ($sysInfo.NetworkConnections) {
-                        $sysInfo.NetworkConnections | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_NetworkConnections.csv") -NoTypeInformation
-                    }
-                    if ($sysInfo.LocalUsers) {
-                        $sysInfo.LocalUsers | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_LocalUsers.csv") -NoTypeInformation
-                    }
-                    if ($sysInfo.DNSCache) {
-                        $sysInfo.DNSCache | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_DNSCache.csv") -NoTypeInformation
-                    }
-                
-                    $summary = [PSCustomObject]@{
-                        Hostname       = $env:COMPUTERNAME
-                        Domain         = $sysInfo.Domain
-                        IsDomainJoined = $sysInfo.IsDomainJoined
-                        OS             = "$($sysInfo.OSInfo.Caption) $($sysInfo.OSInfo.Version)"
-                        Architecture   = $sysInfo.OSInfo.OSArchitecture
-                        BootTime       = $sysInfo.BootTime
-                        CollectionTime = Get-Date
-                        TimeZone       = $sysInfo.TimeZone.DisplayName
-                    }
-                    $summary | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_Summary.csv") -NoTypeInformation
+
+            if ($OutputDir) {
+                if ($sysInfo.Processes) {
+                    $sysInfo.Processes | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_Processes.csv") -NoTypeInformation
                 }
+                if ($sysInfo.NetworkConnections) {
+                    $sysInfo.NetworkConnections | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_NetworkConnections.csv") -NoTypeInformation
+                }
+                if ($sysInfo.LocalUsers) {
+                    $sysInfo.LocalUsers | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_LocalUsers.csv") -NoTypeInformation
+                }
+                if ($sysInfo.DNSCache) {
+                    $sysInfo.DNSCache | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_DNSCache.csv") -NoTypeInformation
+                }
+            
+                $summary = [PSCustomObject]@{
+                    Hostname       = $env:COMPUTERNAME
+                    Domain         = $sysInfo.Domain
+                    IsDomainJoined = $sysInfo.IsDomainJoined        
+                    OS             = "$($sysInfo.OSInfo.Caption) $($sysInfo.OSInfo.Version)"
+                    Architecture   = $sysInfo.OSInfo.OSArchitecture
+                    BootTime       = $sysInfo.BootTime
+                    CollectionTime = Get-Date
+                    TimeZone       = $sysInfo.TimeZone.DisplayName
+                }
+                $summary | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_Summary.csv") -NoTypeInformation
             }
         }
         catch {
@@ -559,181 +402,11 @@ function Hunt-All {
     
         throw "Invalid date input: $InputValue"
     }
-    # Helper function: Perform IOC Search
-    function Invoke-IOCSearch {
-        param(
-            [hashtable]$SearchParams,
-            $StartDate,
-            $EndDate,
-            [string]$Mode
-        )
-    
-        Write-Host ""
-        Write-Host "========================================" -ForegroundColor Cyan
-        Write-Host "      IOC SEARCH INITIATED" -ForegroundColor Yellow
-        Write-Host "========================================" -ForegroundColor Cyan
-    
-        if ($SearchParams.ContainsKey('browser') -or $SearchParams.ContainsKey('all')) {
-            Write-Host ""
-            Write-Host "[+] Searching browser history..." -ForegroundColor Yellow
-        
-            $browserParams = @{}
-            if ($Mode -eq "Aggressive") { $browserParams['Aggressive'] = $true }
-            else { $browserParams['Auto'] = $true }
-        
-            $searchTerms = @()
-            if ($SearchParams.ContainsKey('browser')) { $searchTerms += $SearchParams['browser'] }
-            if ($SearchParams.ContainsKey('all')) { $searchTerms += $SearchParams['all'] }
-        
-            if ($searchTerms.Count -gt 0) {
-                $browserParams['Search'] = $searchTerms
-            }
-        
-            Hunt-Browser @browserParams
-        }
-    
-        if ($SearchParams.ContainsKey('file') -or $SearchParams.ContainsKey('all')) {
-            Write-Host ""
-            Write-Host "[+] Searching file system..." -ForegroundColor Yellow
-        
-            $fileParams = @{
-                StartDate = $StartDate
-                EndDate   = $EndDate
-            }
-        
-            if ($Mode -eq "Aggressive") {
-                $fileParams['Aggressive'] = $true
-                $fileParams['IncludeSystemFolders'] = $true
-            }
-        
-            $searchTerms = @()
-            if ($SearchParams.ContainsKey('file')) { $searchTerms += $SearchParams['file'] }
-            if ($SearchParams.ContainsKey('all')) { $searchTerms += $SearchParams['all'] }
-        
-            if ($searchTerms.Count -gt 0) {
-                $fileParams['Search'] = $searchTerms
-            }
-        
-            Hunt-Files @fileParams
-        }
-    
-        if ($SearchParams.ContainsKey('log') -or $SearchParams.ContainsKey('all')) {
-            Write-Host ""
-            Write-Host "[+] Searching event logs..." -ForegroundColor Yellow
-        
-            $logParams = @{
-                StartDate = $StartDate
-                EndDate   = $EndDate
-            }
-        
-            if ($Mode -eq "Aggressive") {
-                $logParams['Auto'] = 2
-            }
-            else {
-                $logParams['Auto'] = 1
-            }
-        
-            $searchTerms = @()
-            if ($SearchParams.ContainsKey('log')) { $searchTerms += $SearchParams['log'] }
-            if ($SearchParams.ContainsKey('all')) { $searchTerms += $SearchParams['all'] }
-        
-            if ($searchTerms.Count -gt 0) {
-                $logParams['Search'] = $searchTerms
-            }
-        
-            Hunt-Logs @logParams
-        }
-    
-        if ($SearchParams.ContainsKey('task') -or $SearchParams.ContainsKey('all')) {
-            Write-Host ""
-            Write-Host "[+] Searching scheduled tasks..." -ForegroundColor Yellow
-        
-            $taskParams = @{
-                IncludeDisabled = $true
-            }
-        
-            $searchTerms = @()
-            if ($SearchParams.ContainsKey('task')) { $searchTerms += $SearchParams['task'] }
-            if ($SearchParams.ContainsKey('all')) { $searchTerms += $SearchParams['all'] }
-        
-            if ($searchTerms.Count -gt 0) {
-                $taskParams['Search'] = $searchTerms -join '*'
-            }
-        
-            Hunt-Tasks @taskParams
-        }
-    
-        if ($SearchParams.ContainsKey('reg') -or $SearchParams.ContainsKey('all')) {
-            Write-Host ""
-            Write-Host "[+] Searching registry..." -ForegroundColor Yellow
-        
-            $regParams = @{
-                Type = 'All'
-                Hive = 'All'
-            }
-        
-            $searchTerms = @()
-            if ($SearchParams.ContainsKey('reg')) { $searchTerms += $SearchParams['reg'] }
-            if ($SearchParams.ContainsKey('all')) { $searchTerms += $SearchParams['all'] }
-        
-            if ($searchTerms.Count -gt 0) {
-                $regParams['Search'] = $searchTerms
-            }
-        
-            Hunt-Registry @regParams
-        }
-    
-        if ($SearchParams.ContainsKey('service') -or $SearchParams.ContainsKey('all')) {
-            Write-Host ""
-            Write-Host "[+] Searching services..." -ForegroundColor Yellow
-        
-            $serviceParams = @{}
-        
-            $searchTerms = @()
-            if ($SearchParams.ContainsKey('service')) { $searchTerms += $SearchParams['service'] }
-            if ($SearchParams.ContainsKey('all')) { $searchTerms += $SearchParams['all'] }
-        
-            if ($searchTerms.Count -gt 0) {
-                $serviceParams['Search'] = $searchTerms
-            }
-        
-            Hunt-Services @serviceParams
-        }
-    
-        if ($SearchParams.ContainsKey('persistence') -or $SearchParams.ContainsKey('all')) {
-            Write-Host ""
-            Write-Host "[+] Searching persistence mechanisms..." -ForegroundColor Yellow
-        
-            $persistenceParams = @{}
-        
-            if ($Mode -eq "Aggressive") {
-                $persistenceParams['Aggressive'] = $true
-            }
-            else {
-                $persistenceParams['Auto'] = $true
-            }
-        
-            $searchTerms = @()
-            if ($SearchParams.ContainsKey('persistence')) { $searchTerms += $SearchParams['persistence'] }
-            if ($SearchParams.ContainsKey('all')) { $searchTerms += $SearchParams['all'] }
-        
-            if ($searchTerms.Count -gt 0) {
-                $persistenceParams['Search'] = $searchTerms
-            }
-        
-            Hunt-Persistence @persistenceParams
-        }
-    
-        Write-Host ""
-        Write-Host "[+] IOC search complete" -ForegroundColor Green
-    }
 
     # Helper function: Get Registry Forensics
     function Get-RegistryForensics {
         param(
-            [string]$OutputDir,
-            [hashtable]$Search,
-            [string]$Mode
+            [string]$OutputDir
         )
     
         $regData = @{}
@@ -811,12 +484,8 @@ function Hunt-All {
                 $data = $exports[$file]
                 if ($data -and $data.Count -gt 0) {
                     $jsonPath = Join-Path $jsonDir $file
-                
-                    # Use all data - no artificial limits
                     $limitedData = $data
-                
                     $jsonContent = $limitedData | ConvertTo-Json -Depth 3 -Compress -ErrorAction Stop
-                
                     $jsonContent | Out-File -FilePath $jsonPath -Encoding UTF8 -ErrorAction Stop
                     Write-Host "  [-] Exported $file ($($limitedData.Count) records)" -ForegroundColor DarkGray
                 }
@@ -826,7 +495,7 @@ function Hunt-All {
             }
         }
     }
-    # Helper function: Generate HTML Report with enhanced features
+    
     function Generate-HTMLReport {
         param(
             [hashtable]$ForensicData,
@@ -844,25 +513,6 @@ function Hunt-All {
         $reportDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
         Write-Host "  [-] Preparing report data..." -ForegroundColor DarkGray
-    
-        # Safety check: enforce reasonable limits for HTML embedding
-        if ($MaxRows -eq 0) {
-            $totalRecords = 0
-            if ($ForensicData.Persistence) { $totalRecords += $ForensicData.Persistence.Count }
-            if ($ForensicData.Logs) { $totalRecords += $ForensicData.Logs.Count }
-            if ($ForensicData.Browser) { $totalRecords += $ForensicData.Browser.Count }
-            if ($ForensicData.Services) { $totalRecords += $ForensicData.Services.Count }
-            if ($ForensicData.Tasks) { $totalRecords += $ForensicData.Tasks.Count }
-            if ($ForensicData.Files -and $ForensicData.Files.All) { $totalRecords += $ForensicData.Files.All.Count }
-        
-            if ($totalRecords -gt 50000) {
-                Write-Warning "Total records ($totalRecords) exceeds safe HTML embedding limit. Limiting to 10000 per table."
-                $MaxRows = 10000
-            }
-        }
-    
-        $hostname = $env:COMPUTERNAME
-        $reportDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
         # Calculate stats
         $regCount = 0
@@ -883,7 +533,7 @@ function Hunt-All {
             Tasks       = if ($ForensicData.Tasks) { $ForensicData.Tasks.Count } else { 0 }
         }
 
-        # Define field omissions per data type (unless AllFields is specified)
+        # Define field omissions per data type
         $omitFields = if (-not $AllFields) {
             @{
                 persistence = @('Hostname', 'IsBuiltInBinary', 'IsLolbin')
@@ -905,55 +555,43 @@ function Hunt-All {
             }
         }
 
-        # Helper function to filter and prepare data
+        # Helper function to prepare data for JSON embedding
         function Prepare-DataForJSON {
             param($Data, $Type, $MaxRows, $OmitFields)
-    
+
             if (-not $Data -or $Data.Count -eq 0) {
                 return '[]'
             }
 
             Write-Host "  [-] Processing $Type data: $($Data.Count) records..." -ForegroundColor DarkGray
 
-            # Limit rows early to reduce processing
+            $dataToProcess = $Data
             if ($MaxRows -gt 0 -and $Data.Count -gt $MaxRows) {
-                $limitedData = [System.Collections.ArrayList]::new($MaxRows)
-                for ($i = 0; $i -lt $MaxRows; $i++) {
-                    [void]$limitedData.Add($Data[$i])
-                }
-            }
-            else {
-                $limitedData = $Data
-            }
-        
-            # Quick check: if no data after limiting, return early
-            if ($limitedData.Count -eq 0) {
-                return '[]'
+                Write-Host "  [-] Limiting to first $MaxRows records..." -ForegroundColor DarkGray
+                $dataToProcess = $Data | Select-Object -First $MaxRows
             }
 
-            # Get all unique keys - optimized
             $allKeysSet = [System.Collections.Generic.HashSet[string]]::new()
-            $sampleSize = [Math]::Min(100, $limitedData.Count)
+            $sampleSize = [Math]::Min(50, $dataToProcess.Count)
+
             for ($i = 0; $i -lt $sampleSize; $i++) {
-                if ($limitedData[$i] -is [PSCustomObject]) {
-                    foreach ($prop in $limitedData[$i].PSObject.Properties) {
+                if ($dataToProcess[$i] -is [PSCustomObject]) {
+                    foreach ($prop in $dataToProcess[$i].PSObject.Properties) {
                         [void]$allKeysSet.Add($prop.Name)
                     }
                 }
             }
             $allKeys = @($allKeysSet)
-        
-            # Remove omitted fields
+
             if ($OmitFields -and $OmitFields.Count -gt 0) {
                 $allKeys = $allKeys | Where-Object { $_ -notin $OmitFields }
             }
-        
-            # Filter out empty columns - check only sample
+
             $keysToKeep = [System.Collections.ArrayList]::new()
             foreach ($key in $allKeys) {
                 $hasValue = $false
-                for ($i = 0; $i -lt [Math]::Min(50, $limitedData.Count); $i++) {
-                    $value = $limitedData[$i].$key
+                for ($i = 0; $i -lt [Math]::Min(50, $dataToProcess.Count); $i++) {
+                    $value = $dataToProcess[$i].$key
                     if ($null -ne $value -and $value -ne '' -and $value -ne 0) {
                         $hasValue = $true
                         break
@@ -963,47 +601,315 @@ function Hunt-All {
                     [void]$keysToKeep.Add($key)
                 }
             }
-        
-            # Create filtered objects - optimized
-            $filteredData = [System.Collections.ArrayList]::new($limitedData.Count)
-            foreach ($item in $limitedData) {
+
+            $filteredData = [System.Collections.ArrayList]::new($dataToProcess.Count)
+            foreach ($item in $dataToProcess) {
                 $newObj = [ordered]@{}
                 foreach ($key in $keysToKeep) {
-                    $newObj[$key] = $item.$key
+                    $value = $item.$key
+                    if ($null -eq $value) {
+                        $newObj[$key] = ''
+                    }
+                    elseif ($value -is [datetime]) {
+                        $newObj[$key] = $value.ToString('yyyy-MM-dd HH:mm:ss')
+                    }
+                    else {
+                        $newObj[$key] = $value
+                    }
                 }
                 [void]$filteredData.Add([PSCustomObject]$newObj)
             }
-        
-            # Convert to JSON with progress
+
             try {
-                Write-Host "  [-] Serializing $Type to JSON..." -ForegroundColor DarkGray
-                return ($filteredData | ConvertTo-Json -Depth 2 -Compress -ErrorAction Stop)
+                Write-Host "  [-] Serializing $Type to JSON ($($filteredData.Count) records)..." -ForegroundColor DarkGray
+                $json = $filteredData | ConvertTo-Json -Depth 3 -Compress -ErrorAction Stop
+                return $json
             }
             catch {
-                Write-Warning "JSON conversion failed for $Type, using empty array"
+                Write-Warning "JSON conversion failed for $Type : $($_.Exception.Message)"
                 return '[]'
             }
         }
 
+        # Prepare log data with provider categorization
+        Write-Host "  [-] Preparing Logs JSON with provider categorization..." -ForegroundColor DarkGray
+        $logsWithProvider = @{}
+        $allLogs = @()
+    
+        if ($ForensicData.Logs -and $ForensicData.Logs.Count -gt 0) {
+            foreach ($log in $ForensicData.Logs) {
+                $provider = if ($log.LogName) { $log.LogName } else { "Unknown" }
+            
+                if (-not $logsWithProvider.ContainsKey($provider)) {
+                    $logsWithProvider[$provider] = @()
+                }
+                $logsWithProvider[$provider] += $log
+                $allLogs += $log
+            }
+        }
+    
+        $logProviders = @("All") + ($logsWithProvider.Keys | Sort-Object)
+        $logsJson = Prepare-DataForJSON -Data $allLogs -Type 'logs' -MaxRows $MaxRows -OmitFields $omitFields['logs']
+    
+        $logsByProviderJson = @{}
+        foreach ($provider in $logsWithProvider.Keys) {
+            $providerData = Prepare-DataForJSON -Data $logsWithProvider[$provider] -Type "logs_$provider" -MaxRows $MaxRows -OmitFields $omitFields['logs']
+            $logsByProviderJson[$provider] = $providerData
+        }
 
-        # Prepare JSON data with field filtering 
+        # Prepare other data types
         Write-Host "  [-] Preparing Persistence JSON..." -ForegroundColor DarkGray
         $persistenceJson = Prepare-DataForJSON -Data $ForensicData.Persistence -Type 'persistence' -MaxRows $MaxRows -OmitFields $omitFields['persistence']
-        
-        Write-Host "  [-] Preparing Logs JSON..." -ForegroundColor DarkGray
-        $logsJson = Prepare-DataForJSON -Data $ForensicData.Logs -Type 'logs' -MaxRows $MaxRows -OmitFields $omitFields['logs']
-        
+    
         Write-Host "  [-] Preparing Browser JSON..." -ForegroundColor DarkGray
         $browserJson = Prepare-DataForJSON -Data $ForensicData.Browser -Type 'browser' -MaxRows $MaxRows -OmitFields $omitFields['browser']
-        
+    
         Write-Host "  [-] Preparing Services JSON..." -ForegroundColor DarkGray
         $servicesJson = Prepare-DataForJSON -Data $ForensicData.Services -Type 'services' -MaxRows $MaxRows -OmitFields $omitFields['services']
-        
+    
         Write-Host "  [-] Preparing Tasks JSON..." -ForegroundColor DarkGray
         $tasksJson = Prepare-DataForJSON -Data $ForensicData.Tasks -Type 'tasks' -MaxRows $MaxRows -OmitFields $omitFields['tasks']
-        
+    
         Write-Host "  [-] Preparing Files JSON..." -ForegroundColor DarkGray
         $filesJson = Prepare-DataForJSON -Data $ForensicData.Files.All -Type 'files' -MaxRows $MaxRows -OmitFields $omitFields['files']
+
+        # Build System Info sections as static HTML
+        $psHistoryHtml = ""
+        if ($ForensicData.SystemInfo.PSHistory -and $ForensicData.SystemInfo.PSHistory.Count -gt 0) {
+            $psHistoryHtml = @"
+<div class="table-wrapper">
+    <table id="pshistory-table">
+        <thead>
+            <tr>
+                <th onclick="sortSystemTable('pshistory-table', 0)" style="width: 80px; position: relative;">#<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('pshistory-table', 1)" style="position: relative;">Command<div class="resizer"></div></th>
+            </tr>
+        </thead>
+        <tbody>
+"@
+            $i = 0
+            foreach ($cmd in $ForensicData.SystemInfo.PSHistory) {
+                $i++
+                $cmdEscaped = [System.Web.HttpUtility]::HtmlEncode($cmd)
+                $psHistoryHtml += "            <tr><td>$i</td><td style='font-family: Consolas, monospace;'>$cmdEscaped</td></tr>`n"
+            }
+            $psHistoryHtml += @"
+        </tbody>
+    </table>
+</div>
+"@
+        }
+        else {
+            $psHistoryHtml = "<p style='color: #95a5a6;'>No PowerShell history found.</p>"
+        }
+
+        $processHtml = ""
+        if ($ForensicData.SystemInfo.Processes -and $ForensicData.SystemInfo.Processes.Count -gt 0) {
+            $processHtml = @"
+<div class="table-controls">
+    <input type="text" id="process-search" placeholder="Search processes..." onkeyup="filterSystemTable('process-table')">
+</div>
+<div class="table-wrapper">
+    <table id="process-table">
+        <thead>
+            <tr>
+                <th onclick="sortSystemTable('process-table', 0)" style="position: relative;">PID<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('process-table', 1)" style="position: relative;">Process Name<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('process-table', 2)" style="position: relative;">User<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('process-table', 3)" style="position: relative;">Path<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('process-table', 4)" style="position: relative;">Company<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('process-table', 5)" style="position: relative;">Memory (MB)<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('process-table', 6)" style="position: relative;">CPU Time (s)<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('process-table', 7)" style="position: relative;">Start Time<div class="resizer"></div></th>
+            </tr>
+        </thead>
+        <tbody>
+"@
+            foreach ($proc in $ForensicData.SystemInfo.Processes) {
+                $memMB = if ($proc.WS) { [math]::Round($proc.WS / 1MB, 2) } else { "N/A" }
+                $cpu = if ($proc.CPU) { [math]::Round($proc.CPU, 2) } else { "N/A" }
+                $path = if ($proc.Path) { [System.Web.HttpUtility]::HtmlEncode($proc.Path) } else { "N/A" }
+                $company = if ($proc.Company) { [System.Web.HttpUtility]::HtmlEncode($proc.Company) } else { "N/A" }
+                $user = if ($proc.UserName) { [System.Web.HttpUtility]::HtmlEncode($proc.UserName) } else { "N/A" }
+                $start = if ($proc.StartTime) { $proc.StartTime.ToString("yyyy-MM-dd HH:mm:ss") } else { "N/A" }
+                $processHtml += "            <tr><td>$($proc.Id)</td><td>$($proc.ProcessName)</td><td>$user</td><td style='max-width: 300px; overflow: hidden; text-overflow: ellipsis;' title='$path'>$path</td><td>$company</td><td>$memMB</td><td>$cpu</td><td>$start</td></tr>`n"
+            }
+            $processHtml += @"
+        </tbody>
+    </table>
+</div>
+"@
+        }
+        else {
+            $processHtml = "<p style='color: #95a5a6;'>No process information available.</p>"
+        }
+
+        $dnsHtml = ""
+        if ($ForensicData.SystemInfo.DNSCache -and $ForensicData.SystemInfo.DNSCache.Count -gt 0) {
+            $dnsHtml = @"
+<div class="table-controls">
+    <input type="text" id="dns-search" placeholder="Search DNS cache..." onkeyup="filterSystemTable('dns-table')">
+</div>
+<div class="table-wrapper">
+    <table id="dns-table">
+        <thead>
+            <tr>
+                <th onclick="sortSystemTable('dns-table', 0)" style="position: relative;">Name<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('dns-table', 1)" style="position: relative;">Type<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('dns-table', 2)" style="position: relative;">Data<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('dns-table', 3)" style="position: relative;">TTL<div class="resizer"></div></th>
+            </tr>
+        </thead>
+        <tbody>
+"@
+            foreach ($dns in $ForensicData.SystemInfo.DNSCache) {
+                $name = if ($dns.Name) { [System.Web.HttpUtility]::HtmlEncode($dns.Name) } else { "N/A" }
+                $type = if ($dns.Type) { $dns.Type } else { "N/A" }
+                $data = if ($dns.Data) { [System.Web.HttpUtility]::HtmlEncode($dns.Data) } else { "N/A" }
+                $ttl = if ($dns.TTL) { $dns.TTL } else { "N/A" }
+                $dnsHtml += "            <tr><td>$name</td><td>$type</td><td>$data</td><td>$ttl</td></tr>`n"
+            }
+            $dnsHtml += @"
+        </tbody>
+    </table>
+</div>
+"@
+        }
+        else {
+            $dnsHtml = "<p style='color: #95a5a6;'>No DNS cache entries found.</p>"
+        }
+
+        $networkHtml = ""
+        if ($ForensicData.SystemInfo.NetworkConnections -and $ForensicData.SystemInfo.NetworkConnections.Count -gt 0) {
+            $networkHtml = @"
+<div class="table-controls">
+    <input type="text" id="network-search" placeholder="Search connections..." onkeyup="filterSystemTable('network-table')">
+</div>
+<div class="table-wrapper">
+    <table id="network-table">
+        <thead>
+            <tr>
+                <th onclick="sortSystemTable('network-table', 0)" style="position: relative;">Local Address<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('network-table', 1)" style="position: relative;">Local Port<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('network-table', 2)" style="position: relative;">Remote Address<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('network-table', 3)" style="position: relative;">Remote Port<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('network-table', 4)" style="position: relative;">State<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('network-table', 5)" style="position: relative;">Process ID<div class="resizer"></div></th>
+            </tr>
+        </thead>
+        <tbody>
+"@
+            $limitedConnections = $ForensicData.SystemInfo.NetworkConnections | Select-Object -First 500
+            foreach ($conn in $limitedConnections) {
+                $networkHtml += "            <tr><td>$($conn.LocalAddress)</td><td>$($conn.LocalPort)</td><td>$($conn.RemoteAddress)</td><td>$($conn.RemotePort)</td><td>$($conn.State)</td><td>$($conn.OwningProcess)</td></tr>`n"
+            }
+            $networkHtml += @"
+        </tbody>
+    </table>
+</div>
+"@
+            if ($ForensicData.SystemInfo.NetworkConnections.Count -gt 500) {
+                $networkHtml += "<p style='color: #f39c12; margin-top: 10px;'>Showing first 500 of $($ForensicData.SystemInfo.NetworkConnections.Count) connections. See CSV for complete data.</p>"
+            }
+        }
+        else {
+            $networkHtml = "<p style='color: #95a5a6;'>No active network connections.</p>"
+        }
+
+        $shadowHtml = ""
+        $vssStatusColor = if ($ForensicData.SystemInfo.VSSServiceStatus -eq 'Running') { '#2ecc71' } else { '#e74c3c' }
+        $shadowCountColor = if ($ForensicData.SystemInfo.ShadowCopyCount -gt 0) { '#2ecc71' } else { '#e74c3c' }
+    
+        if ($ForensicData.SystemInfo.ShadowCopies -and $ForensicData.SystemInfo.ShadowCopies.Count -gt 0) {
+            $shadowHtml = @"
+<div class="table-wrapper">
+    <table id="shadow-table">
+        <thead>
+            <tr>
+                <th onclick="sortSystemTable('shadow-table', 0)" style="position: relative;">Shadow Copy ID<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('shadow-table', 1)" style="position: relative;">Install Date<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('shadow-table', 2)" style="position: relative;">Volume Name<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('shadow-table', 3)" style="position: relative;">Size (MB)<div class="resizer"></div></th>
+            </tr>
+        </thead>
+        <tbody>
+"@
+            foreach ($shadow in $ForensicData.SystemInfo.ShadowCopies) {
+                $shadowHtml += "            <tr><td>$($shadow.ID)</td><td>$($shadow.InstallDate)</td><td>$($shadow.VolumeName)</td><td>$($shadow.SizeMB)</td></tr>`n"
+            }
+            $shadowHtml += @"
+        </tbody>
+    </table>
+</div>
+"@
+        }
+        else {
+            $shadowHtml = "<p style='color: #95a5a6;'>No shadow copies found on this system.</p>"
+        }
+
+        $usersHtml = ""
+        if ($ForensicData.SystemInfo.LocalUsers -and $ForensicData.SystemInfo.LocalUsers.Count -gt 0) {
+            $usersHtml = @"
+<div class="table-wrapper">
+    <table id="users-table">
+        <thead>
+            <tr>
+                <th onclick="sortSystemTable('users-table', 0)" style="position: relative;">Name<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('users-table', 1)" style="position: relative;">Enabled<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('users-table', 2)" style="position: relative;">Last Logon<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('users-table', 3)" style="position: relative;">Password Last Set<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('users-table', 4)" style="position: relative;">Description<div class="resizer"></div></th>
+            </tr>
+        </thead>
+        <tbody>
+"@
+            foreach ($user in $ForensicData.SystemInfo.LocalUsers) {
+                $desc = if ($user.Description) { [System.Web.HttpUtility]::HtmlEncode($user.Description) } else { "" }
+                $lastLogon = if ($user.LastLogon) { $user.LastLogon.ToString("yyyy-MM-dd HH:mm:ss") } else { "Never" }
+                $pwdSet = if ($user.PasswordLastSet) { $user.PasswordLastSet.ToString("yyyy-MM-dd HH:mm:ss") } else { "Never" }
+                $usersHtml += "            <tr><td>$($user.Name)</td><td>$($user.Enabled)</td><td>$lastLogon</td><td>$pwdSet</td><td>$desc</td></tr>`n"
+            }
+            $usersHtml += @"
+        </tbody>
+    </table>
+</div>
+"@
+        }
+        else {
+            $usersHtml = "<p style='color: #95a5a6;'>No local user information available.</p>"
+        }
+
+        $adaptersHtml = ""
+        if ($ForensicData.SystemInfo.NetworkAdapters -and $ForensicData.SystemInfo.NetworkAdapters.Count -gt 0) {
+            $adaptersHtml = @"
+<div class="table-wrapper">
+    <table id="adapters-table">
+        <thead>
+            <tr>
+                <th onclick="sortSystemTable('adapters-table', 0)" style="position: relative;">Name<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('adapters-table', 1)" style="position: relative;">Status<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('adapters-table', 2)" style="position: relative;">MAC Address<div class="resizer"></div></th>
+                <th onclick="sortSystemTable('adapters-table', 3)" style="position: relative;">Link Speed<div class="resizer"></div></th>
+            </tr>
+        </thead>
+        <tbody>
+"@
+            foreach ($adapter in $ForensicData.SystemInfo.NetworkAdapters) {
+                $name = [System.Web.HttpUtility]::HtmlEncode($adapter.Name)
+                $adaptersHtml += "            <tr><td>$name</td><td>$($adapter.Status)</td><td>$($adapter.MacAddress)</td><td>$($adapter.LinkSpeed)</td></tr>`n"
+            }
+            $adaptersHtml += @"
+        </tbody>
+    </table>
+</div>
+"@
+        }
+        else {
+            $adaptersHtml = "<p style='color: #95a5a6;'>No network adapter information available.</p>"
+        }
+
+        # Build log provider selector JSON
+        $logProvidersJson = $logProviders | ConvertTo-Json -Compress
 
         $html = @"
 <!DOCTYPE html>
@@ -1019,7 +925,6 @@ function Hunt-All {
         .header h1 { color: #ecf0f1; font-size: 2.5em; margin-bottom: 10px; }
         .header .info { color: #bdc3c7; font-size: 0.9em; }
         
-        /* Tab Navigation */
         .tab-container { background: #2c2c2c; border-bottom: 2px solid #34495e; }
         .tabs { display: flex; flex-wrap: wrap; padding: 0 20px; overflow-x: auto; }
         .tab-button { 
@@ -1031,16 +936,15 @@ function Hunt-All {
             border-bottom: 3px solid transparent;
             transition: all 0.3s;
             white-space: nowrap;
+            font-size: 14px;
         }
         .tab-button:hover { color: #ecf0f1; background: #333; }
         .tab-button.active { color: #3498db; border-bottom-color: #3498db; }
         
-        /* Tab Content */
         .container { max-width: 98%; margin: 20px auto; }
         .tab-content { display: none; padding: 20px; }
         .tab-content.active { display: block; }
         
-        /* System Info Styling */
         .sysinfo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin: 20px 0; }
         .sysinfo-card { background: #2c2c2c; padding: 20px; border-radius: 8px; border-left: 4px solid #3498db; }
         .sysinfo-card h3 { color: #3498db; margin-bottom: 15px; }
@@ -1048,21 +952,75 @@ function Hunt-All {
         .sysinfo-label { color: #95a5a6; display: inline-block; width: 150px; }
         .sysinfo-value { color: #ecf0f1; }
         
-        /* Table Styling */
         .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 20px 0; }
         .stat-card { background: linear-gradient(135deg, #34495e, #2c3e50); padding: 20px; border-radius: 8px; text-align: center; }
         .stat-number { font-size: 2.5em; color: #3498db; font-weight: bold; }
         .stat-label { color: #bdc3c7; margin-top: 5px; }
+        
+        .section-card { 
+            background: #2c2c2c; 
+            padding: 20px; 
+            border-radius: 8px; 
+            margin-bottom: 20px;
+            border-left: 4px solid #3498db;
+        }
+        .section-card h3 { 
+            color: #3498db; 
+            margin-bottom: 15px; 
+            font-size: 1.2em;
+        }
+        
+        .log-provider-selector {
+            margin: 15px 0;
+            padding: 10px;
+            background: #1a1a1a;
+            border-radius: 4px;
+        }
+        .log-provider-selector label {
+            color: #95a5a6;
+            margin-right: 10px;
+            font-weight: bold;
+        }
+        .log-provider-selector select {
+            padding: 8px 15px;
+            background: #333;
+            color: #fff;
+            border: 1px solid #555;
+            border-radius: 4px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        .log-provider-selector select:hover {
+            background: #444;
+        }
+        
         .loading { text-align: center; padding: 20px; color: #3498db; }
         .error { color: #e74c3c; padding: 10px; }
         .warning { background: #f39c12; color: #000; padding: 10px; border-radius: 4px; margin: 10px 0; }
         .table-controls { margin: 10px 0; }
-        .table-controls input { padding: 8px; margin-right: 10px; background: #333; border: 1px solid #555; color: #fff; border-radius: 4px; }
-        table { width: 100%; border-collapse: collapse; background: #333; margin: 10px 0; font-size: 0.85em; table-layout: fixed; }
+        .table-controls input { 
+            padding: 8px; 
+            margin-right: 10px; 
+            background: #333; 
+            border: 1px solid #555; 
+            color: #fff; 
+            border-radius: 4px; 
+            min-width: 200px;
+        }
+        
+        table { 
+            width: 100%; 
+            border-collapse: collapse; 
+            background: #333; 
+            margin: 10px 0; 
+            font-size: 0.85em; 
+            table-layout: auto;
+        }
+
         th { 
             background: #34495e; 
             color: #ecf0f1; 
-            padding: 10px; 
+            padding: 10px 8px; 
             text-align: left; 
             position: sticky; 
             top: 0; 
@@ -1071,19 +1029,14 @@ function Hunt-All {
             white-space: nowrap; 
             overflow: hidden; 
             text-overflow: ellipsis;
-            min-width: 100px;
-            max-width: 300px;
-            position: relative;
+            min-width: 80px;
+            max-width: 400px;
+            font-size: 13px;
+            user-select: none;
         }
-        th:hover { 
-            background: #415b76;
-            overflow: visible;
-            white-space: normal;
-            word-wrap: break-word;
-        }
+        th:hover { background: #415b76; }
         th::after { content: ' \25B8'; font-size: 0.7em; opacity: 0.5; }
         
-        /* Add resizer for columns */
         .resizer {
             position: absolute;
             top: 0;
@@ -1092,6 +1045,7 @@ function Hunt-All {
             cursor: col-resize;
             user-select: none;
             height: 100%;
+            z-index: 1;
         }
         .resizer:hover {
             background: #3498db;
@@ -1114,8 +1068,18 @@ function Hunt-All {
             overflow-x: auto;
             position: relative;
         }
-        .csv-section { margin: 20px 0; background: #2c2c2c; padding: 20px; border-radius: 8px; }
-        .csv-link { display: inline-block; padding: 10px 20px; margin: 5px; background: #3498db; color: white; text-decoration: none; border-radius: 4px; }
+        .csv-section {margin: 20px 0; background: #2c2c2c; padding: 20px; border-radius: 8px; }
+        .csv-link { 
+            display: block; 
+            padding: 12px 20px; 
+            margin: 8px 0; 
+            background: #3498db; 
+            color: white; 
+            text-decoration: none; 
+            border-radius: 4px; 
+            text-align: center;
+            transition: background 0.3s;
+        }
         .csv-link:hover { background: #2980b9; }
         .record-count { color: #95a5a6; font-size: 0.9em; margin: 10px 0; }
         .vt-link { color: #e74c3c; text-decoration: none; }
@@ -1149,7 +1113,6 @@ function Hunt-All {
     </div>
     
     <div class="container">
-        <!-- Summary Tab -->
         <div id="summary-tab" class="tab-content active">
             <h2 style="color: #3498db; margin-bottom: 20px;">Summary Statistics</h2>
             <div class="stat-grid">
@@ -1161,11 +1124,8 @@ function Hunt-All {
                 <div class="stat-card"><div class="stat-number">$($stats.Services)</div><div class="stat-label">Services</div></div>
                 <div class="stat-card"><div class="stat-number">$($stats.Tasks)</div><div class="stat-label">Tasks</div></div>
             </div>
-        </div>
-        
-        <!-- System Info Tab -->
-        <div id="sysinfo-tab" class="tab-content">
-            <h2 style="color: #3498db; margin-bottom: 20px;">System Information</h2>
+            
+            <h3 style="color: #3498db; margin: 30px 0 20px 0;">System Overview</h3>
             <div class="sysinfo-grid">
                 <div class="sysinfo-card">
                     <h3>Basic Information</h3>
@@ -1185,86 +1145,93 @@ function Hunt-All {
                 </div>
                 
                 <div class="sysinfo-card">
-                    <h3>Shadow Copies</h3>
-                    <div class="sysinfo-item"><span class="sysinfo-label">VSS Service:</span><span class="sysinfo-value">$($ForensicData.SystemInfo.VSSServiceStatus)</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">Shadow Copies:</span><span class="sysinfo-value">$($ForensicData.SystemInfo.ShadowCopyCount) found</span></div>
-                </div>
-                
-                <div class="sysinfo-card">
-                    <h3>Resources</h3>
-                    <div class="sysinfo-item"><span class="sysinfo-label">Processes:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.Processes) { $ForensicData.SystemInfo.Processes.Count } else { 'N/A' })</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">Connections:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.NetworkConnections) { $ForensicData.SystemInfo.NetworkConnections.Count } else { 'N/A' })</span></div>
-                </div>
-                
-                <div class="sysinfo-card">
-                    <h3>Users</h3>
-                    <div class="sysinfo-item"><span class="sysinfo-label">Local Users:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.LocalUsers) { $ForensicData.SystemInfo.LocalUsers.Count } else { 'N/A' })</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">Administrators:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.LocalAdmins) { $ForensicData.SystemInfo.LocalAdmins.Count } else { 'N/A' })</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">Logged On:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.LoggedOnUsers) { $ForensicData.SystemInfo.LoggedOnUsers.Count } else { 'N/A' })</span></div>
-                </div>
-                <div class="sysinfo-card">
-                    <h3>Network</h3>
-                    <div class="sysinfo-item"><span class="sysinfo-label">Adapters:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.NetworkAdapters) { $ForensicData.SystemInfo.NetworkAdapters.Count } else { 'N/A' })</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">DNS Cache:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.DNSCache) { $ForensicData.SystemInfo.DNSCache.Count + ' entries' } else { 'N/A' })</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">Firewall Rules:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.FirewallRules) { $ForensicData.SystemInfo.FirewallRules.Count } else { 'N/A' })</span></div>
-                </div>
-                
-                <div class="sysinfo-card">
                     <h3>Security</h3>
                     <div class="sysinfo-item"><span class="sysinfo-label">Defender Status:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.DefenderStatus) { if ($ForensicData.SystemInfo.DefenderStatus.RealTimeProtectionEnabled) { 'Enabled' } else { 'Disabled' } } else { 'N/A' })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">AntiVirus:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.AntiVirus) { ($ForensicData.SystemInfo.AntiVirus | ForEach-Object { $_.displayName }) -join ', ' } else { 'None detected' })</span></div>
                 </div>
-                
-                <div class="sysinfo-card">
-                    <h3>PowerShell History</h3>
-                    <div class="sysinfo-item"><span class="sysinfo-label">Commands:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.PSHistory) { $ForensicData.SystemInfo.PSHistory.Count + ' entries' } else { 'None' })</span></div>
-                </div>
-            </div>
-            
-            <div style="margin-top: 30px;">
-                <h3 style="color: #3498db; margin-bottom: 15px;">Detailed System Data</h3>
-                <p style="color: #95a5a6; margin-bottom: 15px;">Complete system information available in CSV exports:</p>
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px;">
-                    <a href="CSV_Data/SystemInfo_Summary.csv" class="csv-link" style="display: block; text-align: center;">System Summary</a>
-                    <a href="CSV_Data/SystemInfo_Processes.csv" class="csv-link" style="display: block; text-align: center;">Running Processes</a>
-                    <a href="CSV_Data/SystemInfo_NetworkConnections.csv" class="csv-link" style="display: block; text-align: center;">Network Connections</a>
-                    <a href="CSV_Data/SystemInfo_LocalUsers.csv" class="csv-link" style="display: block; text-align: center;">Local Users</a>
-                    <a href="CSV_Data/SystemInfo_DNSCache.csv" class="csv-link" style="display: block; text-align: center;">DNS Cache</a>
-                </div>
             </div>
         </div>
         
-        <!-- Persistence Tab -->
+        <div id="sysinfo-tab" class="tab-content">
+            <h2 style="color: #3498db; margin-bottom: 20px;">Detailed System Information</h2>
+            
+            <div class="section-card">
+                <h3>PowerShell Command History</h3>
+                $psHistoryHtml
+            </div>
+            
+            <div class="section-card">
+                <h3>Running Processes ($($ForensicData.SystemInfo.Processes.Count) total)</h3>
+                $processHtml
+            </div>
+            
+            <div class="section-card">
+                <h3>DNS Client Cache ($($ForensicData.SystemInfo.DNSCache.Count) entries)</h3>
+                $dnsHtml
+            </div>
+            
+            <div class="section-card">
+                <h3>Active Network Connections ($($ForensicData.SystemInfo.NetworkConnections.Count) connections)</h3>
+                $networkHtml
+            </div>
+            
+            <div class="section-card">
+                <h3>Volume Shadow Copies</h3>
+                <div style="background: #1a1a1a; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                        <div>
+                            <span style="color: #95a5a6;">VSS Service Status:</span>
+                            <span style="color: $vssStatusColor; font-weight: bold; margin-left: 10px;">$($ForensicData.SystemInfo.VSSServiceStatus)</span>
+                        </div>
+                        <div>
+                            <span style="color: #95a5a6;">Shadow Copy Count:</span>
+                            <span style="color: $shadowCountColor; font-weight: bold; margin-left: 10px;">$($ForensicData.SystemInfo.ShadowCopyCount)</span>
+                        </div>
+                    </div>
+                </div>
+                $shadowHtml
+            </div>
+            
+            <div class="section-card">
+                <h3>Local Users ($($ForensicData.SystemInfo.LocalUsers.Count) users)</h3>
+                $usersHtml
+            </div>
+            
+            <div class="section-card">
+                <h3>Network Adapters ($($ForensicData.SystemInfo.NetworkAdapters.Count) adapters)</h3>
+                $adaptersHtml
+            </div>
+        </div>
+        
         <div id="persistence-tab" class="tab-content">
             <div id="persistence-content"></div>
         </div>
         
-        <!-- Logs Tab -->
         <div id="logs-tab" class="tab-content">
+            <div class="log-provider-selector">
+                <label for="log-provider-select">Filter by Log Provider:</label>
+                <select id="log-provider-select" onchange="changeLogProvider()">
+                </select>
+            </div>
             <div id="logs-content"></div>
         </div>
         
-        <!-- Browser Tab -->
         <div id="browser-tab" class="tab-content">
             <div id="browser-content"></div>
         </div>
         
-        <!-- Services Tab -->
         <div id="services-tab" class="tab-content">
             <div id="services-content"></div>
         </div>
         
-        <!-- Tasks Tab -->
         <div id="tasks-tab" class="tab-content">
             <div id="tasks-content"></div>
         </div>
         
-        <!-- Files Tab -->
         <div id="files-tab" class="tab-content">
             <div id="files-content"></div>
         </div>
         
-        <!-- CSV Downloads Tab -->
         <div id="csv-tab" class="tab-content">
             <div class="csv-section">
                 <h2 style="color: #3498db; margin-bottom: 15px;">CSV Data Files</h2>
@@ -1284,7 +1251,6 @@ function Hunt-All {
             </div>
         </div>
         
-        <!-- Settings Tab -->
         <div id="settings-tab" class="tab-content">
             <div class="csv-section">
                 <h2 style="color: #3498db; margin-bottom: 15px;">Display Settings</h2>
@@ -1321,7 +1287,7 @@ function Hunt-All {
                     
                     <button onclick="applySettings()" 
                         style="width: 100%; padding: 12px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1em; font-weight: bold;">
-                        Apply Settings & Reload Data
+                        Apply Settings and Reload Data
                     </button>
                     
                     <p style="color: #f39c12; font-size: 0.9em; margin-top: 15px; padding: 10px; background: rgba(243, 156, 18, 0.1); border-radius: 4px;">
@@ -1333,15 +1299,10 @@ function Hunt-All {
     </div>
 
     <script>
-        let MAX_CHARS = $MaxChars;
-        let MAX_ROWS = $MaxRows;
+        var MAX_CHARS = $MaxChars;
+        var MAX_ROWS = $MaxRows;
         
-        // Make these globally accessible
-        window.MAX_CHARS = MAX_CHARS;
-        window.MAX_ROWS = MAX_ROWS;
-        
-        // Embedded data
-        const embeddedData = {
+        var embeddedData = {
             persistence: $persistenceJson,
             logs: $logsJson,
             browser: $browserJson,
@@ -1349,65 +1310,108 @@ function Hunt-All {
             tasks: $tasksJson,
             files: $filesJson
         };
+        
+        var logsByProvider = {
+"@
 
-        const loadedData = {};
-        const sortState = {};
-        let currentTab = 'summary';
+        # Add log provider data to JavaScript
+        foreach ($provider in $logsByProviderJson.Keys) {
+            $providerSafe = $provider -replace "'", "\'"
+            $html += "            '$providerSafe': $($logsByProviderJson[$provider]),`n"
+        }
 
-        // Tab navigation
+        $html += @"
+        };
+        
+        var logProviders = $logProvidersJson;
+        var currentLogProvider = 'All';
+
+        var loadedData = {};
+        var sortState = {};
+        var systemSortState = {};
+        var currentTab = 'summary';
+
         function showTab(tabName) {
-            document.querySelectorAll('.tab-content').forEach(tab => {
-                tab.classList.remove('active');
-            });
-            document.querySelectorAll('.tab-button').forEach(btn => {
-                btn.classList.remove('active');
-            });
+            var tabs = document.querySelectorAll('.tab-content');
+            for (var i = 0; i < tabs.length; i++) {
+                tabs[i].classList.remove('active');
+            }
             
-            const tabContent = document.getElementById(tabName + '-tab');
-            const tabButton = event ? event.target : document.querySelector('[onclick*="' + tabName + '"]');
+            var buttons = document.querySelectorAll('.tab-button');
+            for (var i = 0; i < buttons.length; i++) {
+                buttons[i].classList.remove('active');
+            }
             
+            var tabContent = document.getElementById(tabName + '-tab');
             if (tabContent) {
                 tabContent.classList.add('active');
             }
-            if (tabButton) {
-                tabButton.classList.add('active');
+            
+            var clickedButton = event ? event.target : null;
+            if (clickedButton) {
+                clickedButton.classList.add('active');
             }
             
             currentTab = tabName;
             
-            if (['persistence', 'logs', 'browser', 'services', 'tasks', 'files'].includes(tabName)) {
+            var dataTypes = ['persistence', 'logs', 'browser', 'services', 'tasks', 'files'];
+            if (dataTypes.indexOf(tabName) !== -1) {
+                if (tabName === 'logs') {
+                    initializeLogProviderSelector();
+                }
                 loadData(tabName);
             }
         }
 
-        // Hash field detection
-        function isHashField(fieldName) {
-            const hashFields = ['sha256', 'sha1', 'md5', 'hash', 'taskfilesha256', 'executablesha256', 'scriptfilesha256', 'lnktargetsha256'];
-            return hashFields.some(h => fieldName.toLowerCase().includes(h));
+        function initializeLogProviderSelector() {
+            var select = document.getElementById('log-provider-select');
+            if (select && select.options.length === 0) {
+                for (var i = 0; i < logProviders.length; i++) {
+                    var option = document.createElement('option');
+                    option.value = logProviders[i];
+                    option.text = logProviders[i];
+                    select.appendChild(option);
+                }
+            }
         }
 
-        // Create VirusTotal link
+        function changeLogProvider() {
+            var select = document.getElementById('log-provider-select');
+            currentLogProvider = select.value;
+            delete loadedData['logs'];
+            loadData('logs');
+        }
+
+        function isHashField(fieldName) {
+            var hashFields = ['sha256', 'sha1', 'md5', 'hash', 'taskfilesha256', 'executablesha256', 'scriptfilesha256', 'lnktargetsha256'];
+            var lowerField = fieldName.toLowerCase();
+            for (var i = 0; i < hashFields.length; i++) {
+                if (lowerField.indexOf(hashFields[i]) !== -1) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         function createVTLink(hash) {
             if (!hash || hash === 'N/A' || hash === '') return hash;
-            const cleanHash = String(hash).trim().toLowerCase();
+            var cleanHash = String(hash).trim().toLowerCase();
             if (!/^[a-f0-9]{32,64}$/i.test(cleanHash)) return hash;
             return '<a href="https://www.virustotal.com/gui/file/' + cleanHash + '" target="_blank" class="vt-link" title="Lookup on VirusTotal">' + cleanHash + '</a>';
         }
 
-        // Truncate cell content
         function truncateCell(value) {
             if (value === null || value === undefined) return '';
-            const strValue = String(value);
-            const maxChars = window.MAX_CHARS || MAX_CHARS;
-            if (strValue.length > maxChars) {
+            var strValue = String(value);
+            if (strValue.length > MAX_CHARS) {
                 return '<span class="truncated" title="' + strValue.replace(/"/g, '&quot;') + '">' + 
-                       strValue.substring(0, maxChars) + '.....' + '</span>';
+                       strValue.substring(0, MAX_CHARS) + '...' + '</span>';
             }
             return strValue;
         }
 
         function loadData(type) {
-            const content = document.getElementById(type + '-content');
+            var content = document.getElementById(type + '-content');
             if (!content) return;
             
             if (loadedData[type]) {
@@ -1415,7 +1419,17 @@ function Hunt-All {
             }
             
             try {
-                const data = embeddedData[type];
+                var data;
+                if (type === 'logs') {
+                    if (currentLogProvider === 'All') {
+                        data = embeddedData.logs;
+                    } else {
+                        data = logsByProvider[currentLogProvider];
+                    }
+                } else {
+                    data = embeddedData[type];
+                }
+                
                 if (!data || data.length === 0) {
                     content.innerHTML = '<p style="color: #888;">No data available</p>';
                     return;
@@ -1425,11 +1439,12 @@ function Hunt-All {
                 renderTable(type, data);
             } catch (error) {
                 content.innerHTML = '<div class="error">Error loading data: ' + error.message + '</div>';
+                console.error('Error loading ' + type + ':', error);
             }
         }
 
         function renderTable(type, data) {
-            const content = document.getElementById(type + '-content');
+            var content = document.getElementById(type + '-content');
             if (!content) return;
             
             if (!data || data.length === 0) {
@@ -1437,14 +1452,26 @@ function Hunt-All {
                 return;
             }
 
-            const maxRows = window.MAX_ROWS || MAX_ROWS;
-            const displayData = (maxRows > 0) ? data.slice(0, maxRows) : data;
-            const keys = [...new Set(displayData.flatMap(Object.keys))];
+            var displayData = data;
+            if (MAX_ROWS > 0 && data.length > MAX_ROWS) {
+                displayData = data.slice(0, MAX_ROWS);
+            }
             
-            let html = '<div class="record-count">Displaying: ' + displayData.length + ' of ' + data.length + ' records</div>';
+            var keys = [];
+            var keySet = {};
+            for (var i = 0; i < displayData.length; i++) {
+                for (var key in displayData[i]) {
+                    if (displayData[i].hasOwnProperty(key) && !keySet[key]) {
+                        keys.push(key);
+                        keySet[key] = true;
+                    }
+                }
+            }
+            
+            var html = '<div class="record-count">Displaying: ' + displayData.length + ' of ' + data.length + ' records</div>';
             
             if (data.length > displayData.length) {
-                html += '<div class="warning">Note: Display limited to first ' + maxRows + ' records. Adjust in Settings tab or see CSV files for complete data.</div>';
+                html += '<div class="warning">Note: Display limited to first ' + MAX_ROWS + ' records. Adjust in Settings tab or see CSV files for complete data.</div>';
             }
             
             html += '<div class="table-controls">';
@@ -1453,16 +1480,18 @@ function Hunt-All {
             html += '<div class="table-wrapper">';
             html += '<table id="' + type + '-table"><thead><tr>';
             
-            keys.forEach(key => {
-                html += '<th onclick="sortTable(\'' + type + '\', \'' + key + '\')" title="' + key + '">' + key + '</th>';
-            });
+            for (var i = 0; i < keys.length; i++) {
+                html += '<th onclick="sortTable(\'' + type + '\', \'' + keys[i] + '\')" title="Click to sort by ' + keys[i] + '" style="position: relative;">' + keys[i] + '<div class="resizer"></div></th>';
+            }
             
             html += '</tr></thead><tbody>';
             
-            displayData.forEach(row => {
+            for (var i = 0; i < displayData.length; i++) {
                 html += '<tr>';
-                keys.forEach(key => {
-                    let val = row[key];
+                for (var j = 0; j < keys.length; j++) {
+                    var key = keys[j];
+                    var val = displayData[i][key];
+                    
                     if (val === null || val === undefined) {
                         val = '';
                     } else if (typeof val === 'object') {
@@ -1475,89 +1504,40 @@ function Hunt-All {
                         val = createVTLink(val);
                         html += '<td>' + val + '</td>';
                     } else {
-                        const escaped = val.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+                        var escaped = val.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
                         html += '<td>' + truncateCell(escaped) + '</td>';
                     }
-                });
+                }
                 html += '</tr>';
-            });
+            }
             
             html += '</tbody></table></div>';
             content.innerHTML = html;
-
+            
             makeColumnsResizable(type + '-table');
         }
 
-        function filterTable(type) {
-            const input = document.getElementById(type + '-search');
-            const filter = input.value.toLowerCase();
-            const table = document.getElementById(type + '-table');
-            
-            if (!table) return;
-            
-            const rows = table.getElementsByTagName('tr');
-            
-            for (let i = 1; i < rows.length; i++) {
-                const row = rows[i];
-                const text = row.textContent.toLowerCase();
-                row.style.display = text.includes(filter) ? '' : 'none';
-            }
-        }
-
-        function sortTable(type, key) {
-            const data = loadedData[type];
-            if (!data) return;
-            
-            const currentSort = sortState[type + '-' + key] || 'none';
-            const newSort = currentSort === 'asc' ? 'desc' : 'asc';
-            sortState[type + '-' + key] = newSort;
-            
-            data.sort((a, b) => {
-                let valA = a[key];
-                let valB = b[key];
-                
-                if (valA === null || valA === undefined) valA = '';
-                if (valB === null || valB === undefined) valB = '';
-                
-                if (typeof valA === 'object') valA = JSON.stringify(valA);
-                if (typeof valB === 'object') valB = JSON.stringify(valB);
-                
-                valA = String(valA);
-                valB = String(valB);
-                
-                if (newSort === 'asc') {
-                    return valA.localeCompare(valB, undefined, {numeric: true});
-                } else {
-                    return valB.localeCompare(valA, undefined, {numeric: true});
-                }
-            });
-            
-            renderTable(type, data);
-        }
-
-        // Column resizing functionality
         function makeColumnsResizable(tableId) {
-            const table = document.getElementById(tableId);
+            var table = document.getElementById(tableId);
             if (!table) return;
             
-            const headers = table.querySelectorAll('th');
-            headers.forEach((header, index) => {
-                const resizer = document.createElement('div');
-                resizer.className = 'resizer';
-                header.appendChild(resizer);
-                
-                let startX, startWidth;
+            var headers = table.querySelectorAll('th');
+            for (var i = 0; i < headers.length; i++) {
+                var header = headers[i];
+                var resizer = header.querySelector('.resizer');
+                if (!resizer) continue;
                 
                 resizer.addEventListener('mousedown', function(e) {
                     e.stopPropagation();
-                    startX = e.pageX;
-                    startWidth = header.offsetWidth;
+                    var th = this.parentElement;
+                    var startX = e.pageX;
+                    var startWidth = th.offsetWidth;
                     
                     function doDrag(e) {
-                        const width = startWidth + e.pageX - startX;
+                        var width = startWidth + e.pageX - startX;
                         if (width > 50) {
-                            header.style.width = width + 'px';
-                            header.style.minWidth = width + 'px';
+                            th.style.width = width + 'px';
+                            th.style.minWidth = width + 'px';
                         }
                     }
                     
@@ -1569,34 +1549,133 @@ function Hunt-All {
                     document.addEventListener('mousemove', doDrag);
                     document.addEventListener('mouseup', stopDrag);
                 });
-            });
+            }
         }
 
-        // Settings management
-        function applySettings() {
-            const newMaxRows = parseInt(document.getElementById('settings-maxrows').value) || 0;
-            const newMaxChars = parseInt(document.getElementById('settings-maxchars').value) || 200;
+        function filterTable(type) {
+            var input = document.getElementById(type + '-search');
+            var filter = input.value.toLowerCase();
+            var table = document.getElementById(type + '-table');
             
-            window.MAX_ROWS = newMaxRows;
-            window.MAX_CHARS = newMaxChars;
+            if (!table) return;
+            
+            var rows = table.getElementsByTagName('tr');
+            
+            for (var i = 1; i < rows.length; i++) {
+                var row = rows[i];
+                var text = row.textContent.toLowerCase();
+                row.style.display = text.indexOf(filter) > -1 ? '' : 'none';
+            }
+        }
+
+        function sortTable(type, key) {
+            var data = loadedData[type];
+            if (!data) return;
+            
+            var currentSort = sortState[type + '-' + key] || 'none';
+            var newSort = currentSort === 'asc' ? 'desc' : 'asc';
+            sortState[type + '-' + key] = newSort;
+            
+            data.sort(function(a, b) {
+                var valA = a[key];
+                var valB = b[key];
+                
+                if (valA === null || valA === undefined) valA = '';
+                if (valB === null || valB === undefined) valB = '';
+                
+                if (typeof valA === 'object') valA = JSON.stringify(valA);
+                if (typeof valB === 'object') valB = JSON.stringify(valB);
+                
+                valA = String(valA);
+                valB = String(valB);
+                
+                var result = valA.localeCompare(valB, undefined, {numeric: true});
+                return newSort === 'asc' ? result : -result;
+            });
+            
+            renderTable(type, data);
+        }
+
+        function filterSystemTable(tableId) {
+            var searchId = tableId.replace('-table', '-search');
+            var input = document.getElementById(searchId);
+            if (!input) return;
+            
+            var filter = input.value.toLowerCase();
+            var table = document.getElementById(tableId);
+            if (!table) return;
+            
+            var rows = table.getElementsByTagName('tr');
+            for (var i = 1; i < rows.length; i++) {
+                var row = rows[i];
+                var text = row.textContent.toLowerCase();
+                row.style.display = text.indexOf(filter) > -1 ? '' : 'none';
+            }
+        }
+
+        function sortSystemTable(tableId, columnIndex) {
+            var table = document.getElementById(tableId);
+            if (!table) return;
+            
+            var tbody = table.getElementsByTagName('tbody')[0];
+            if (!tbody) return;
+            
+            var rows = Array.prototype.slice.call(tbody.getElementsByTagName('tr'));
+            if (rows.length === 0) return;
+            
+            var sortKey = tableId + '-' + columnIndex;
+            var currentSort = systemSortState[sortKey] || 'none';
+            var newSort = currentSort === 'asc' ? 'desc' : 'asc';
+            systemSortState[sortKey] = newSort;
+            
+            rows.sort(function(a, b) {
+                var cellA = a.getElementsByTagName('td')[columnIndex];
+                var cellB = b.getElementsByTagName('td')[columnIndex];
+                
+                if (!cellA || !cellB) return 0;
+                
+                var valA = cellA.textContent.trim();
+                var valB = cellB.textContent.trim();
+                
+                var numA = parseFloat(valA);
+                var numB = parseFloat(valB);
+                
+                if (!isNaN(numA) && !isNaN(numB)) {
+                    return newSort === 'asc' ? numA - numB : numB - numA;
+                }
+                
+                var result = valA.localeCompare(valB, undefined, {numeric: true, sensitivity: 'base'});
+                return newSort === 'asc' ? result : -result;
+            });
+            
+            for (var i = 0; i < rows.length; i++) {
+                tbody.appendChild(rows[i]);
+            }
+        }
+
+        function applySettings() {
+            var newMaxRows = parseInt(document.getElementById('settings-maxrows').value) || 0;
+            var newMaxChars = parseInt(document.getElementById('settings-maxchars').value) || 200;
+            
+            MAX_ROWS = newMaxRows;
+            MAX_CHARS = newMaxChars;
             
             document.getElementById('current-maxrows').textContent = newMaxRows;
             document.getElementById('current-maxchars').textContent = newMaxChars;
             
-            for (const key in loadedData) {
-                delete loadedData[key];
-            }
+            loadedData = {};
             
-            if (['persistence', 'logs', 'browser', 'services', 'tasks', 'files'].includes(currentTab)) {
+            var dataTypes = ['persistence', 'logs', 'browser', 'services', 'tasks', 'files'];
+            if (dataTypes.indexOf(currentTab) !== -1) {
                 loadData(currentTab);
             }
             
             alert('Settings applied successfully! Tables will reload with new limits.');
         }
 
-        window.addEventListener('load', function() {
-            // Summary is shown by default
-        });
+        window.onload = function() {
+            console.log('Forensic report loaded successfully');
+        };
     </script>
 </body>
 </html>
@@ -1618,22 +1697,10 @@ function Hunt-All {
         Write-Error "Cannot use both -Auto and -Aggressive modes simultaneously"
         return
     }
-
-    # Set default StartDate if not specified (only for non-ForensicDump modes)
-    if (-not $PSBoundParameters.ContainsKey('StartDate') -and -not $Auto -and -not $ForensicDump) {
-        $StartDate = (Get-Date).AddDays(-10)
-        Write-Verbose "No StartDate specified, defaulting to 10 days ago: $StartDate"
-    }
     
     # Set default mode if none specified
     if (-not $Auto -and -not $Aggressive) {
         $Auto = $true
-    }
-    
-    # Check for at least one action
-    if (-not $ForensicDump -and -not $SystemInfo -and $Search.Count -eq 0 -and -not $ExportLogs) {
-        Write-Error "No action specified. Use -ForensicDump, -SystemInfo, -Search, or -ExportLogs"
-        return
     }
     
     # Check for administrator privileges
@@ -1642,28 +1709,26 @@ function Hunt-All {
         Write-Warning "Not running as Administrator. Some data collection will be limited."
     }
     
-    # Setup output directory for ForensicDump
-    if ($ForensicDump -or $ExportLogs) {
-        if ([string]::IsNullOrWhiteSpace($OutputDir)) {
-            $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-            $OutputDir = "C:\ForensicDump_$($env:COMPUTERNAME)_$timestamp"
-        }
-        
-        try {
-            if (-not (Test-Path $OutputDir)) {
-                New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null
-                Write-Host "[+] Created output directory: $OutputDir" -ForegroundColor Green
-            }
-        }
-        catch {
-            Write-Error "Failed to create output directory: $($_.Exception.Message)"
-            return
-        }
+    # Setup output directory
+    if ([string]::IsNullOrWhiteSpace($OutputDir)) {
+        $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+        $OutputDir = "C:\ForensicDump_$($env:COMPUTERNAME)_$timestamp"
     }
     
-    # Handle ExportLogs independently
+    try {
+        if (-not (Test-Path $OutputDir)) {
+            New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null
+            Write-Host "[+] Created output directory: $OutputDir" -ForegroundColor Green
+        }
+    }
+    catch {
+        Write-Error "Failed to create output directory: $($_.Exception.Message)"
+        return
+    }
+    
+    # Handle ExportLogs
     if ($ExportLogs) {
-        Write-Progress -Activity "Hunt-All" -Status "Exporting EVTX logs..." -PercentComplete 5
+        Write-Progress -Activity "Hunt-ForensicDump" -Status "Exporting EVTX logs..." -PercentComplete 5
         Write-Host "[+] Exporting all EVTX logs..." -ForegroundColor Yellow
         
         try {
@@ -1679,342 +1744,304 @@ function Hunt-All {
         }
     }
     
-    # Handle SystemInfo action
-    if ($SystemInfo) {
-        Write-Progress -Activity "Hunt-All" -Status "Gathering system information..." -PercentComplete 10
-        Get-SystemInformation -OutputDir $OutputDir -ForensicDump:$ForensicDump
+    # Handle "All Time" scenario
+    if (-not $StartDate -or $StartDate -eq "AllTime" -or $StartDate -eq "All") {
+        $StartDate = [datetime]::new(1970, 1, 1)
+        Write-Host "[+] No StartDate specified or 'All Time' requested - scanning all available data" -ForegroundColor Yellow
+    }
+
+    # Convert dates to datetime objects
+    try {
+        $parsedStartDate = ConvertTo-DateTime -InputValue $StartDate
+        $parsedEndDate = ConvertTo-DateTime -InputValue $EndDate
+    }
+    catch {
+        Write-Error "Invalid date format: $($_.Exception.Message)"
+        return
     }
     
-    # Handle Search action without ForensicDump
-    if ($Search.Count -gt 0 -and -not $ForensicDump) {
-        Write-Progress -Activity "Hunt-All" -Status "Performing IOC searches..." -PercentComplete 20
-        
-        $searchStartDate = if ($StartDate) { ConvertTo-DateTime -InputValue $StartDate } else { (Get-Date).AddDays(-10) }
-        $searchEndDate = if ($EndDate) { ConvertTo-DateTime -InputValue $EndDate } else { Get-Date }
-        
-        Invoke-IOCSearch -SearchParams $expandedSearch -StartDate $searchStartDate -EndDate $searchEndDate -Mode $(if ($Aggressive) { "Aggressive" } else { "Auto" })
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "    FORENSIC DUMP INITIATED" -ForegroundColor Yellow
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "[+] Output Directory: $OutputDir" -ForegroundColor Green
+    Write-Host "[+] Mode: $(if ($Aggressive) { 'Aggressive' } else { 'Auto' })" -ForegroundColor Green
+    Write-Host "[+] Date Range: $parsedStartDate to $parsedEndDate" -ForegroundColor Green
+    Write-Host ""
+    
+    # Create subdirectories
+    $csvDir = Join-Path $OutputDir "CSV_Data"
+    New-Item -Path $csvDir -ItemType Directory -Force | Out-Null
+
+    $jsonDir = Join-Path $OutputDir "JSON_Data"
+    New-Item -Path $jsonDir -ItemType Directory -Force | Out-Null
+    
+    # Initialize data collection results
+    $forensicData = @{
+        SystemInfo  = $null
+        Persistence = $null
+        Files       = $null
+        Registry    = $null
+        Browser     = $null
+        Logs        = $null
+        Services    = $null
+        Tasks       = $null
     }
     
-    # Handle ForensicDump
-    if ($ForensicDump) {
-        # Handle "All Time" scenario
-        if (-not $StartDate -or $StartDate -eq "AllTime" -or $StartDate -eq "All") {
-            $StartDate = [datetime]::new(1970, 1, 1)
-            Write-Host "[+] No StartDate specified or 'All Time' requested - scanning all available data" -ForegroundColor Yellow
-        }
+    # Determine which modules to run based on Config
+    $runAll = $Config -contains 'All'
+    $runPersistence = $runAll -or ($Config -contains 'Persistence')
+    $runFiles = $runAll -or ($Config -contains 'Files')
+    $runRegistry = $runAll -or ($Config -contains 'Registry')
+    $runBrowser = $runAll -or ($Config -contains 'Browser')
+    $runLogs = $runAll -or ($Config -contains 'Logs')
+    $runServices = $runAll -or ($Config -contains 'Services')
+    $runTasks = $runAll -or ($Config -contains 'Tasks')
+
+    Write-Host "[+] Active modules: $(if ($runAll) { 'All' } else { ($Config -join ', ') })" -ForegroundColor Green
     
-        # Convert dates to datetime objects
+    # Collect System Information (always runs)
+    Write-Progress -Activity "Forensic Dump" -Status "Collecting system information..." -PercentComplete 5
+    Write-Host "[+] Collecting system information..." -ForegroundColor Yellow
+    $forensicData.SystemInfo = Get-SystemInformation -OutputDir $csvDir
+    
+    # Collect Persistence Data
+    if ($runPersistence) {
+        Write-Progress -Activity "Forensic Dump" -Status "Analyzing persistence mechanisms..." -PercentComplete 15
+        Write-Host "[+] Analyzing persistence mechanisms..." -ForegroundColor Yellow
         try {
-            $parsedStartDate = ConvertTo-DateTime -InputValue $StartDate
-            $parsedEndDate = ConvertTo-DateTime -InputValue $EndDate
+            $persistenceParams = @{
+                All       = $true
+                PassThru  = $true
+                Quiet     = $true
+                OutputCSV = Join-Path $csvDir "Persistence.csv"
+            }
+            
+            $forensicData.Persistence = Hunt-Persistence @persistenceParams
         }
         catch {
-            Write-Error "Invalid date format: $($_.Exception.Message)"
-            return
-        }
-        
-        Write-Host ""
-        Write-Host "========================================" -ForegroundColor Cyan
-        Write-Host "    FORENSIC DUMP INITIATED" -ForegroundColor Yellow
-        Write-Host "========================================" -ForegroundColor Cyan
-        Write-Host "[+] Output Directory: $OutputDir" -ForegroundColor Green
-        Write-Host "[+] Mode: $(if ($Aggressive) { 'Aggressive' } else { 'Auto' })" -ForegroundColor Green
-        Write-Host "[+] Date Range: $parsedStartDate to $parsedEndDate" -ForegroundColor Green
-        if ($Search.Count -gt 0) {
-            Write-Host "[+] IOC Search Terms: $($Search.Count) categories" -ForegroundColor Green
-        }
-        Write-Host ""
-        
-        # Create subdirectories
-        $csvDir = Join-Path $OutputDir "CSV_Data"
-        New-Item -Path $csvDir -ItemType Directory -Force | Out-Null
-
-        $jsonDir = Join-Path $OutputDir "JSON_Data"
-        New-Item -Path $jsonDir -ItemType Directory -Force | Out-Null
-        
-        # Initialize data collection results
-        $forensicData = @{
-            SystemInfo  = $null
-            Persistence = $null
-            Files       = $null
-            Registry    = $null
-            Browser     = $null
-            Logs        = $null
-            Services    = $null
-            Tasks       = $null
-        }
-        
-        # Determine which modules to run based on Config
-        $runAll = $Config -contains 'All'
-        $runPersistence = $runAll -or ($Config -contains 'Persistence')
-        $runFiles = $runAll -or ($Config -contains 'Files')
-        $runRegistry = $runAll -or ($Config -contains 'Registry')
-        $runBrowser = $runAll -or ($Config -contains 'Browser')
-        $runLogs = $runAll -or ($Config -contains 'Logs')
-        $runServices = $runAll -or ($Config -contains 'Services')
-        $runTasks = $runAll -or ($Config -contains 'Tasks')
-
-        Write-Host "[+] Active modules: $(if ($runAll) { 'All' } else { ($Config -join ', ') })" -ForegroundColor Green
-        
-        # Collect System Information (always runs)
-        Write-Progress -Activity "Forensic Dump" -Status "Collecting system information..." -PercentComplete 5
-        Write-Host "[+] Collecting system information..." -ForegroundColor Yellow
-        $forensicData.SystemInfo = Get-SystemInformation -OutputDir $csvDir -ForensicDump:$true
-        
-        # Collect Persistence Data
-        if ($runPersistence) {
-            Write-Progress -Activity "Forensic Dump" -Status "Analyzing persistence mechanisms..." -PercentComplete 15
-            Write-Host "[+] Analyzing persistence mechanisms..." -ForegroundColor Yellow
-            try {
-                $persistenceParams = @{
-                    All       = $true
-                    PassThru  = $true
-                    Quiet     = $true
-                    OutputCSV = Join-Path $csvDir "Persistence.csv"
-                }
-                
-                if ($expandedSearch.ContainsKey('persistence')) {
-                    $persistenceParams['Search'] = $expandedSearch['persistence']
-                }
-                
-                $forensicData.Persistence = Hunt-Persistence @persistenceParams
-            }
-            catch {
-                Write-Warning "Persistence collection failed: $($_.Exception.Message)"
-                $forensicData.Persistence = @()
-            }
-        }
-        else {
-            Write-Host "[SKIP] Persistence analysis (not in Config)" -ForegroundColor DarkGray
+            Write-Warning "Persistence collection failed: $($_.Exception.Message)"
             $forensicData.Persistence = @()
         }
-        
-        # Collect File System Data
-        if ($runFiles) {
-            Write-Progress -Activity "Forensic Dump" -Status "Scanning file system..." -PercentComplete 25
-            Write-Host "[+] Scanning file system..." -ForegroundColor Yellow
-            try {
-                $fileParams = @{
-                    StartDate = $parsedStartDate
-                    EndDate   = $parsedEndDate
-                    PassThru  = $true
-                    Quiet     = $true
-                    OutputCSV = Join-Path $csvDir "Files_All.csv"
-                    Path      = "C:\"
-                }
-        
-                if ($Aggressive) {
-                    $fileParams['IncludeSystemFolders'] = $true
-                }
-        
-                if ($expandedSearch.ContainsKey('file')) {
-                    $fileParams['Search'] = $expandedSearch['file']
-                }
-                
-                Write-Host "  [-] Performing main file system scan..." -ForegroundColor DarkGray
-                $allFiles = Hunt-Files @fileParams
-        
-                Write-Host "  [-] Filtering recycled files from cache..." -ForegroundColor DarkGray
-                $recycledFiles = @($allFiles | Where-Object { $null -ne $_ -and $_.PSObject.Properties['IsRecycleBin'] -and $_.IsRecycleBin -eq $true })
-
-                Write-Host "  [-] Filtering files with alternate data streams from cache..." -ForegroundColor DarkGray
-                $adsFiles = @($allFiles | Where-Object { $null -ne $_ -and $_.PSObject.Properties['AlternateStreamCount'] -and $_.AlternateStreamCount -gt 0 })
-        
-                if ($recycledFiles -and $recycledFiles.Count -gt 0) {
-                    $recycledFiles | Export-Csv -Path (Join-Path $csvDir "Files_Recycled.csv") -NoTypeInformation -ErrorAction SilentlyContinue
-                }
-                if ($adsFiles -and $adsFiles.Count -gt 0) {
-                    $adsFiles | Export-Csv -Path (Join-Path $csvDir "Files_ADS.csv") -NoTypeInformation -ErrorAction SilentlyContinue
-                }
-        
-                $forensicData.Files = @{
-                    All      = $allFiles
-                    Recycled = $recycledFiles
-                    ADS      = $adsFiles
-                }
+    }
+    else {
+        Write-Host "[SKIP] Persistence analysis (not in Config)" -ForegroundColor DarkGray
+        $forensicData.Persistence = @()
+    }
+    
+    # Collect File System Data
+    if ($runFiles) {
+        Write-Progress -Activity "Forensic Dump" -Status "Scanning file system..." -PercentComplete 25
+        Write-Host "[+] Scanning file system..." -ForegroundColor Yellow
+        try {
+            $fileParams = @{
+                StartDate = $parsedStartDate
+                EndDate   = $parsedEndDate
+                PassThru  = $true
+                Quiet     = $true
+                OutputCSV = Join-Path $csvDir "Files_All.csv"
+                Path      = "C:\"
             }
-            catch {
-                Write-Warning "File system scan failed: $($_.Exception.Message)"
-                $forensicData.Files = @{ All = @(); Recycled = @(); ADS = @() }
+    
+            if ($Aggressive) {
+                $fileParams['IncludeSystemFolders'] = $true
+            }
+            
+            Write-Host "  [-] Performing main file system scan..." -ForegroundColor DarkGray
+            $allFiles = Hunt-Files @fileParams
+    
+            Write-Host "  [-] Filtering recycled files from cache..." -ForegroundColor DarkGray
+            $recycledFiles = @($allFiles | Where-Object { $null -ne $_ -and $_.PSObject.Properties['IsRecycleBin'] -and $_.IsRecycleBin -eq $true })
+
+            Write-Host "  [-] Filtering files with alternate data streams from cache..." -ForegroundColor DarkGray
+            $adsFiles = @($allFiles | Where-Object { $null -ne $_ -and $_.PSObject.Properties['AlternateStreamCount'] -and $_.AlternateStreamCount -gt 0 })
+    
+            if ($recycledFiles -and $recycledFiles.Count -gt 0) {
+                $recycledFiles | Export-Csv -Path (Join-Path $csvDir "Files_Recycled.csv") -NoTypeInformation -ErrorAction SilentlyContinue
+            }
+            if ($adsFiles -and $adsFiles.Count -gt 0) {
+                $adsFiles | Export-Csv -Path (Join-Path $csvDir "Files_ADS.csv") -NoTypeInformation -ErrorAction SilentlyContinue
+            }
+    
+            $forensicData.Files = @{
+                All      = $allFiles
+                Recycled = $recycledFiles
+                ADS      = $adsFiles
             }
         }
-        else {
-            Write-Host "[SKIP] File system scan (not in Config)" -ForegroundColor DarkGray
+        catch {
+            Write-Warning "File system scan failed: $($_.Exception.Message)"
             $forensicData.Files = @{ All = @(); Recycled = @(); ADS = @() }
         }
-        
-        # Collect Registry Data
-        if ($runRegistry) {
-            Write-Progress -Activity "Forensic Dump" -Status "Analyzing registry..." -PercentComplete 35
-            Write-Host "[+] Analyzing registry..." -ForegroundColor Yellow
-            try {
-                $forensicData.Registry = Get-RegistryForensics -OutputDir $csvDir -Search $Search -Mode $(if ($Aggressive) { "Aggressive" } else { "Auto" })
-            }
-            catch {
-                Write-Warning "Registry analysis failed: $($_.Exception.Message)"
-                $forensicData.Registry = @{}
-            }
+    }
+    else {
+        Write-Host "[SKIP] File system scan (not in Config)" -ForegroundColor DarkGray
+        $forensicData.Files = @{ All = @(); Recycled = @(); ADS = @() }
+    }
+    
+    # Collect Registry Data
+    if ($runRegistry) {
+        Write-Progress -Activity "Forensic Dump" -Status "Analyzing registry..." -PercentComplete 35
+        Write-Host "[+] Analyzing registry..." -ForegroundColor Yellow
+        try {
+            $forensicData.Registry = Get-RegistryForensics -OutputDir $csvDir
         }
-        else {
-            Write-Host "[SKIP] Registry analysis (not in Config)" -ForegroundColor DarkGray
+        catch {
+            Write-Warning "Registry analysis failed: $($_.Exception.Message)"
             $forensicData.Registry = @{}
         }
-        
-        # Collect Browser Data
-        if ($runBrowser) {
-            Write-Progress -Activity "Forensic Dump" -Status "Extracting browser history..." -PercentComplete 45
-            Write-Host "[+] Extracting browser history..." -ForegroundColor Yellow
-            try {
-                $browserParams = @{
-                    PassThru  = $true
-                    Quiet     = $true
-                    OutputCSV = Join-Path $csvDir "Browser.csv"
-                }
-                
-                if ($Aggressive) {
-                    $browserParams['All'] = $true
-                }
-                else {
-                    $browserParams['Auto'] = $true
-                }
-                
-                if ($expandedSearch.ContainsKey('browser')) {
-                    $browserParams['Search'] = $expandedSearch['browser']
-                }
-                
-                $forensicData.Browser = Hunt-Browser @browserParams
+    }
+    else {
+        Write-Host "[SKIP] Registry analysis (not in Config)" -ForegroundColor DarkGray
+        $forensicData.Registry = @{}
+    }
+    
+    # Collect Browser Data
+    if ($runBrowser) {
+        Write-Progress -Activity "Forensic Dump" -Status "Extracting browser history..." -PercentComplete 45
+        Write-Host "[+] Extracting browser history..." -ForegroundColor Yellow
+        try {
+            $browserParams = @{
+                PassThru  = $true
+                Quiet     = $true
+                OutputCSV = Join-Path $csvDir "Browser.csv"
             }
-            catch {
-                Write-Warning "Browser history extraction failed: $($_.Exception.Message)"
-                $forensicData.Browser = @()
+            
+            if ($Aggressive) {
+                $browserParams['All'] = $true
             }
+            else {
+                $browserParams['Auto'] = $true
+            }
+            
+            $forensicData.Browser = Hunt-Browser @browserParams
         }
-        else {
-            Write-Host "[SKIP] Browser history extraction (not in Config)" -ForegroundColor DarkGray
+        catch {
+            Write-Warning "Browser history extraction failed: $($_.Exception.Message)"
             $forensicData.Browser = @()
         }
+    }
+    else {
+        Write-Host "[SKIP] Browser history extraction (not in Config)" -ForegroundColor DarkGray
+        $forensicData.Browser = @()
+    }
 
-        # Collect Event Logs
-        if ($runLogs) {
-            Write-Progress -Activity "Forensic Dump" -Status "Analyzing event logs..." -PercentComplete 55
-            Write-Host "[+] Analyzing event logs..." -ForegroundColor Yellow
-            try {
-                $logParams = @{
-                    StartDate = $parsedStartDate
-                    EndDate   = $parsedEndDate
-                    PassThru  = $true
-                    Quiet     = $true
-                    OutputCSV = Join-Path $csvDir "EventLogs.csv"
-                }
-        
-                if ($Aggressive) {
-                    $logParams['Search'] = @($script:GlobalLogIOCs) + $(if ($expandedSearch.ContainsKey('log')) { $expandedSearch['log'] } else { @() })
-                }
-                else {
-                    $logParams['Search'] = @($script:GlobalLogIOCs) + $(if ($expandedSearch.ContainsKey('log')) { $expandedSearch['log'] } else { @() })
-                    $logParams['LogNames'] = @("PowerShell", "Microsoft-Windows-PowerShell/Operational", "System", "Security", "Application")
-                }
-                
-                $forensicData.Logs = Hunt-Logs @logParams
+    # Collect Event Logs
+    if ($runLogs) {
+        Write-Progress -Activity "Forensic Dump" -Status "Analyzing event logs..." -PercentComplete 55
+        Write-Host "[+] Analyzing event logs..." -ForegroundColor Yellow
+        try {
+            $logParams = @{
+                StartDate = $parsedStartDate
+                EndDate   = $parsedEndDate
+                PassThru  = $true
+                Quiet     = $true
+                OutputCSV = Join-Path $csvDir "EventLogs.csv"
             }
-            catch {
-                Write-Warning "Event log analysis failed: $($_.Exception.Message)"
-                $forensicData.Logs = @()
+    
+            if ($Aggressive) {
+                if ($script:GlobalLogIOCs) {
+                    $logParams['Search'] = @($script:GlobalLogIOCs)
+                }
             }
+            else {
+                if ($script:GlobalLogIOCs) {
+                    $logParams['Search'] = @($script:GlobalLogIOCs)
+                }
+                $logParams['LogNames'] = @("PowerShell", "Microsoft-Windows-PowerShell/Operational", "System", "Security", "Application")
+            }
+            
+            $forensicData.Logs = Hunt-Logs @logParams
         }
-        else {
-            Write-Host "[SKIP] Event log analysis (not in Config)" -ForegroundColor DarkGray
+        catch {
+            Write-Warning "Event log analysis failed: $($_.Exception.Message)"
             $forensicData.Logs = @()
         }
-        
-        # Collect Services
-        if ($runServices) {
-            Write-Progress -Activity "Forensic Dump" -Status "Enumerating services..." -PercentComplete 70
-            Write-Host "[+] Enumerating services..." -ForegroundColor Yellow
-            try {
-                $serviceParams = @{
-                    PassThru  = $true
-                    Quiet     = $true
-                    OutputCSV = Join-Path $csvDir "Services.csv"
-                }
-                
-                if ($expandedSearch.ContainsKey('service')) {
-                    $serviceParams['Search'] = $expandedSearch['service']
-                }
-                
-                $forensicData.Services = Hunt-Services @serviceParams
+    }
+    else {
+        Write-Host "[SKIP] Event log analysis (not in Config)" -ForegroundColor DarkGray
+        $forensicData.Logs = @()
+    }
+    
+    # Collect Services
+    if ($runServices) {
+        Write-Progress -Activity "Forensic Dump" -Status "Enumerating services..." -PercentComplete 70
+        Write-Host "[+] Enumerating services..." -ForegroundColor Yellow
+        try {
+            $serviceParams = @{
+                PassThru  = $true
+                Quiet     = $true
+                OutputCSV = Join-Path $csvDir "Services.csv"
             }
-            catch {
-                Write-Warning "Service enumeration failed: $($_.Exception.Message)"
-                $forensicData.Services = @()
-            }
+            
+            $forensicData.Services = Hunt-Services @serviceParams
         }
-        else {
-            Write-Host "[SKIP] Service enumeration (not in Config)" -ForegroundColor DarkGray
+        catch {
+            Write-Warning "Service enumeration failed: $($_.Exception.Message)"
             $forensicData.Services = @()
         }
-        
-        # Collect Scheduled Tasks
-        if ($runTasks) {
-            Write-Progress -Activity "Forensic Dump" -Status "Analyzing scheduled tasks..." -PercentComplete 80
-            Write-Host "[+] Analyzing scheduled tasks..." -ForegroundColor Yellow
-            try {
-                $taskParams = @{
-                    PassThru        = $true
-                    Quiet           = $true
-                    OutputCSV       = Join-Path $csvDir "ScheduledTasks.csv"
-                    IncludeDisabled = $true
-                }
-                
-                if ($expandedSearch.ContainsKey('task')) {
-                    $taskParams['Search'] = $expandedSearch['task'] -join '*'
-                }
-                
-                $forensicData.Tasks = Hunt-Tasks @taskParams
+    }
+    else {
+        Write-Host "[SKIP] Service enumeration (not in Config)" -ForegroundColor DarkGray
+        $forensicData.Services = @()
+    }
+    
+    # Collect Scheduled Tasks
+    if ($runTasks) {
+        Write-Progress -Activity "Forensic Dump" -Status "Analyzing scheduled tasks..." -PercentComplete 80
+        Write-Host "[+] Analyzing scheduled tasks..." -ForegroundColor Yellow
+        try {
+            $taskParams = @{
+                PassThru        = $true
+                Quiet           = $true
+                OutputCSV       = Join-Path $csvDir "ScheduledTasks.csv"
+                IncludeDisabled = $true
             }
-            catch {
-                Write-Warning "Scheduled task analysis failed: $($_.Exception.Message)"
-                $forensicData.Tasks = @()
-            }
+            
+            $forensicData.Tasks = Hunt-Tasks @taskParams
         }
-        else {
-            Write-Host "[SKIP] Scheduled task analysis (not in Config)" -ForegroundColor DarkGray
+        catch {
+            Write-Warning "Scheduled task analysis failed: $($_.Exception.Message)"
             $forensicData.Tasks = @()
         }
-
-        # Export JSON data for HTML report
-        Write-Progress -Activity "Forensic Dump" -Status "Exporting JSON data..." -PercentComplete 85
-        Write-Host "[+] Exporting JSON data for interactive report..." -ForegroundColor Yellow
-        try {
-            Export-ForensicJSON -OutputDir $OutputDir -ForensicData $forensicData
-        }
-        catch {
-            Write-Warning "JSON export failed: $($_.Exception.Message)"
-        }
-        
-        # Generate HTML Report
-        Write-Progress -Activity "Forensic Dump" -Status "Generating HTML report..." -PercentComplete 90
-        Write-Host "[+] Generating interactive HTML report..." -ForegroundColor Yellow
-        
-        try {
-            $htmlPath = Join-Path $OutputDir "ForensicReport.html"
-    
-            $htmlMaxChars = $MaxChars
-            $htmlMaxRows = $MaxRows
-            $htmlAllFields = $AllFields
-    
-            Generate-HTMLReport -ForensicData $forensicData -OutputPath $htmlPath -CSVDir $csvDir `
-                -StartDate $parsedStartDate -EndDate $parsedEndDate -Mode $(if ($Aggressive) { "Aggressive" } else { "Auto" }) `
-                -MaxChars $htmlMaxChars -MaxRows $htmlMaxRows -AllFields:$htmlAllFields
-    
-            Write-Host "[+] HTML report generated: $htmlPath" -ForegroundColor Green
-        }
-        catch {
-            Write-Warning "HTML report generation failed: $($_.Exception.Message)"
-        }
-        
-        Write-Progress -Activity "Forensic Dump" -Completed
     }
+    else {
+        Write-Host "[SKIP] Scheduled task analysis (not in Config)" -ForegroundColor DarkGray
+        $forensicData.Tasks = @()
+    }
+
+    # Export JSON data for HTML report
+    Write-Progress -Activity "Forensic Dump" -Status "Exporting JSON data..." -PercentComplete 85
+    Write-Host "[+] Exporting JSON data for interactive report..." -ForegroundColor Yellow
+    try {
+        Export-ForensicJSON -OutputDir $OutputDir -ForensicData $forensicData
+    }
+    catch {
+        Write-Warning "JSON export failed: $($_.Exception.Message)"
+    }
+    
+    # Generate HTML Report
+    Write-Progress -Activity "Forensic Dump" -Status "Generating HTML report..." -PercentComplete 90
+    Write-Host "[+] Generating interactive HTML report..." -ForegroundColor Yellow
+    
+    try {
+        $htmlPath = Join-Path $OutputDir "ForensicReport.html"
+
+        $htmlMaxChars = $MaxChars
+        $htmlMaxRows = $MaxRows
+        $htmlAllFields = $AllFields
+
+        Generate-HTMLReport -ForensicData $forensicData -OutputPath $htmlPath -CSVDir $csvDir `
+            -StartDate $parsedStartDate -EndDate $parsedEndDate -Mode $(if ($Aggressive) { "Aggressive" } else { "Auto" }) `
+            -MaxChars $htmlMaxChars -MaxRows $htmlMaxRows -AllFields:$htmlAllFields
+
+        Write-Host "[+] HTML report generated: $htmlPath" -ForegroundColor Green
+    }
+    catch {
+        Write-Warning "HTML report generation failed: $($_.Exception.Message)"
+    }
+    
+    Write-Progress -Activity "Forensic Dump" -Completed
     
     # Display completion summary
     $endTime = Get-Date
@@ -2022,22 +2049,16 @@ function Hunt-All {
     
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "    HUNT-ALL COMPLETE" -ForegroundColor Green
+    Write-Host "    FORENSIC DUMP COMPLETE" -ForegroundColor Green
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host "[+] Total Runtime: $($duration.Hours)h $($duration.Minutes)m $($duration.Seconds)s" -ForegroundColor Yellow
+    Write-Host "[+] Output Directory: $OutputDir" -ForegroundColor Green
+    Write-Host "[+] Forensic Report: $(Join-Path $OutputDir 'ForensicReport.html')" -ForegroundColor Green
+    Write-Host "[+] CSV Data: $(Join-Path $OutputDir 'CSV_Data')" -ForegroundColor Green
+    Write-Host "[+] JSON Data: $(Join-Path $OutputDir 'JSON_Data')" -ForegroundColor Green
     
-    if ($ForensicDump -or $ExportLogs) {
-        Write-Host "[+] Output Directory: $OutputDir" -ForegroundColor Green
-        
-        if ($ForensicDump) {
-            Write-Host "[+] Forensic Report: $(Join-Path $OutputDir 'ForensicReport.html')" -ForegroundColor Green
-            Write-Host "[+] CSV Data: $(Join-Path $OutputDir 'CSV_Data')" -ForegroundColor Green
-            Write-Host "[+] JSON Data: $(Join-Path $OutputDir 'JSON_Data')" -ForegroundColor Green
-        }
-        
-        if ($ExportLogs) {
-            Write-Host "[+] EVTX Export: $(Join-Path $OutputDir 'EVTX_Export')" -ForegroundColor Green
-        }
+    if ($ExportLogs) {
+        Write-Host "[+] EVTX Export: $(Join-Path $OutputDir 'EVTX_Export')" -ForegroundColor Green
     }
     
     Write-Host ""
