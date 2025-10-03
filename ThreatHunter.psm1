@@ -2066,6 +2066,7 @@ function Hunt-ForensicDump {
 
 
 Function Hunt-Persistence {
+    [CmdletBinding()]
     <#
 .SYNOPSIS
 Hunts for Windows persistence mechanisms across registry, services, tasks, and file system locations.
@@ -2253,13 +2254,39 @@ https://attack.mitre.org/tactics/TA0003/
     # Process Search parameter - add custom strings to suspicious IOCs
     if ($Search -and $Search.Count -gt 0) {
         Write-Verbose "Adding $($Search.Count) custom strings to suspicious IOCs list..."
+    
+        # Initialize array if not already initialized
+        if (-not $script:SuspiciousStringIOCs) {
+            $script:SuspiciousStringIOCs = @()
+        }
+    
         foreach ($customIOC in $Search) {
             if (![string]::IsNullOrWhiteSpace($customIOC)) {
-                $script:SuspiciousStringIOCs += $customIOC.Trim()
+                $trimmedIOC = $customIOC.Trim()
+                # Avoid duplicates
+                if ($script:SuspiciousStringIOCs -notcontains $trimmedIOC) {
+                    $script:SuspiciousStringIOCs += $trimmedIOC
+                }
             }
         }
         Write-Verbose "Total suspicious IOCs after custom additions: $($script:SuspiciousStringIOCs.Count)"
+        Write-Verbose "[+] Added $($Search.Count) custom search string(s) to detection logic"
     }
+
+    # Debug: Show what we're searching for
+    if ($Search -and $Search.Count -gt 0) {
+        Write-Verbose "=== SEARCH DEBUG ==="
+        Write-Verbose "Search terms provided: $($Search -join ', ')"
+        Write-Verbose "Current SuspiciousStringIOCs array contains: $($script:SuspiciousStringIOCs -join ', ')"
+        Write-Verbose "===================="
+    }
+    # Debug: Verify we're continuing to main execution
+    Write-Verbose "=== EXECUTION CHECK ==="
+    Write-Verbose "Mode: $Mode"
+    Write-Verbose "Technique: $Technique"
+    Write-Verbose "About to enter main execution block..."
+    Write-Verbose "========================"
+    
 
     # Initialize variables
     $script:globalPersistenceObjectArray = [System.Collections.Generic.List[PSCustomObject]]::new()
@@ -2756,6 +2783,9 @@ https://attack.mitre.org/tactics/TA0003/
         $signatureToCheck = $PersistenceObject.Signature
         $techniqueToCheck = $PersistenceObject.Technique
 
+        # NEW: Track if custom search string matched - this bypasses technique filtering
+        $customSearchMatched = $false
+
         # Helper function to check if signature is valid (treats Valid and Valid_Expired as same)
         function Test-ValidSignature {
             param([string]$Signature)
@@ -2837,14 +2867,16 @@ https://attack.mitre.org/tactics/TA0003/
         # === UNIVERSAL DETECTION LOGIC (ALL MODES) ===
 
         # 1. Check for suspicious string IOCs in Value and Execute Path
-        foreach ($fieldValue in @($valueToCheck, $executePathToCheck)) {
+        foreach ($fieldValue in @($valueToCheck, $executePathToCheck, $pathToCheck)) {
             if ($fieldValue) {
                 foreach ($ioc in $script:SuspiciousStringIOCs) {
                     if ($fieldValue -like "*$ioc*") {
                         $flags += "SUS_STRING: '$ioc'"
-                        break
+                        $customSearchMatched = $true  # Mark that custom search matched
+                        Write-Verbose "MATCH FOUND: IOC '$ioc' matched in field: $fieldValue"
                     }
                 }
+                if ($customSearchMatched) { break }  # Exit outer loop if matched
             }
         }
 
@@ -2853,7 +2885,6 @@ https://attack.mitre.org/tactics/TA0003/
             foreach ($ioc in $script:AggressiveStringIOCs) {
                 if ($valueToCheck -like "*$ioc*") {
                     $flags += "SUS_STRING: '$ioc'"
-                    break
                 }
             }
         }
@@ -2863,7 +2894,6 @@ https://attack.mitre.org/tactics/TA0003/
             foreach ($ioc in $script:InsaneStringIOCs) {
                 if ($valueToCheck -like "*$ioc*") {
                     $flags += "SUS_STRING: '$ioc'"
-                    break
                 }
             }
         }
@@ -2892,7 +2922,6 @@ https://attack.mitre.org/tactics/TA0003/
                     foreach ($ext in $script:suspiciousFileExt) {
                         if ($fieldValue -like "*$ext*") {
                             $flags += "SUS_EXT: '$ext'"
-                            break
                         }
                     }
                 }
@@ -2906,7 +2935,6 @@ https://attack.mitre.org/tactics/TA0003/
                     foreach ($path in $script:suspiciousPaths) {
                         if ($fieldValue -like "*$path*") {
                             $flags += "SUS_PATH: '$path'"
-                            break
                         }
                     }
                 }
@@ -2919,7 +2947,6 @@ https://attack.mitre.org/tactics/TA0003/
                 foreach ($binary in $script:executionBinaries) {
                     if ($fieldValue -match "(?i)([A-Z]:\\(Users|AppData|Temp)\\.*?\\$binary\b)") {
                         $flags += "SUS_PATH_EXE: $binary"
-                        break
                     }
                 }
             }
@@ -2933,7 +2960,6 @@ https://attack.mitre.org/tactics/TA0003/
             foreach ($ioc in $script:SuspiciousStringIOCs) {
                 if ($lnkTarget -like "*$ioc*") {
                     $flags += "LNK_SUS_STRING: '$ioc'"
-                    break
                 }
             }
     
@@ -2941,7 +2967,6 @@ https://attack.mitre.org/tactics/TA0003/
             foreach ($path in $script:suspiciousPaths) {
                 if ($lnkTarget -like "*$path*") {
                     $flags += "LNK_SUS_PATH: '$path'"
-                    break
                 }
             }
         }
@@ -3497,15 +3522,22 @@ https://attack.mitre.org/tactics/TA0003/
 
         # Set the flags on the object
         $PersistenceObject.Flag = ($flags | Sort-Object -Unique) -join '; '
-    
+            
         # === MODE-SPECIFIC DECISION LOGIC ===
-    
+
         if ($Mode -eq 'All') {
             # ALL MODE - Return everything with flags populated
             return $true
         }
         elseif ($Mode -eq 'Auto') {
             # Auto mode: High-fidelity, only flag clearly suspicious items
+            Write-Verbose "AUTO MODE CHECK: customSearchMatched=$customSearchMatched, flags.Count=$($flags.Count), Technique=$techniqueToCheck"
+            # CRITICAL FIX: If custom search string matched, ALWAYS return true
+            if ($customSearchMatched) {
+                Write-Verbose "RETURNING TRUE: Custom search matched"
+                return $true
+            }
+            Write-Verbose "RETURNING: $($flags.Count -gt 0) (flags present: $($flags -join ', '))"
             return $flags.Count -gt 0
         }
         elseif ($Mode -eq 'Aggressive') {
@@ -3916,10 +3948,14 @@ https://attack.mitre.org/tactics/TA0003/
                         try {
                             $result = & reg.exe load "HKLM\$mountPoint" $ntUserPath 2>$null
                             if ($LASTEXITCODE -eq 0) {
+                                # Use string path instead of Get-Item to avoid creating persistent handles
                                 $mountedHivePath = "Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\$mountPoint"
                                 $null = $hiveList.Add($mountedHivePath)
                                 $script:mountedHives += $mountPoint
                                 Write-Verbose "Mounted unloaded profile: $sid"
+                                
+                                # Small delay after mount to ensure filesystem sync
+                                Start-Sleep -Milliseconds 100
                             }
                             else {
                                 Write-Verbose "Failed to mount profile for SID: $sid (reg.exe exit code: $LASTEXITCODE)"
@@ -3936,6 +3972,16 @@ https://attack.mitre.org/tactics/TA0003/
             }
         }
     
+        # Notify user about hive loading results
+        if ($Unloaded) {
+            if ($script:mountedHives.Count -gt 0) {
+                Write-Host "[+] Successfully mounted $($script:mountedHives.Count) unloaded user hive(s)" -ForegroundColor Green
+            }
+            else {
+                Write-Host "[!] No unloaded user hives were mounted (may already be loaded or no unmounted hives found)" -ForegroundColor Yellow
+            }
+        }
+
         Write-Verbose "Found $($hiveList.Count) registry hives for scanning (Mounted: $($script:mountedHives.Count))"
         return $hiveList
     }
@@ -3943,7 +3989,7 @@ https://attack.mitre.org/tactics/TA0003/
     function Dismount-TemporaryHives {
         [CmdletBinding()]
         param()
-
+    
         # Get Temp DFIR Hives by name - find all hives with the naming convention prefix "TEMP_DFIR_"
         $TempDFIRHives = @()
         try {
@@ -3953,31 +3999,64 @@ https://attack.mitre.org/tactics/TA0003/
         catch {
             Write-Verbose "Error enumerating HKLM subkeys: $($_.Exception.Message)"
         }
-    
+        
         if ($script:mountedHives -and $script:mountedHives.Count -gt 0 -or $TempDFIRHives.Count -gt 0) {
             # Combine both arrays and remove duplicates
             $allHivesToDismount = @()
             if ($script:mountedHives) { $allHivesToDismount += $script:mountedHives }
             if ($TempDFIRHives) { $allHivesToDismount += $TempDFIRHives }
             $allHivesToDismount = $allHivesToDismount | Select-Object -Unique
-        
+            
             Write-Verbose "Cleaning up $($allHivesToDismount.Count) temporarily mounted hives..."
-        
+            
+            # Force garbage collection to release registry handles
+            [System.GC]::Collect()
+            [System.GC]::WaitForPendingFinalizers()
+            [System.GC]::Collect()
+            
+            # Small delay to allow handles to fully close
+            Start-Sleep -Milliseconds 500
+            
             foreach ($mountPoint in $allHivesToDismount) {
-                try {
-                    $result = & reg.exe unload "HKLM\$mountPoint" 2>$null
-                    if ($LASTEXITCODE -eq 0) {
-                        Write-Verbose "Successfully dismounted: $mountPoint"
+                $maxRetries = 3
+                $retryCount = 0
+                $dismounted = $false
+                
+                while (-not $dismounted -and $retryCount -lt $maxRetries) {
+                    try {
+                        $result = & reg.exe unload "HKLM\$mountPoint" 2>$null
+                        if ($LASTEXITCODE -eq 0) {
+                            Write-Verbose "Successfully dismounted: $mountPoint"
+                            $dismounted = $true
+                        }
+                        else {
+                            $retryCount++
+                            if ($retryCount -lt $maxRetries) {
+                                Write-Verbose "Failed to dismount $mountPoint (exit code: $LASTEXITCODE), retry $retryCount of $maxRetries"
+                                
+                                # Force another GC and wait longer
+                                [System.GC]::Collect()
+                                [System.GC]::WaitForPendingFinalizers()
+                                Start-Sleep -Milliseconds 1000
+                            }
+                            else {
+                                Write-Warning "Failed to dismount $mountPoint after $maxRetries attempts (exit code: $LASTEXITCODE)"
+                            }
+                        }
                     }
-                    else {
-                        Write-Warning "Failed to dismount $mountPoint (exit code: $LASTEXITCODE)"
+                    catch {
+                        $retryCount++
+                        if ($retryCount -lt $maxRetries) {
+                            Write-Verbose "Error dismounting $mountPoint (retry $retryCount of $maxRetries): $($_.Exception.Message)"
+                            Start-Sleep -Milliseconds 1000
+                        }
+                        else {
+                            Write-Warning "Error dismounting $mountPoint after $maxRetries attempts: $($_.Exception.Message)"
+                        }
                     }
-                }
-                catch {
-                    Write-Warning "Error dismounting $mountPoint : $($_.Exception.Message)"
                 }
             }
-        
+            
             # Clear the tracking array
             $script:mountedHives = @()
         }
@@ -5309,10 +5388,40 @@ https://attack.mitre.org/tactics/TA0003/
         Write-Verbose "$hostname - Checking Service Control Manager security descriptor..."
         try {
             $currentSDDL = (sc.exe sdshow scmanager 2>$null) -join ''
-            $defaultSDDL = 'D:(A;;CC;;;AU)(A;;CCLCRPRC;;;IU)(A;;CCLCRPRC;;;SU)(A;;CCLCRPWPRC;;;SY)(A;;KA;;;BA)(A;;CC;;;AC)(A;;CC;;;S-1-15-3-1024-528118966-3876874398-709513571-1907873084-3598227634-3698730060-278077788-3990600205)'
-            if ($currentSDDL -notlike $defaultSDDL) {
-                $PersistenceObject = New-PersistenceObject -Hostname $hostname -Technique 'Service Control Manager Security Descriptor' -Classification 'Uncatalogued Technique N.14' -Path 'Service Control Manager' -Value $currentSDDL -AccessGained 'System' -Note 'Modified SCM security descriptor can allow non-admin processes to create privileged services.' -Reference 'https://pentestlab.blog/2023/03/20/persistence-service-control-manager/'
             
+            # Define the default DACL (Discretionary Access Control List) - this is what controls permissions
+            # We only check DACL because that's what attackers modify for persistence
+            # SACL (System Access Control List) varies legitimately and only controls auditing
+            $defaultDACL = 'D:(A;;CC;;;AU)(A;;CCLCRPRC;;;IU)(A;;CCLCRPRC;;;SU)(A;;CCLCRPWPRC;;;SY)(A;;KA;;;BA)(A;;CC;;;AC)(A;;CC;;;S-1-15-3-1024-528118966-3876874398-709513571-1907873084-3598227634-3698730060-278077788-3990600205)'
+            
+            # Extract only the DACL portion from current SDDL (everything before 'S:')
+            $currentDACL = ($currentSDDL -split 'S:')[0]
+            
+            # Check for specific high-risk permission grants
+            $hasDangerousPermissions = $false
+            $dangerousPatterns = @()
+            
+            # Critical: Everyone (WD) has full control (KA) - the primary persistence technique
+            if ($currentDACL -match '\(A;;KA;;;WD\)') {
+                $hasDangerousPermissions = $true
+                $dangerousPatterns += "Everyone group has full control"
+            }
+            
+            # Warning: Built-in Users (BU) or Authenticated Users (AU) have service creation rights
+            if ($currentDACL -match '\(A;;[^;]*C[^;]*;;;(BU|AU)\)' -and $currentDACL -notmatch '\(A;;CC;;;AU\)') {
+                $hasDangerousPermissions = $true
+                $dangerousPatterns += "Broad user groups have service creation rights"
+            }
+            
+            # Compare DACL to detect any permission changes
+            if ($currentDACL -ne $defaultDACL) {
+                $note = 'Modified SCM security descriptor can allow non-admin processes to create privileged services.'
+                if ($dangerousPatterns.Count -gt 0) {
+                    $note += " Detected: $($dangerousPatterns -join '; ')"
+                }
+                
+                $PersistenceObject = New-PersistenceObject -Hostname $hostname -Technique 'Service Control Manager Security Descriptor' -Classification 'Uncatalogued Technique N.14' -Path 'Service Control Manager' -Value $currentSDDL -AccessGained 'System' -Note $note -Reference 'https://pentestlab.blog/2023/03/20/persistence-service-control-manager/'
+                
                 if ((Test-ShouldIncludeEntry $PersistenceObject $Mode) -and (-not (Test-ExcludeEntry $PersistenceObject))) {
                     $script:globalPersistenceObjectArray.Add($PersistenceObject)
                 }
@@ -5819,6 +5928,10 @@ https://attack.mitre.org/tactics/TA0003/
     try {
         # Main execution logic
         Write-Verbose "$hostname - Starting execution..."
+        # Enhanced error handling wrapper
+        # Main execution logic
+        Write-Verbose "=== MAIN EXECUTION STARTED ==="
+        Write-Verbose "$hostname - Starting execution with Mode: $Mode, Technique: $Technique"
         if ($Technique -eq 'All') {
             if (-not $Quiet) { Write-Progress -Activity "Hunt-Persistence" -Status "Getting Registry Run Keys..." -PercentComplete 2 }
             Get-RunKeys
@@ -6209,7 +6322,6 @@ https://attack.mitre.org/tactics/TA0003/
 
         # Cleanup
         Dismount-TemporaryHives
-  
         $script:globalPersistenceObjectArray = @($script:globalPersistenceObjectArray)
     
         # Handle CSV export
@@ -6295,64 +6407,73 @@ https://attack.mitre.org/tactics/TA0003/
             }
         }
 
-        # Display results to console (unless Quiet is specified)
-        if (-not $Quiet) {
-            if ($null -eq $script:globalPersistenceObjectArray -or $script:globalPersistenceObjectArray.Count -eq 0) {
-                Write-Host "`n[X] No persistence mechanisms found" -ForegroundColor Red
-            }
-            else {
-                # Summary
-                $modeText = if ($Mode -eq 'Aggressive') { 
-                    if ($Insane) { "insane mode" } else { "aggressive mode" }
-                }
-                else { "auto mode" }
-                Write-Host "-------------------- $($script:globalPersistenceObjectArray.Count) potential persistence mechanisms ($modeText) --------------------" -ForegroundColor Green
-
-                # Use indexed access instead of foreach
-                for ($i = 0; $i -lt $script:globalPersistenceObjectArray.Count; $i++) {
-                    try {
-                        Write-ColoredPersistenceResult $script:globalPersistenceObjectArray[$i]
-                    }
-                    catch {
-                        Write-Verbose "Error displaying result: $($_.Exception.Message)"
-                        continue
-                    }
-                }
-
-                Write-Host ""
-                Write-Host "-------------------- $($script:globalPersistenceObjectArray.Count) potential persistence mechanisms ($modeText) --------------------" -ForegroundColor Green
-            }
-            Write-Host ""
-        }
-
-        # Return objects only if PassThru is specified
-        if ($PassThru) {
-            Write-Verbose "Returning $($script:globalPersistenceObjectArray.Count) objects via PassThru"
-            return $script:globalPersistenceObjectArray
-        }
-
     }
     catch {
         Write-Error "Critical error during persistence hunting: $($_.Exception.Message)"
-        if ($PassThru) { return @() }
-        return
+        Write-Verbose "[DEBUG] Error occurred, but continuing to display results..."
     }
-    finally {
-        # Cleanup
-        try {
-            Dismount-TemporaryHives
-            if (-not $Quiet) {
-                Write-Progress -Activity "Hunt-Persistence" -Completed
+
+    # Display and return section - OUTSIDE try/catch so it always executes
+    Write-Verbose "[DEBUG] About to display results. Array count: $($script:globalPersistenceObjectArray.Count)"
+    Write-Verbose "[DEBUG] Quiet mode: $Quiet"
+    if ($script:globalPersistenceObjectArray.Count -gt 0) {
+        Write-Verbose "[DEBUG] First entry technique: $($script:globalPersistenceObjectArray[0].Technique)"
+    }
+
+    # Display results to console (unless Quiet is specified)
+    if (-not $Quiet) {
+        if ($null -eq $script:globalPersistenceObjectArray -or $script:globalPersistenceObjectArray.Count -eq 0) {
+            Write-Host "`n[X] No persistence mechanisms found" -ForegroundColor Red
+        }
+        else {
+            # Summary
+            $modeText = switch ($Mode) {
+                'Aggressive' { 
+                    if ($Insane) { "insane mode" } else { "aggressive mode" }
+                }
+                'All' { "all mode" }
+                default { "auto mode" }
             }
+            Write-Host "-------------------- $($script:globalPersistenceObjectArray.Count) potential persistence mechanisms ($modeText) --------------------" -ForegroundColor Green
+            # Use indexed access instead of foreach
+            for ($i = 0; $i -lt $script:globalPersistenceObjectArray.Count; $i++) {
+                try {
+                    Write-ColoredPersistenceResult $script:globalPersistenceObjectArray[$i]
+                }
+                catch {
+                    Write-Verbose "Error displaying result: $($_.Exception.Message)"
+                    continue
+                }
+            }
+
+            Write-Host ""
+            Write-Host "-------------------- $($script:globalPersistenceObjectArray.Count) potential persistence mechanisms ($modeText) --------------------" -ForegroundColor Green
         }
-        catch {
-            Write-Warning "Cleanup error: $($_.Exception.Message)"
+        Write-Host ""
+    }
+
+    # Return objects only if PassThru is specified
+    if ($PassThru) {
+        Write-Verbose "Returning $($script:globalPersistenceObjectArray.Count) objects via PassThru"
+        return $script:globalPersistenceObjectArray
+    }
+
+    # Final cleanup
+    try {
+        Dismount-TemporaryHives
+        if (-not $Quiet) {
+            Write-Progress -Activity "Hunt-Persistence" -Completed
         }
+    }
+    catch {
+        Write-Warning "Cleanup error: $($_.Exception.Message)"
     }
 }
 
 
+
 Function Hunt-Logs {
+    [CmdletBinding()]
     <#
 .SYNOPSIS
 Hunts for security indicators and suspicious activities across Windows Event Logs and file systems.
@@ -8024,6 +8145,7 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
 
 
 function Hunt-Browser {
+    [CmdletBinding()]
     <#
 .SYNOPSIS
 Hunts for browser artifacts, history, and network indicators across user profiles and DNS logs.
@@ -8205,7 +8327,7 @@ Uses third-party tool to extract comprehensive browser history to specified file
         # Limit length to prevent memory issues
         if ($sanitized.Length -gt 32767) {
             $sanitized = $sanitized.Substring(0, 32767) + "...[TRUNCATED]"
-            Write-Host "[DEBUG] Truncated to 32767 chars" -ForegroundColor DarkYellow
+            Write-Verbose "[DEBUG] Truncated to 32767 chars"
         }
     
         return $sanitized
