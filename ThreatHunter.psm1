@@ -17,9 +17,8 @@
 
 #   Global Notes:
 # -------------------
-# - Maybe create "Hunt-All" handler. Auto hunting and wrapper for sub-functions
 # - Make Wiki
-# - Sspend genuine time building and tuning the IOC and string lists
+# - Spend genuine time building and tuning the IOC and string lists
 # - FIX persistence hunter. Registry loading/unloading needs reviewed, and unloading needs fixed
 # - add signatures functionality to the hunt-files cmdlet, display certi/sig status
 
@@ -217,10 +216,10 @@ function Hunt-ForensicDump {
         [string[]]$Config = @('All'),
 
         [Parameter(Mandatory = $false)]
-        [int]$MaxChars = 200,
+        [int]$MaxChars = 2000,
 
         [Parameter(Mandatory = $false)]
-        [int]$MaxRows = 0, 
+        [int]$MaxRows = 1000, 
 
         [Parameter(Mandatory = $false)]
         [switch]$AllFields,
@@ -1236,6 +1235,7 @@ function Hunt-ForensicDump {
             <div class="csv-section">
                 <h2 style="color: #3498db; margin-bottom: 15px;">CSV Data Files</h2>
                 <p style="margin-bottom: 15px; color: #bdc3c7;">Download complete datasets for offline analysis:</p>
+                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 10px;">
 "@
 
         if (Test-Path $CSVDir) {
@@ -1243,7 +1243,7 @@ function Hunt-ForensicDump {
             foreach ($csv in $csvFiles) {
                 $relPath = "CSV_Data/$($csv.Name)"
                 $sizeMB = [math]::Round($csv.Length / 1KB, 1)
-                $html += "                <a href='$relPath' class='csv-link'>$($csv.Name) ($sizeMB KB)</a>`n"
+                $html += "                    <a href='$relPath' class='csv-link'>$($csv.Name) ($sizeMB KB)</a>`n"
             }
         }
 
@@ -1433,6 +1433,30 @@ function Hunt-ForensicDump {
                 if (!data || data.length === 0) {
                     content.innerHTML = '<p style="color: #888;">No data available</p>';
                     return;
+                }
+                
+                // Auto-sort logs by TimeCreated (newest first) on initial load
+                if (type === 'logs' && data.length > 0) {
+                    data.sort(function(a, b) {
+                        var dateA = a.TimeCreated || a['Formatted Time'] || '';
+                        var dateB = b.TimeCreated || b['Formatted Time'] || '';
+                        if (!dateA) return 1;
+                        if (!dateB) return -1;
+                        return dateB.localeCompare(dateA, undefined, {numeric: true});
+                    });
+                    sortState['logs-TimeCreated'] = 'desc';
+                }
+                
+                // Auto-sort files by LastModifiedDate (newest first) on initial load
+                if (type === 'files' && data.length > 0) {
+                    data.sort(function(a, b) {
+                        var dateA = a.LastModifiedDate || a.LastModified || '';
+                        var dateB = b.LastModifiedDate || b.LastModified || '';
+                        if (!dateA) return 1;
+                        if (!dateB) return -1;
+                        return dateB.localeCompare(dateA, undefined, {numeric: true});
+                    });
+                    sortState['files-LastModifiedDate'] = 'desc';
                 }
                 
                 loadedData[type] = data;
@@ -3978,7 +4002,7 @@ https://attack.mitre.org/tactics/TA0003/
                 Write-Host "[+] Successfully mounted $($script:mountedHives.Count) unloaded user hive(s)" -ForegroundColor Green
             }
             else {
-                Write-Host "[!] No unloaded user hives were mounted (may already be loaded or no unmounted hives found)" -ForegroundColor Yellow
+                Write-Host "[X] No unloaded user hives were mounted [already loaded/none found]" -ForegroundColor Yellow
             }
         }
 
