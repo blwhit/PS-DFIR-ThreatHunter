@@ -24,6 +24,7 @@
 # - test local load browsinghistoryview
 # - Add human readable translations for Hunt-ForensicDump (i.e. start time and status and state for services/tasks/etc...)
 # - fix or remove the cache function for Hunt-Browser
+# - fix the date rang functionality with Hunt-Browser.... it right now just gets ALL existing data no matter what you input
 
 
 #   Full Review/Pass-Through
@@ -12053,7 +12054,7 @@ function Hunt-Tasks {
                             if ($task.Triggers) {
                                 foreach ($trigger in $task.Triggers) {
                                     try {
-                                        $triggerType = $trigger.CimClass.CimClassName -replace 'MSFT_TaskTrigger', '' -replace 'Trigger', ''
+                                        $triggerType = $Trigger.CimClass.CimClassName -replace 'MSFT_Task', '' -replace 'Trigger', ''
                                         $triggerTypes += $triggerType
                                     }
                                     catch {
@@ -12272,67 +12273,59 @@ function Hunt-Tasks {
                                         Write-Host (Format-DateTime -DateTime $workingDirDetails.Accessed) -ForegroundColor DarkGray
                                     }
                                 }
-
                                 # Show triggers - always show with status message if none available
                                 Write-Host ""
                                 Write-Host "--- Triggers ---" -ForegroundColor DarkCyan
                                 if ($task.Triggers -and $task.Triggers.Count -gt 0) {
-                                    $hasValidTriggers = $false
-                                    $triggerOutput = @()
-
+                                    $triggerCount = 0
                                     foreach ($trigger in $task.Triggers) {
                                         try {
-                                            $triggerType = $trigger.CimClass.CimClassName -replace 'MSFT_TaskTrigger', '' -replace 'Trigger', ''
-                                            $triggerLines = @()
-
-                                            if ($triggerType) {
-                                                $triggerLines += "Type         : $triggerType"
-                                                $hasValidTriggers = $true
+                                            $triggerCount++
+                                            
+                                            # Get all properties from the trigger object
+                                            $triggerProperties = $trigger | Get-Member -MemberType Property | Select-Object -ExpandProperty Name
+                                            
+                                            if ($task.Triggers.Count -gt 1) {
+                                                Write-Host ""
+                                                Write-Host "Trigger #$triggerCount" -ForegroundColor Cyan
                                             }
-                                            if ($trigger.StartBoundary) {
-                                                $triggerLines += "Start Time   : $($trigger.StartBoundary)"
-                                                $hasValidTriggers = $true
-                                            }
-                                            if ($trigger.Enabled -eq $false) {
-                                                $triggerLines += "Status       : Disabled"
-                                                $hasValidTriggers = $true
-                                            }
-
-                                            if ($triggerLines.Count -gt 0) {
-                                                $triggerOutput += $triggerLines
+                                            
+                                            foreach ($prop in $triggerProperties) {
+                                                try {
+                                                    $value = $trigger.$prop
+                                                    
+                                                    # Only display properties that have values
+                                                    if ($null -ne $value -and $value -ne '') {
+                                                        $propName = $prop.PadRight(18)
+                                                        Write-Host "$propName : " -NoNewline -ForegroundColor Yellow
+                                                        
+                                                        # Color code based on property name or value
+                                                        if ($prop -eq 'Enabled' -and $value -eq $false) {
+                                                            Write-Host $value -ForegroundColor Red
+                                                        }
+                                                        elseif ($prop -eq 'CimClass') {
+                                                            Write-Host $value.CimClassName -ForegroundColor DarkGray
+                                                        }
+                                                        else {
+                                                            Write-Host $value -ForegroundColor DarkGray
+                                                        }
+                                                    }
+                                                }
+                                                catch {
+                                                    # Skip properties that can't be accessed
+                                                }
                                             }
                                         }
                                         catch {
-                                            # Continue if trigger parsing fails
+                                            Write-Host "Trigger #$triggerCount : " -NoNewline -ForegroundColor Yellow
+                                            Write-Host "Parse error" -ForegroundColor Red
                                         }
-                                    }
-
-                                    # Display triggers or status message
-                                    if ($hasValidTriggers) {
-                                        foreach ($line in $triggerOutput) {
-                                            if ($line -like "Type*") {
-                                                Write-Host "Type         : " -NoNewline -ForegroundColor Yellow
-                                                Write-Host ($line -replace "Type         : ", "") -ForegroundColor DarkGray
-                                            }
-                                            elseif ($line -like "Start Time*") {
-                                                Write-Host "Start Time   : " -NoNewline -ForegroundColor Yellow
-                                                Write-Host ($line -replace "Start Time   : ", "") -ForegroundColor DarkGray
-                                            }
-                                            elseif ($line -like "Status*") {
-                                                Write-Host "Status       : " -NoNewline -ForegroundColor Yellow
-                                                Write-Host ($line -replace "Status       : ", "") -ForegroundColor Red
-                                            }
-                                        }
-                                    }
-                                    else {
-                                        Write-Host "Status       : " -NoNewline -ForegroundColor Yellow
-                                        Write-Host "Trigger Information Unavailable" -ForegroundColor DarkGray
                                     }
                                 }
                                 else {
                                     Write-Host "Status       : " -NoNewline -ForegroundColor Yellow
                                     Write-Host "No Triggers Found" -ForegroundColor DarkGray
-                                }
+                                }                            
                             }
                         }
                         catch {
