@@ -21,6 +21,11 @@
 # - Spend genuine time building and tuning the IOC and string lists
 # - FIX persistence hunter. Registry loading/unloading needs reviewed, and unloading needs fixed
 # - add signatures functionality to the hunt-files cmdlet, display certi/sig status
+# - add error handling so tabs with 0 results can be handled in the Forensic HTML
+# - can we change VT hash columns to a "hyperlink" blue color instead of red
+# - can we add to the "write-progress" banner, a "Estimated Progress" field
+#     |------->   as the script executes and calculates total file processing and start/end times, etc....
+#     |------->   it continuously updates the estimated time for script completion.
 
 
 #   Full Review/Pass-Through
@@ -216,10 +221,10 @@ function Hunt-ForensicDump {
         [string[]]$Config = @('All'),
 
         [Parameter(Mandatory = $false)]
-        [int]$MaxChars = 2000,
+        [int]$MaxChars = 1000,
 
         [Parameter(Mandatory = $false)]
-        [int]$MaxRows = 1000, 
+        [int]$MaxRows = 2500, 
 
         [Parameter(Mandatory = $false)]
         [switch]$AllFields,
@@ -1785,9 +1790,9 @@ function Hunt-ForensicDump {
     }
     
     Write-Host ""
-    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "=================================" -ForegroundColor Yellow
     Write-Host "    FORENSIC DUMP INITIATED" -ForegroundColor Yellow
-    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "=================================" -ForegroundColor Yellow
     Write-Host "[+] Output Directory: $OutputDir" -ForegroundColor Green
     Write-Host "[+] Mode: $(if ($Aggressive) { 'Aggressive' } else { 'Auto' })" -ForegroundColor Green
     Write-Host "[+] Date Range: $parsedStartDate to $parsedEndDate" -ForegroundColor Green
@@ -7156,7 +7161,7 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
                 Write-Host "Archive Size: $exportSizeMB MB" -ForegroundColor Cyan
                 Write-Host "Original Size: $([math]::Round($totalSize / 1MB, 2)) MB" -ForegroundColor Cyan
                 Write-Host "Compression: $compressionRatio%" -ForegroundColor Cyan
-                Write-Host "Files: $copiedCount event logs" -ForegroundColor Cyan
+                Write-Host "Logs: $copiedCount providers" -ForegroundColor Cyan
                 
                 if ($accessDeniedCount -gt 0 -or $copyErrors -gt 0) {
                     Write-Host ""
