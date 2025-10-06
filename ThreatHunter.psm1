@@ -23,7 +23,7 @@
 # - add signatures functionality to the hunt-files cmdlet, display certi/sig status
 # - test local load browsinghistoryview
 # - Add human readable translations for Hunt-ForensicDump (i.e. start time and status and state for services/tasks/etc...)
-# - fox or remove the cache function for Hunt-Browser
+# - fix or remove the cache function for Hunt-Browser
 
 
 #   Full Review/Pass-Through
@@ -236,10 +236,10 @@ function Hunt-ForensicDump {
         [string[]]$Config = @('All'),
 
         [Parameter(Mandatory = $false)]
-        [int]$MaxChars = 1000,
+        [int]$MaxChars = 500,
 
         [Parameter(Mandatory = $false)]
-        [int]$MaxRows = 2500, 
+        [int]$MaxRows = 1500, 
 
         [Parameter(Mandatory = $false)]
         [switch]$AllFields,
@@ -255,7 +255,6 @@ function Hunt-ForensicDump {
     )
 
 
-    # Helper function: Progress tracking with estimation
     function Update-ProgressWithEstimate {
         param(
             [string]$Activity,
@@ -271,21 +270,37 @@ function Hunt-ForensicDump {
         $currentTime = Get-Date
         $StepTimes.Value[$PercentComplete] = $currentTime
         
-        # Calculate time remaining using simple estimation
-        if ($PercentComplete -gt 10 -and $PercentComplete -lt 100) {
+        # Only show estimates after 25% completion for better accuracy
+        # Early stages (system info, persistence) are fast; later stages (files, logs) are slow
+        if ($PercentComplete -gt 25 -and $PercentComplete -lt 95) {
             $elapsed = ($currentTime - $script:StartTime).TotalSeconds
-            if ($elapsed -gt 0) {
-                $rate = $PercentComplete / $elapsed
+            if ($elapsed -gt 5) {
+                # Only estimate if we have at least 5 seconds of data
+                # Use exponential smoothing factor to account for non-linear progress
+                # Later stages take disproportionately longer
+                $adjustedRate = $PercentComplete / $elapsed
+                
+                # Apply correction factor: later stages are slower
+                if ($PercentComplete -gt 50) {
+                    $adjustedRate = $adjustedRate * 0.7  # Assume 30% slower after halfway
+                }
+                
                 $remainingPercent = 100 - $PercentComplete
-                $estimatedRemaining = [math]::Round($remainingPercent / $rate)
+                $estimatedRemaining = [math]::Round($remainingPercent / $adjustedRate)
+                
+                # Cap unrealistic estimates
+                if ($estimatedRemaining -gt 3600) {
+                    # More than 1 hour seems wrong
+                    $estimatedRemaining = 3600
+                }
                 
                 if ($estimatedRemaining -ge 60) {
                     $minutes = [math]::Floor($estimatedRemaining / 60)
                     $seconds = $estimatedRemaining % 60
-                    $Status = "$Status (Est. ~${minutes}m ${seconds}s remaining)"
+                    $Status = "$Status (~${minutes}m remaining)"
                 }
                 else {
-                    $Status = "$Status (Est. ~${estimatedRemaining}s remaining)"
+                    $Status = "$Status (~${estimatedRemaining}s remaining)"
                 }
             }
         }
@@ -507,7 +522,7 @@ function Hunt-ForensicDump {
             [hashtable]$ForensicData
         )
     
-        $jsonDir = Join-Path $OutputDir "JSON_Data"
+        $jsonDir = Join-Path $OutputDir "HTML_Files"
         if (-not (Test-Path $jsonDir)) {
             New-Item -Path $jsonDir -ItemType Directory -Force | Out-Null
         }
@@ -580,10 +595,20 @@ function Hunt-ForensicDump {
 
         # Define field omissions per data type
         $omitFields = if (-not $AllFields) {
+            # Check if browser data is from LoadTool mode
+            $browserOmitFields = @('String', 'Hostname', 'Source')
+            if ($ForensicData.Browser -and $ForensicData.Browser.Count -gt 0) {
+                $sampleBrowser = $ForensicData.Browser[0]
+                if ($sampleBrowser.PSObject.Properties['MatchPattern'] -and $sampleBrowser.MatchPattern -eq 'LoadTool') {
+                    # LoadTool mode: omit additional fields
+                    $browserOmitFields = @('String', 'Hostname', 'Source', 'MatchPattern', 'Length', 'Count')
+                }
+            }
+            
             @{
                 persistence = @('Hostname', 'IsBuiltInBinary', 'IsLolbin')
                 logs        = @('Type', 'TimeCreated', 'RecordId', 'XML', 'Hostname', 'FilePath', 'FileName', 'CreationDate', 'LastModifiedDate', 'Text')
-                browser     = @('String', 'Hostname', 'Source')
+                browser     = $browserOmitFields
                 services    = @('Hostname')
                 tasks       = @('TaskFileExists', 'TaskFileModified', 'ExecutableExists', 'ScriptFileExists', 'Hostname')
                 files       = @('IsDirectory', 'MatchedContent', 'MatchedNames')
@@ -1316,7 +1341,7 @@ function Hunt-ForensicDump {
         if (Test-Path $CSVDir) {
             $csvFiles = Get-ChildItem -Path $CSVDir -Filter "*.csv" -ErrorAction SilentlyContinue
             foreach ($csv in $csvFiles) {
-                $relPath = "CSV_Data/$($csv.Name)"
+                $relPath = "ForensicData_CSV/$($csv.Name)"
                 $sizeMB = [math]::Round($csv.Length / 1KB, 1)
                 $html += "                    <a href='$relPath' class='csv-link'>$($csv.Name) ($sizeMB KB)</a>`n"
             }
@@ -1971,10 +1996,10 @@ function Hunt-ForensicDump {
     $progressTimes = @{}
     
     # Create subdirectories
-    $csvDir = Join-Path $OutputDir "CSV_Data"
+    $csvDir = Join-Path $OutputDir "ForensicData_CSV"
     New-Item -Path $csvDir -ItemType Directory -Force | Out-Null
 
-    $jsonDir = Join-Path $OutputDir "JSON_Data"
+    $jsonDir = Join-Path $OutputDir "HTML_Files"
     New-Item -Path $jsonDir -ItemType Directory -Force | Out-Null
     
     # Initialize data collection results
@@ -2018,7 +2043,20 @@ function Hunt-ForensicDump {
                 OutputCSV = Join-Path $csvDir "Persistence.csv"
             }
             
-            $forensicData.Persistence = Hunt-Persistence @persistenceParams
+            $persistenceResults = Hunt-Persistence @persistenceParams
+            
+            # Verify Flag field exists
+            if ($persistenceResults -and $persistenceResults.Count -gt 0) {
+                $sampleResult = $persistenceResults[0]
+                if ($sampleResult.PSObject.Properties['Flag']) {
+                    Write-Host "  [-] Flag field verified in persistence data" -ForegroundColor DarkGray
+                }
+                else {
+                    Write-Host "  [!] Warning: Flag field missing from persistence results" -ForegroundColor Yellow
+                }
+            }
+            
+            $forensicData.Persistence = $persistenceResults
         }
         catch {
             Write-Warning "Persistence collection failed: $($_.Exception.Message)"
@@ -2119,17 +2157,16 @@ function Hunt-ForensicDump {
             # Handle LoadTool mode based on LoadBrowserTool switch and LoadToolPath
             if ($LoadBrowserTool) {
                 $browserParams['LoadTool'] = $true
+                $browserParams['SkipConfirmation'] = $true 
                 
                 if (![string]::IsNullOrWhiteSpace($LoadToolPath)) {
                     # Local path provided
                     Write-Host "  [-] Using LoadTool mode with path: $LoadToolPath" -ForegroundColor DarkGray
                     $browserParams['LoadToolPath'] = $LoadToolPath
-                    $browserParams['SkipConfirmation'] = $true
                 }
                 else {
                     # No path provided - will download
                     Write-Host "  [-] Using LoadTool mode (will download from internet)..." -ForegroundColor DarkGray
-                    $browserParams['SkipConfirmation'] = $false  # Ask for confirmation
                 }
             }
             elseif ($Aggressive) {
@@ -2293,8 +2330,8 @@ function Hunt-ForensicDump {
     Write-Host "[+] Total Runtime: $($duration.Hours)h $($duration.Minutes)m $($duration.Seconds)s" -ForegroundColor Yellow
     Write-Host "[+] Output Directory: $OutputDir" -ForegroundColor Green
     Write-Host "[+] Forensic Report: $(Join-Path $OutputDir 'ForensicReport.html')" -ForegroundColor Green
-    Write-Host "[+] CSV Data: $(Join-Path $OutputDir 'CSV_Data')" -ForegroundColor Green
-    Write-Host "[+] JSON Data: $(Join-Path $OutputDir 'JSON_Data')" -ForegroundColor Green
+    Write-Host "[+] Forensic Data CSVs: $(Join-Path $OutputDir 'ForensicData_CSV')" -ForegroundColor Green
+    #Write-Host "[+] HTML Data: $(Join-Path $OutputDir 'HTML_Files')" -ForegroundColor Green
     
     if ($ExportLogs) {
         Write-Host "[+] EVTX Export: $(Join-Path $OutputDir 'EVTX_Export')" -ForegroundColor Green
@@ -9295,10 +9332,9 @@ Downloads tool and saves results to specified CSV file.
             Write-Host "This tool will be downloaded, extracted, and executed to extract" -ForegroundColor White
             Write-Host "browser history data from your system." -ForegroundColor White
             Write-Host ""
-            Write-Host "NirSoft is a well-known developer of Windows utilities, but you" -ForegroundColor White
-            Write-Host "should verify this yourself before proceeding." -ForegroundColor White
-            Write-Host ""
-            Write-Host "Alternative: Use built-in Hunt-Browser modes (-Auto, -All, -Aggressive)" -ForegroundColor DarkGray
+            Write-Host "[Options]"
+            Write-Host "Load local copy with '-LoadToolPath',"
+            Write-Host "Use built-in Hunt-Browser modes (-Auto, -All, -Aggressive)" -ForegroundColor DarkGray
             Write-Host "or skip this confirmation with -SkipConfirmation parameter." -ForegroundColor DarkGray
             Write-Host ""
     
@@ -9309,7 +9345,6 @@ Downloads tool and saves results to specified CSV file.
                 if ($confirmation -eq 'N' -or $confirmation -eq 'NO') {
                     Write-Host ""
                     Write-Host "[CANCELLED] LoadTool mode cancelled by user." -ForegroundColor Yellow
-                    Write-Host "Consider using built-in modes: Hunt-Browser -Auto or Hunt-Browser -All" -ForegroundColor Cyan
                     return @()
                 }
                 elseif ($confirmation -eq 'Y' -or $confirmation -eq 'YES') {
@@ -9441,19 +9476,30 @@ Downloads tool and saves results to specified CSV file.
                         $csvData = Import-Csv $outputCsv -ErrorAction Stop
                 
                         $currentUser = if ($env:USERNAME) { $env:USERNAME } else { "Unknown" }
-                        $results = $csvData | ForEach-Object {
-                            [PSCustomObject]@{
-                                User         = Sanitize-Output $currentUser
-                                Browser      = Sanitize-Output ($_.WebBrowser -replace '\s+', ' ')
-                                String       = Sanitize-Output ($_.URL)
-                                FullString   = Sanitize-Output ($_.URL)
-                                MatchPattern = "LoadTool"
-                                Length       = if ($_.URL) { ($_.URL -replace '[^\w]', '').Length } else { 0 }
-                                Source       = "LoadTool"
-                                Hostname     = Sanitize-Output $Hostname
-                                Count        = 1
-                                Title        = Sanitize-Output ($_.Title)
-                                VisitTime    = Sanitize-Output ($_.VisitTime)
+                        
+                        # CRITICAL: Use List<PSObject> instead of array/ArrayList to prevent enumerator corruption
+                        $results = [System.Collections.Generic.List[PSObject]]::new()
+                        
+                        foreach ($row in $csvData) {
+                            try {
+                                $resultObj = [PSCustomObject]@{
+                                    User         = Sanitize-Output $currentUser
+                                    Browser      = Sanitize-Output ($row.WebBrowser -replace '\s+', ' ')
+                                    String       = Sanitize-Output ($row.URL)
+                                    FullString   = Sanitize-Output ($row.URL)
+                                    MatchPattern = "LoadTool"
+                                    Length       = if ($row.URL) { ($row.URL -replace '[^\w]', '').Length } else { 0 }
+                                    Source       = "LoadTool"
+                                    Hostname     = Sanitize-Output $Hostname
+                                    Count        = 1
+                                    Title        = Sanitize-Output ($row.Title)
+                                    VisitTime    = Sanitize-Output ($row.VisitTime)
+                                }
+                                $results.Add($resultObj)
+                            }
+                            catch {
+                                Write-Verbose "Failed to process CSV row: $($_.Exception.Message)"
+                                continue
                             }
                         }
                 
@@ -9462,7 +9508,8 @@ Downloads tool and saves results to specified CSV file.
                             Write-Host "[SAVED]    CSV file preserved at: $outputCsv" -ForegroundColor Green
                         }
                 
-                        return $results
+                        # Return as array for compatibility
+                        return @($results)
                     }
                     catch {
                         if (-not $Quiet) {
