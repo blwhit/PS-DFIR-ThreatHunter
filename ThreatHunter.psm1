@@ -21,8 +21,9 @@
 # - Spend genuine time building and tuning the IOC and string lists
 # - FIX persistence hunter. Registry loading/unloading needs reviewed, and unloading needs fixed
 # - add signatures functionality to the hunt-files cmdlet, display certi/sig status
-# - add a browsing history view option for the forensic dump-- to properly get the browser history (opt. to use local exe too)
-# - add a local load browsinghistoryview version to the Hunt-Browser function, so users dont have to download from internet
+# - test local load browsinghistoryview
+# - Add human readable translations for Hunt-ForensicDump (i.e. start time and status and state for services/tasks/etc...)
+# - fox or remove the cache function for Hunt-Browser
 
 
 #   Full Review/Pass-Through
@@ -236,6 +237,8 @@ function Hunt-ForensicDump {
         [string]$Timezone = "",
         
         [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [AllowNull()]
         [string]$LoadTool = ""
     )
 
@@ -465,7 +468,8 @@ function Hunt-ForensicDump {
             if (Get-Command Hunt-Registry -ErrorAction SilentlyContinue) {
                 # Use Hunt-Registry to get all Run keys and autorun locations
                 $registryResults = Hunt-Registry -RunKeys -LoadHives -PassThru -Quiet -OutputCSV (Join-Path $OutputDir "Registry_RunKeys.csv")
-            } else {
+            }
+            else {
                 Write-Host "  [!] Hunt-Registry function not found, skipping registry analysis" -ForegroundColor Red
                 return @()
             }
@@ -709,7 +713,7 @@ function Hunt-ForensicDump {
             # Hunt-Registry returns PSCustomObjects with Hostname, Hive, KeyPath, ValueName, ValueType, ValueData, SearchTerm, MatchLocation
             $registryData = $ForensicData.Registry
         }
-        $registryJson = Prepare-DataForJSON -Data $registryData -Type 'registry' -MaxRows $MaxRows -OmitFields @('Hostname')
+        $registryJson = Prepare-DataForJSON -Data $registryData -Type 'registry' -MaxRows $MaxRows -OmitFields @('Hostname', 'SearchTerm', 'MatchLocation', 'CSVExportPath')
 
 
         # Build System Info sections as static HTML
@@ -1108,11 +1112,18 @@ function Hunt-ForensicDump {
             position: relative;
         }
         
+        /* Make ALL table headers sticky - both system info and data tables */
+        .table-wrapper table thead th,
         .section-card .table-wrapper table thead th {
             position: sticky;
             top: 0;
-            z-index: 10;
+            z-index: 100;
             background: #34495e;
+        }
+        
+        /* Ensure resizer works with sticky headers */
+        .table-wrapper table thead th .resizer {
+            z-index: 101;
         }
         .csv-section {margin: 20px 0; background: #2c2c2c; padding: 20px; border-radius: 8px; }
         .csv-link { 
@@ -2093,11 +2104,20 @@ function Hunt-ForensicDump {
                 OutputCSV = Join-Path $csvDir "Browser.csv"
             }
             
-            # If LoadTool parameter provided, use it
-            if (![string]::IsNullOrWhiteSpace($LoadTool)) {
-                Write-Host "  [-] Using LoadTool mode with local executable..." -ForegroundColor DarkGray
-                $browserParams['LoadTool'] = $LoadTool
-                $browserParams['SkipConfirmation'] = $true
+            # If LoadTool parameter was explicitly passed (even if empty), handle it
+            if ($PSBoundParameters.ContainsKey('LoadTool')) {
+                if ([string]::IsNullOrWhiteSpace($LoadTool)) {
+                    # LoadTool switch used but no path provided - download from internet
+                    Write-Host "  [-] Using LoadTool mode (will download from internet)..." -ForegroundColor DarkGray
+                    $browserParams['LoadTool'] = ""
+                    $browserParams['SkipConfirmation'] = $false  # Ask for confirmation when downloading
+                }
+                else {
+                    # LoadTool path provided - use local executable
+                    Write-Host "  [-] Using LoadTool mode with local executable: $LoadTool" -ForegroundColor DarkGray
+                    $browserParams['LoadTool'] = $LoadTool
+                    $browserParams['SkipConfirmation'] = $true
+                }
             }
             elseif ($Aggressive) {
                 $browserParams['All'] = $true
@@ -2135,7 +2155,7 @@ function Hunt-ForensicDump {
                 StartDate = $parsedStartDate
                 EndDate   = $parsedEndDate
                 PassThru  = $true
-                Quiet     = $false
+                Quiet     = $true
                 OutputCSV = Join-Path $csvDir "EventLogs.csv"
             }
     
@@ -8425,7 +8445,10 @@ Uses third-party tool to extract comprehensive browser history to specified file
         [switch]$Auto,
         [switch]$Aggressive,
         [switch]$All,
-        [string]$LoadTool,
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$LoadTool = $null,
         [int]$Truncate = 0,
         [string[]]$Search = @(),
         [string[]]$Exclude = @(),
@@ -9955,6 +9978,9 @@ Uses third-party tool to extract comprehensive browser history to specified file
         return
     }
     
+    # Check if LoadTool was specified (even without a value)
+    $isLoadToolMode = $PSBoundParameters.ContainsKey('LoadTool')
+    
     if ($Search.Count -gt 0 -or $Exclude.Count -gt 0) {
         $effectiveMode = if ($modeCount -eq 0) { "All" } else {
             switch ($true) {
@@ -9992,8 +10018,10 @@ Uses third-party tool to extract comprehensive browser history to specified file
     
     try {
         # Handle LoadTool mode
-        if ($PSBoundParameters.ContainsKey('LoadTool')) {
-            $results = Invoke-LoadToolMode -OutputPath $LoadTool -ExePath $LoadTool -Hostname $hostname -Quiet:$Quiet -SkipConfirmation:$SkipConfirmation
+        if ($isLoadToolMode) {
+            # Determine if LoadTool contains a path or is just the switch
+            $toolPath = if ([string]::IsNullOrWhiteSpace($LoadTool)) { "" } else { $LoadTool }
+            $results = Invoke-LoadToolMode -OutputPath $toolPath -ExePath $toolPath -Hostname $hostname -Quiet:$Quiet -SkipConfirmation:$SkipConfirmation
             if ($OutputCSV) {
                 Export-ResultsToCSV -Results $results -Path $OutputCSV -Quiet:$Quiet
             }
