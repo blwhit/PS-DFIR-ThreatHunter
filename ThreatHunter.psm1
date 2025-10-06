@@ -21,12 +21,8 @@
 # - Spend genuine time building and tuning the IOC and string lists
 # - FIX persistence hunter. Registry loading/unloading needs reviewed, and unloading needs fixed
 # - add signatures functionality to the hunt-files cmdlet, display certi/sig status
-
-# - add error handling so tabs with 0 results can be handled in the Forensic HTML
-# - can we change VT hash columns to a "hyperlink" blue color instead of red
-# - can we add to the "write-progress" banner, a "Estimated Progress" field
-#     |------->   as the script executes and calculates total file processing and start/end times, etc....
-#     |------->   it continuously updates the estimated time for script completion.
+# - add a browsing history view option for the forensic dump-- to properly get the browser history (opt. to use local exe too)
+# - add a local load browsinghistoryview version to the Hunt-Browser function, so users dont have to download from internet
 
 
 #   Full Review/Pass-Through
@@ -182,8 +178,14 @@ function Hunt-ForensicDump {
     .PARAMETER Timezone
     Timezone identifier for timestamp conversion. Default: system timezone.
     
+    .PARAMETER LoadTool
+    Path to local BrowsingHistoryView.exe for browser history extraction. If provided, uses LoadTool mode instead of built-in browser parsing.
+    
     .EXAMPLE
     Hunt-ForensicDump -StartDate "7D" -Auto
+    
+    .EXAMPLE
+    Hunt-ForensicDump -LoadTool "C:\Tools\BrowsingHistoryView.exe" -StartDate "30D"
     
     .EXAMPLE
     Hunt-ForensicDump -Config @('Persistence', 'Files', 'Logs') -StartDate "30D"
@@ -231,7 +233,10 @@ function Hunt-ForensicDump {
         [switch]$AllFields,
         
         [Parameter(Mandatory = $false)]
-        [string]$Timezone = ""
+        [string]$Timezone = "",
+        
+        [Parameter(Mandatory = $false)]
+        [string]$LoadTool = ""
     )
 
 
@@ -447,59 +452,30 @@ function Hunt-ForensicDump {
         throw "Invalid date input: $InputValue"
     }
 
-    # Helper function: Get Registry Forensics
-    function Get-RegistryForensics {
+    # Helper function: Invoke Hunt-Registry for comprehensive registry analysis
+    function Invoke-RegistryForensics {
         param(
             [string]$OutputDir
         )
     
-        $regData = @{}
-    
-        $regPaths = @{
-            'Run Keys'      = @(
-                'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
-                'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce',
-                'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
-                'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
-            )
-            'User Activity' = @(
-                'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs',
-                'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\TypedPaths',
-                'HKCU:\SOFTWARE\Microsoft\Internet Explorer\TypedURLs'
-            )
-            'Network'       = @(
-                'HKCU:\SOFTWARE\Microsoft\Terminal Server Client\Servers',
-                'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces'
-            )
-        }
-    
-        foreach ($category in $regPaths.Keys) {
-            Write-Host "  [-] Enumerating $category..." -ForegroundColor DarkGray
-        
-            $categoryData = @()
-            foreach ($path in $regPaths[$category]) {
-                try {
-                    if (Test-Path $path -ErrorAction SilentlyContinue) {
-                        $props = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
-                        if ($props) {
-                            $categoryData += $props
-                        }
-                    }
-                }
-                catch {
-                    Write-Verbose "Error accessing $path : $($_.Exception.Message)"
-                }
+        try {
+            Write-Host "  [-] Running comprehensive registry analysis..." -ForegroundColor DarkGray
+            
+            # Use Hunt-Registry to get all Run keys and autorun locations
+            $registryResults = Hunt-Registry -RunKeys -LoadHives -PassThru -Quiet -OutputCSV (Join-Path $OutputDir "Registry_RunKeys.csv")
+            
+            if ($null -eq $registryResults) {
+                $registryResults = @()
             }
-        
-            $regData[$category] = $categoryData
-        
-            if ($OutputDir -and $categoryData.Count -gt 0) {
-                $csvPath = Join-Path $OutputDir "Registry_$($category -replace ' ', '_').csv"
-                $categoryData | Export-Csv -Path $csvPath -NoTypeInformation -ErrorAction SilentlyContinue
-            }
+            
+            Write-Host "  [-] Found $($registryResults.Count) registry entries" -ForegroundColor DarkGray
+            
+            return $registryResults
         }
-    
-        return $regData
+        catch {
+            Write-Host "  [!] Registry analysis error: $($_.Exception.Message)" -ForegroundColor Red
+            return @()
+        }
     }
 
     # Helper function: Export data to JSON
@@ -561,9 +537,12 @@ function Hunt-ForensicDump {
         # Calculate stats
         $regCount = 0
         if ($ForensicData.Registry) {
-            foreach ($category in $ForensicData.Registry.Values) {
-                if ($category -is [array]) { $regCount += $category.Count }
-                elseif ($category) { $regCount += 1 }
+            # Registry data is now an array from Hunt-Registry, not a hashtable
+            if ($ForensicData.Registry -is [array]) {
+                $regCount = $ForensicData.Registry.Count
+            }
+            elseif ($ForensicData.Registry) {
+                $regCount = 1
             }
         }
 
@@ -716,6 +695,16 @@ function Hunt-ForensicDump {
     
         Write-Host "  [-] Preparing Files JSON..." -ForegroundColor DarkGray
         $filesJson = Prepare-DataForJSON -Data $ForensicData.Files.All -Type 'files' -MaxRows $MaxRows -OmitFields $omitFields['files']
+
+        Write-Host "  [-] Preparing Registry JSON..." -ForegroundColor DarkGray
+        # Registry data is already in the correct format from Hunt-Registry
+        $registryData = @()
+        if ($ForensicData.Registry -and $ForensicData.Registry.Count -gt 0) {
+            # Hunt-Registry returns PSCustomObjects with Hostname, Hive, KeyPath, ValueName, ValueType, ValueData, SearchTerm, MatchLocation
+            $registryData = $ForensicData.Registry
+        }
+        $registryJson = Prepare-DataForJSON -Data $registryData -Type 'registry' -MaxRows $MaxRows -OmitFields @('Hostname')
+
 
         # Build System Info sections as static HTML
         $psHistoryHtml = ""
@@ -1112,6 +1101,13 @@ function Hunt-ForensicDump {
             overflow-x: auto;
             position: relative;
         }
+        
+        .section-card .table-wrapper table thead th {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background: #34495e;
+        }
         .csv-section {margin: 20px 0; background: #2c2c2c; padding: 20px; border-radius: 8px; }
         .csv-link { 
             display: block; 
@@ -1127,7 +1123,7 @@ function Hunt-ForensicDump {
         .csv-link:hover { background: #2980b9; }
         .record-count { color: #95a5a6; font-size: 0.9em; margin: 10px 0; }
         .vt-link { color: #3498db; text-decoration: none; font-weight: 500; }
-        .vt-link:hover { color: #c0392b; text-decoration: underline; }
+        .vt-link:hover { color: #5dade2; text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -1146,6 +1142,7 @@ function Hunt-ForensicDump {
             <button class="tab-button active" onclick="showTab('summary')">Summary</button>
             <button class="tab-button" onclick="showTab('sysinfo')">System Info</button>
             <button class="tab-button" onclick="showTab('persistence')">Persistence ($($stats.Persistence))</button>
+            <button class="tab-button" onclick="showTab('registry')">Registry ($($stats.Registry))</button>
             <button class="tab-button" onclick="showTab('logs')">Event Logs ($($stats.Logs))</button>
             <button class="tab-button" onclick="showTab('browser')">Browser ($($stats.Browser))</button>
             <button class="tab-button" onclick="showTab('services')">Services ($($stats.Services))</button>
@@ -1251,6 +1248,10 @@ function Hunt-ForensicDump {
             <div id="persistence-content"></div>
         </div>
         
+        <div id="registry-tab" class="tab-content">
+            <div id="registry-content"></div>
+        </div>
+        
         <div id="logs-tab" class="tab-content">
             <div class="log-provider-selector">
                 <label for="log-provider-select">Filter by Log Provider:</label>
@@ -1350,6 +1351,7 @@ function Hunt-ForensicDump {
         
         var embeddedData = {
             persistence: $persistenceJson,
+            registry: $registryJson,
             logs: $logsJson,
             browser: $browserJson,
             services: $servicesJson,
@@ -1400,7 +1402,7 @@ function Hunt-ForensicDump {
             
             currentTab = tabName;
             
-            var dataTypes = ['persistence', 'logs', 'browser', 'services', 'tasks', 'files'];
+            var dataTypes = ['persistence', 'registry', 'logs', 'browser', 'services', 'tasks', 'files'];
             if (dataTypes.indexOf(tabName) !== -1) {
                 if (tabName === 'logs') {
                     initializeLogProviderSelector();
@@ -2054,16 +2056,24 @@ function Hunt-ForensicDump {
         Update-ProgressWithEstimate -Activity "Forensic Dump" -StepTimes ([ref]$progressTimes) -Status "Analyzing registry..." -PercentComplete 35
         Write-Host "[+] Analyzing registry..." -ForegroundColor Yellow
         try {
-            $forensicData.Registry = Get-RegistryForensics -OutputDir $csvDir
+            $forensicData.Registry = Invoke-RegistryForensics -OutputDir $csvDir
+            
+            if ($null -eq $forensicData.Registry) {
+                $forensicData.Registry = @()
+                Write-Host "  [!] No registry data returned" -ForegroundColor Yellow
+            }
+            else {
+                Write-Host "  [+] Collected $($forensicData.Registry.Count) registry entries" -ForegroundColor Green
+            }
         }
         catch {
-            Write-Warning "Registry analysis failed: $($_.Exception.Message)"
-            $forensicData.Registry = @{}
+            Write-Host "  [!] Registry analysis error: $($_.Exception.Message)" -ForegroundColor Red
+            $forensicData.Registry = @()
         }
     }
     else {
         Write-Host "[SKIP] Registry analysis (not in Config)" -ForegroundColor DarkGray
-        $forensicData.Registry = @{}
+        $forensicData.Registry = @()
     }
     
     # Collect Browser Data
@@ -2077,7 +2087,13 @@ function Hunt-ForensicDump {
                 OutputCSV = Join-Path $csvDir "Browser.csv"
             }
             
-            if ($Aggressive) {
+            # If LoadTool parameter provided, use it
+            if (![string]::IsNullOrWhiteSpace($LoadTool)) {
+                Write-Host "  [-] Using LoadTool mode with local executable..." -ForegroundColor DarkGray
+                $browserParams['LoadTool'] = $LoadTool
+                $browserParams['SkipConfirmation'] = $true
+            }
+            elseif ($Aggressive) {
                 $browserParams['All'] = $true
             }
             else {
@@ -2085,9 +2101,17 @@ function Hunt-ForensicDump {
             }
             
             $forensicData.Browser = Hunt-Browser @browserParams
+            
+            if ($null -eq $forensicData.Browser) {
+                $forensicData.Browser = @()
+                Write-Host "  [!] No browser data returned" -ForegroundColor Yellow
+            }
+            else {
+                Write-Host "  [+] Collected $($forensicData.Browser.Count) browser entries" -ForegroundColor Green
+            }
         }
         catch {
-            Write-Warning "Browser history extraction failed: $($_.Exception.Message)"
+            Write-Host "  [!] Browser history extraction error: $($_.Exception.Message)" -ForegroundColor Red
             $forensicData.Browser = @()
         }
     }
@@ -2105,26 +2129,32 @@ function Hunt-ForensicDump {
                 StartDate = $parsedStartDate
                 EndDate   = $parsedEndDate
                 PassThru  = $true
-                Quiet     = $true
+                Quiet     = $false
                 OutputCSV = Join-Path $csvDir "EventLogs.csv"
             }
     
             if ($Aggressive) {
-                if ($script:GlobalLogIOCs) {
-                    $logParams['Search'] = @($script:GlobalLogIOCs)
-                }
+                # Aggressive mode: search all logs without filters
+                Write-Host "  [-] Running in Aggressive mode (all logs)..." -ForegroundColor DarkGray
             }
             else {
-                if ($script:GlobalLogIOCs) {
-                    $logParams['Search'] = @($script:GlobalLogIOCs)
-                }
+                # Auto mode: limit to core logs
+                Write-Host "  [-] Running in Auto mode (core logs only)..." -ForegroundColor DarkGray
                 $logParams['LogNames'] = @("PowerShell", "Microsoft-Windows-PowerShell/Operational", "System", "Security", "Application")
             }
             
             $forensicData.Logs = Hunt-Logs @logParams
+            
+            if ($null -eq $forensicData.Logs) {
+                $forensicData.Logs = @()
+                Write-Host "  [!] No logs returned from Hunt-Logs" -ForegroundColor Yellow
+            }
+            else {
+                Write-Host "  [+] Collected $($forensicData.Logs.Count) log entries" -ForegroundColor Green
+            }
         }
         catch {
-            Write-Warning "Event log analysis failed: $($_.Exception.Message)"
+            Write-Host "  [!] Event log analysis error: $($_.Exception.Message)" -ForegroundColor Red
             $forensicData.Logs = @()
         }
     }
@@ -6787,7 +6817,7 @@ Requires PowerShell 5.0+. Administrator privileges recommended for complete log 
                 LastModifiedDate = $LogEvent.LastModifiedDate
                 Match            = $Match  # This is correct
                 Text             = $LogEvent.Text
-                Hostname         = Se([Net.Dns]::GetHostByName($env:computerName)).HostNamearch
+                Hostname         = ([Net.Dns]::GetHostByName($env:computerName)).HostName
                 TimeCreated      = $null
                 FormattedTime    = ""
                 LogName          = "FileSystem"
@@ -8335,7 +8365,7 @@ Expands detection to Search broader patterns that may generate more false positi
 .PARAMETER All
 Returns all discovered browser artifacts without filtering.
 
-.PARAMETER FetchTools
+.PARAMETER LoadTool
 Downloads and uses BrowsingHistoryView tool from NirSoft for comprehensive history extraction.
 
 .PARAMETER Truncate
@@ -8360,7 +8390,7 @@ Suppresses console output except for errors and critical information.
 Returns PowerShell objects for programmatic use instead of displaying results.
 
 .PARAMETER SkipConfirmation
-Skips user confirmation prompt when using FetchTools mode.
+Skips user confirmation prompt when using LoadTool mode.
 
 .EXAMPLE
 Hunt-Browser
@@ -8375,21 +8405,21 @@ Hunt-Browser -Include "*.evil.com*","*malware*" -Exclude "*google*" -PassThru | 
 Filters for specific patterns and returns objects for further PowerShell processing.
 
 .EXAMPLE
-Hunt-Browser -FetchTools "C:\Investigation\browser_history.csv" -SkipConfirmation
+Hunt-Browser -LoadTool "C:\Investigation\browser_history.csv" -SkipConfirmation
 Uses third-party tool to extract comprehensive browser history to specified file.
 
 .NOTES
 - Requires PowerShell 5.0 or higher
 - Administrator privileges recommended for complete system access
 - Some browser databases may be locked if browsers are currently running
-- FetchTools mode downloads third-party executable from NirSoft
+- LoadTool mode downloads third-party executable from NirSoft
 #>
     param(
         [switch]$Cache,
         [switch]$Auto,
         [switch]$Aggressive,
         [switch]$All,
-        [string]$FetchTools,
+        [string]$LoadTool,
         [int]$Truncate = 0,
         [string[]]$Search = @(),
         [string[]]$Exclude = @(),
@@ -9146,24 +9176,67 @@ Uses third-party tool to extract comprehensive browser history to specified file
         return $results
     }
 
-    function Invoke-FetchToolsMode {
+    function Invoke-LoadToolMode {
         param(
             [string]$OutputPath,
             [string]$Hostname,
+            [string]$ExePath,
             [switch]$Quiet,
             [switch]$SkipConfirmation
         )
-    
+
         if (-not $Quiet) {
-            Write-Host "[TOOL] Initializing FetchTools mode..." -ForegroundColor Cyan
+            Write-Host "[TOOL] Initializing LoadTool mode..." -ForegroundColor Cyan
         }
+
+        # Determine if we need to download or use local copy
+        $useLocalCopy = $false
+        $localExePath = ""
     
-        # Security confirmation for third-party executable download
-        if (-not $SkipConfirmation) {
+        if (![string]::IsNullOrWhiteSpace($ExePath)) {
+            try {
+                # Validate the provided path
+                $testPath = [System.IO.Path]::GetFullPath($ExePath)
+            
+                if (Test-Path $testPath -PathType Leaf -ErrorAction SilentlyContinue) {
+                    $extension = [System.IO.Path]::GetExtension($testPath)
+                    if ($extension -eq ".exe") {
+                        $useLocalCopy = $true
+                        $localExePath = $testPath
+                        if (-not $Quiet) {
+                            Write-Host "[LOCAL] Using local executable: $localExePath" -ForegroundColor Green
+                        }
+                    }
+                    else {
+                        if (-not $Quiet) {
+                            Write-Host "[WARN] Provided path is not an .exe file, will download from online" -ForegroundColor Yellow
+                        }
+                    }
+                }
+                else {
+                    if (-not $Quiet) {
+                        Write-Host "[WARN] Provided path does not exist, will download from online" -ForegroundColor Yellow
+                    }
+                }
+            }
+            catch {
+                if (-not $Quiet) {
+                    Write-Host "[WARN] Invalid path provided, will download from online" -ForegroundColor Yellow
+                }
+            }
+        }
+        else {
+            if (-not $Quiet) {
+                Write-Host "[INFO] No local path provided, will download from online" -ForegroundColor Cyan
+            }
+        }
+
+        # Security confirmation for third-party executable download (only if downloading)
+        if (-not $useLocalCopy -and -not $SkipConfirmation) {
             Write-Host ""
             Write-Host "[ CONFIRMATION REQUIRED ]" -ForegroundColor Red
             Write-Host ""
-            Write-Host "FetchTools mode requires downloading a third-party executable:" -ForegroundColor White
+            Write-Host "LoadTool mode requires downloading a third-party executable:" -ForegroundColor White
             Write-Host "  Tool: BrowsingHistoryView by NirSoft" -ForegroundColor White
             Write-Host "  URL:  https://www.nirsoft.net/utils/browsinghistoryview.zip" -ForegroundColor White
             Write-Host "  Info: https://www.nirsoft.net/utils/browsing_history_view.html" -ForegroundColor White
@@ -9177,14 +9250,14 @@ Uses third-party tool to extract comprehensive browser history to specified file
             Write-Host "Alternative: Use built-in Hunt-Browser modes (-Auto, -All, -Aggressive)" -ForegroundColor DarkGray
             Write-Host "or skip this confirmation with -SkipConfirmation parameter." -ForegroundColor DarkGray
             Write-Host ""
-        
+    
             do {
                 $confirmation = Read-Host "Do you want to download and execute this third-party tool? (Y/N)"
                 $confirmation = $confirmation.Trim().ToUpper()
-            
+        
                 if ($confirmation -eq 'N' -or $confirmation -eq 'NO') {
                     Write-Host ""
-                    Write-Host "[CANCELLED] FetchTools mode cancelled by user." -ForegroundColor Yellow
+                    Write-Host "[CANCELLED] LoadTool mode cancelled by user." -ForegroundColor Yellow
                     Write-Host "Consider using built-in modes: Hunt-Browser -Auto or Hunt-Browser -All" -ForegroundColor Cyan
                     return @()
                 }
@@ -9198,7 +9271,7 @@ Uses third-party tool to extract comprehensive browser history to specified file
                 }
             } while ($true)
         }
-    
+
         # Determine output CSV path safely
         $outputCsv = ""
         if ([string]::IsNullOrWhiteSpace($OutputPath)) {
@@ -9213,7 +9286,7 @@ Uses third-party tool to extract comprehensive browser history to specified file
         else {
             $outputCsv = $OutputPath + ".csv"
         }
-    
+
         # Sanitize and resolve output path
         try {
             $outputCsv = Resolve-SafePath -Path $outputCsv -AllowNew -Extension ".csv"
@@ -9222,7 +9295,7 @@ Uses third-party tool to extract comprehensive browser history to specified file
             Write-Error "Invalid output path specified"
             return @()
         }
-    
+
         # Ensure output directory exists
         try {
             $outputDir = Split-Path $outputCsv -Parent
@@ -9235,127 +9308,131 @@ Uses third-party tool to extract comprehensive browser history to specified file
             Write-Error "Failed to create output directory for CSV: $($_.Exception.Message)"
             return @()
         }
-    
+
         $tempDir = Join-Path -Path $env:TEMP -ChildPath ("Hunt-Browser-Tools-" + [guid]::NewGuid().ToString())
-        $script:AllFilesToCleanup += $tempDir
-    
+        $finalExePath = ""
+
         try {
-            New-Item -Path $tempDir -ItemType Directory -Force -ErrorAction Stop | Out-Null
-        
-            # Download and extract BrowsingHistoryView
-            $downloadUrl = "https://www.nirsoft.net/utils/browsinghistoryview.zip"
-            $infoUrl = "https://www.nirsoft.net/utils/browsing_history_view.html"
-            $zipPath = Join-Path -Path $tempDir -ChildPath "browsinghistoryview.zip"
-        
-            if (-not $Quiet) {
-                Write-Host "[DOWNLOAD] Downloading BrowsingHistoryView from NirSoft..." -ForegroundColor Yellow
-                Write-Host "[SOURCE]   Download URL: $downloadUrl" -ForegroundColor Gray
-                Write-Host "[INFO]     Tool info: $infoUrl" -ForegroundColor Gray
-                Write-Host "[STATUS]   Initiating secure download..." -ForegroundColor Cyan
+            if ($useLocalCopy) {
+                # Use the local copy provided by user
+                $finalExePath = $localExePath
             }
+            else {
+                # Download and extract
+                New-Item -Path $tempDir -ItemType Directory -Force -ErrorAction Stop | Out-Null
+                $script:AllFilesToCleanup += $tempDir
         
-            try {
-                # Use TLS 1.2 for security
-                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-                Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing -ErrorAction Stop
-            
+                $downloadUrl = "https://www.nirsoft.net/utils/browsinghistoryview.zip"
+                $infoUrl = "https://www.nirsoft.net/utils/browsing_history_view.html"
+                $zipPath = Join-Path -Path $tempDir -ChildPath "browsinghistoryview.zip"
+        
                 if (-not $Quiet) {
-                    $fileSize = [math]::Round((Get-Item $zipPath).Length / 1KB, 2)
-                    Write-Host "[SUCCESS]  Downloaded $fileSize KB successfully" -ForegroundColor Green
+                    Write-Host "[DOWNLOAD] Downloading BrowsingHistoryView from NirSoft..." -ForegroundColor Yellow
+                    Write-Host "[SOURCE]   Download URL: $downloadUrl" -ForegroundColor Gray
+                    Write-Host "[INFO]     Tool info: $infoUrl" -ForegroundColor Gray
+                    Write-Host "[STATUS]   Initiating secure download..." -ForegroundColor Cyan
                 }
-            }
-            catch {
-                Write-Error "Failed to download BrowsingHistoryView: $($_.Exception.Message)"
-                Write-Host "[HELP]     Check network connection and try again, or use built-in modes" -ForegroundColor Yellow
-                return @()
-            }
         
-            if (-not $Quiet) {
-                Write-Host "[EXTRACT]  Extracting archive..." -ForegroundColor Cyan
-            }
-        
-            try {
-                Add-Type -AssemblyName System.IO.Compression.FileSystem
-                [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $tempDir)
-            
-                if (-not $Quiet) {
-                    Write-Host "[SUCCESS]  Archive extracted successfully" -ForegroundColor Green
-                }
-            }
-            catch {
-                Write-Error "Failed to extract BrowsingHistoryView: $($_.Exception.Message)"
-                return @()
-            }
-        
-            $exePath = Join-Path -Path $tempDir -ChildPath "BrowsingHistoryView.exe"
-        
-            if (Test-Path $exePath -ErrorAction SilentlyContinue) {
                 try {
-                    # Sanitize arguments to prevent command injection
-                    $safeOutputPath = "`"$outputCsv`""
-                    $arguments = @("/HistorySource", "1", "/VisitTimeFilterType", "1", "/SaveDirect", "/scomma", $safeOutputPath)
-                
+                    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                    Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing -ErrorAction Stop
+            
                     if (-not $Quiet) {
-                        Write-Host "[EXEC]     Executing BrowsingHistoryView..." -ForegroundColor Green
-                        Write-Host "[OUTPUT]   Results will be saved to: $outputCsv" -ForegroundColor Cyan
-                    }
-                
-                    $proc = Start-Process -FilePath $exePath -ArgumentList $arguments -Wait -PassThru -NoNewWindow -ErrorAction Stop
-                
-                    if ($proc.ExitCode -eq 0 -and (Test-Path $outputCsv -ErrorAction SilentlyContinue)) {
-                        try {
-                            $csvData = Import-Csv $outputCsv -ErrorAction Stop
-                        
-                            # Convert to standardized objects with sanitization
-                            $currentUser = if ($env:USERNAME) { $env:USERNAME } else { "Unknown" }
-                            $results = $csvData | ForEach-Object {
-                                [PSCustomObject]@{
-                                    User         = Sanitize-Output $currentUser
-                                    Browser      = Sanitize-Output ($_.WebBrowser -replace '\s+', ' ')
-                                    String       = Sanitize-Output ($_.URL)
-                                    FullString   = Sanitize-Output ($_.URL)
-                                    MatchPattern = "FetchTools"
-                                    Length       = if ($_.URL) { ($_.URL -replace '[^\w]', '').Length } else { 0 }
-                                    Source       = "FetchTools"
-                                    Hostname     = Sanitize-Output $Hostname
-                                    Count        = 1
-                                    Title        = Sanitize-Output ($_.Title)
-                                    VisitTime    = Sanitize-Output ($_.VisitTime)
-                                }
-                            }
-                        
-                            if (-not $Quiet) {
-                                Write-Host "[SUCCESS]  Extracted $($results.Count) browser history entries" -ForegroundColor Green
-                                Write-Host "[SAVED]    CSV file preserved at: $outputCsv" -ForegroundColor Green
-                            }
-                        
-                            return $results
-                        }
-                        catch {
-                            if (-not $Quiet) {
-                                Write-Host "[SAVED]    CSV file preserved at: $outputCsv" -ForegroundColor Green
-                            }
-                            return @()
-                        }
-                    }
-                    else {
-                        Write-Error "BrowsingHistoryView failed to generate output (Exit Code: $($proc.ExitCode))"
-                        return @()
+                        $fileSize = [math]::Round((Get-Item $zipPath).Length / 1KB, 2)
+                        Write-Host "[SUCCESS]  Downloaded $fileSize KB successfully" -ForegroundColor Green
                     }
                 }
                 catch {
-                    Write-Error "Failed to execute BrowsingHistoryView: $($_.Exception.Message)"
+                    Write-Error "Failed to download BrowsingHistoryView: $($_.Exception.Message)"
+                    Write-Host "[HELP]     Check network connection and try again, or use built-in modes" -ForegroundColor Yellow
+                    return @()
+                }
+        
+                if (-not $Quiet) {
+                    Write-Host "[EXTRACT]  Extracting archive..." -ForegroundColor Cyan
+                }
+        
+                try {
+                    Add-Type -AssemblyName System.IO.Compression.FileSystem
+                    [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $tempDir)
+            
+                    if (-not $Quiet) {
+                        Write-Host "[SUCCESS]  Archive extracted successfully" -ForegroundColor Green
+                    }
+                }
+                catch {
+                    Write-Error "Failed to extract BrowsingHistoryView: $($_.Exception.Message)"
+                    return @()
+                }
+        
+                $finalExePath = Join-Path -Path $tempDir -ChildPath "BrowsingHistoryView.exe"
+        
+                if (-not (Test-Path $finalExePath -ErrorAction SilentlyContinue)) {
+                    Write-Error "BrowsingHistoryView.exe not found after extraction"
                     return @()
                 }
             }
-            else {
-                Write-Error "BrowsingHistoryView.exe not found after extraction"
+
+            # Execute the tool
+            try {
+                $safeOutputPath = "`"$outputCsv`""
+                $arguments = @("/HistorySource", "1", "/VisitTimeFilterType", "1", "/SaveDirect", "/scomma", $safeOutputPath)
+        
+                if (-not $Quiet) {
+                    Write-Host "[EXEC]     Executing BrowsingHistoryView..." -ForegroundColor Green
+                    Write-Host "[OUTPUT]   Results will be saved to: $outputCsv" -ForegroundColor Cyan
+                }
+        
+                $proc = Start-Process -FilePath $finalExePath -ArgumentList $arguments -Wait -PassThru -NoNewWindow -ErrorAction Stop
+        
+                if ($proc.ExitCode -eq 0 -and (Test-Path $outputCsv -ErrorAction SilentlyContinue)) {
+                    try {
+                        $csvData = Import-Csv $outputCsv -ErrorAction Stop
+                
+                        $currentUser = if ($env:USERNAME) { $env:USERNAME } else { "Unknown" }
+                        $results = $csvData | ForEach-Object {
+                            [PSCustomObject]@{
+                                User         = Sanitize-Output $currentUser
+                                Browser      = Sanitize-Output ($_.WebBrowser -replace '\s+', ' ')
+                                String       = Sanitize-Output ($_.URL)
+                                FullString   = Sanitize-Output ($_.URL)
+                                MatchPattern = "LoadTool"
+                                Length       = if ($_.URL) { ($_.URL -replace '[^\w]', '').Length } else { 0 }
+                                Source       = "LoadTool"
+                                Hostname     = Sanitize-Output $Hostname
+                                Count        = 1
+                                Title        = Sanitize-Output ($_.Title)
+                                VisitTime    = Sanitize-Output ($_.VisitTime)
+                            }
+                        }
+                
+                        if (-not $Quiet) {
+                            Write-Host "[SUCCESS]  Extracted $($results.Count) browser history entries" -ForegroundColor Green
+                            Write-Host "[SAVED]    CSV file preserved at: $outputCsv" -ForegroundColor Green
+                        }
+                
+                        return $results
+                    }
+                    catch {
+                        if (-not $Quiet) {
+                            Write-Host "[SAVED]    CSV file preserved at: $outputCsv" -ForegroundColor Green
+                        }
+                        return @()
+                    }
+                }
+                else {
+                    Write-Error "BrowsingHistoryView failed to generate output (Exit Code: $($proc.ExitCode))"
+                    return @()
+                }
+            }
+            catch {
+                Write-Error "Failed to execute BrowsingHistoryView: $($_.Exception.Message)"
                 return @()
             }
-        
+    
         }
         catch {
-            Write-Error "FetchTools mode failed: $($_.Exception.Message)"
+            Write-Error "LoadTool mode failed: $($_.Exception.Message)"
             return @()
         }
     }
@@ -9858,8 +9935,8 @@ Uses third-party tool to extract comprehensive browser history to specified file
     if ($OutputCSV) {
         $OutputCSV = Resolve-SafePath -Path $OutputCSV -AllowNew -Extension ".csv"
     }
-    if ($FetchTools) {
-        $FetchTools = Resolve-SafePath -Path $FetchTools -AllowNew
+    if ($LoadTool) {
+        $LoadTool = Resolve-SafePath -Path $LoadTool -AllowNew
     }
     
     # Determine mode logic
@@ -9881,7 +9958,7 @@ Uses third-party tool to extract comprehensive browser history to specified file
             }
         }
     }
-    elseif ($modeCount -eq 0 -and -not $Cache -and -not $FetchTools) {
+    elseif ($modeCount -eq 0 -and -not $Cache -and -not $LoadTool) {
         $effectiveMode = "Auto"
     }
     else {
@@ -9894,7 +9971,7 @@ Uses third-party tool to extract comprehensive browser history to specified file
         }
     }
     
-    if (-not $effectiveMode -and -not $Cache -and -not $FetchTools) {
+    if (-not $effectiveMode -and -not $Cache -and -not $LoadTool) {
         Write-Error "Unable to determine operation mode"
         if ($PassThru) { return @() }
         return
@@ -9908,14 +9985,14 @@ Uses third-party tool to extract comprehensive browser history to specified file
     $hostname = if ($fullhostname) { $fullhostname } else { "Unknown" }
     
     try {
-        # Handle FetchTools mode
-        if ($FetchTools) {
-            $results = Invoke-FetchToolsMode -OutputPath $FetchTools -Hostname $hostname -Quiet:$Quiet -SkipConfirmation:$SkipConfirmation
+        # Handle LoadTool mode
+        if ($PSBoundParameters.ContainsKey('LoadTool')) {
+            $results = Invoke-LoadToolMode -OutputPath $LoadTool -ExePath $LoadTool -Hostname $hostname -Quiet:$Quiet -SkipConfirmation:$SkipConfirmation
             if ($OutputCSV) {
                 Export-ResultsToCSV -Results $results -Path $OutputCSV -Quiet:$Quiet
             }
     
-            # FetchTools mode always returns objects (legacy behavior)
+            # LoadTool mode always returns objects (legacy behavior)
             # But respect PassThru for consistency
             if ($PassThru) {
                 return $results
@@ -10122,7 +10199,6 @@ Uses third-party tool to extract comprehensive browser history to specified file
         }
     }
 }
-
 
 Function Hunt-Files {
     <#
