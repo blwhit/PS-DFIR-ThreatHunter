@@ -461,8 +461,14 @@ function Hunt-ForensicDump {
         try {
             Write-Host "  [-] Running comprehensive registry analysis..." -ForegroundColor DarkGray
             
-            # Use Hunt-Registry to get all Run keys and autorun locations
-            $registryResults = Hunt-Registry -RunKeys -LoadHives -PassThru -Quiet -OutputCSV (Join-Path $OutputDir "Registry_RunKeys.csv")
+            # Check if Hunt-Registry function exists
+            if (Get-Command Hunt-Registry -ErrorAction SilentlyContinue) {
+                # Use Hunt-Registry to get all Run keys and autorun locations
+                $registryResults = Hunt-Registry -RunKeys -LoadHives -PassThru -Quiet -OutputCSV (Join-Path $OutputDir "Registry_RunKeys.csv")
+            } else {
+                Write-Host "  [!] Hunt-Registry function not found, skipping registry analysis" -ForegroundColor Red
+                return @()
+            }
             
             if ($null -eq $registryResults) {
                 $registryResults = @()
@@ -6856,7 +6862,7 @@ Requires PowerShell 5.0+. Administrator privileges recommended for complete log 
                 ProcessId        = $LogEvent.ProcessId
                 ThreadId         = $LogEvent.ThreadId
                 UserId           = $LogEvent.UserId
-                Hostname         = Se([Net.Dns]::GetHostByName($env:computerName)).HostNamearch
+                Hostname         = ([Net.Dns]::GetHostByName($env:computerName)).HostName
                 FilePath         = ""      # Always blank for EventLog
                 FileName         = ""      # Always blank for EventLog  
                 CreationDate     = $null   # Always null for EventLog
