@@ -21,6 +21,7 @@
 # - Spend genuine time building and tuning the IOC and string lists
 # - FIX persistence hunter. Registry loading/unloading needs reviewed, and unloading needs fixed
 # - add signatures functionality to the hunt-files cmdlet, display certi/sig status
+
 # - add error handling so tabs with 0 results can be handled in the Forensic HTML
 # - can we change VT hash columns to a "hyperlink" blue color instead of red
 # - can we add to the "write-progress" banner, a "Estimated Progress" field
@@ -232,6 +233,37 @@ function Hunt-ForensicDump {
         [Parameter(Mandatory = $false)]
         [string]$Timezone = ""
     )
+
+    # Helper function: Progress tracking with estimation
+    function Update-ProgressWithEstimate {
+        param(
+            [string]$Activity,
+            [string]$Status,
+            [int]$PercentComplete,
+            [ref]$StepTimes
+        )
+        
+        if ($null -eq $StepTimes.Value) {
+            $StepTimes.Value = @{}
+        }
+        
+        $currentTime = Get-Date
+        $StepTimes.Value[$PercentComplete] = $currentTime
+        
+        # Calculate estimated completion
+        if ($PercentComplete -gt 5 -and $StepTimes.Value.Count -gt 1) {
+            $elapsed = ($currentTime - $script:StartTime).TotalSeconds
+            $rate = $PercentComplete / $elapsed
+            if ($rate -gt 0) {
+                $remainingPercent = 100 - $PercentComplete
+                $estimatedRemaining = [math]::Round($remainingPercent / $rate)
+                $estimatedCompletion = $currentTime.AddSeconds($estimatedRemaining)
+                $Status = "$Status (Est. complete: $($estimatedCompletion.ToString('HH:mm:ss')))"
+            }
+        }
+        
+        Write-Progress -Activity $Activity -Status $Status -PercentComplete $PercentComplete
+    }
 
     # Helper function: Get System Information
     function Get-SystemInformation {
@@ -1086,7 +1118,8 @@ function Hunt-ForensicDump {
         }
         .csv-link:hover { background: #2980b9; }
         .record-count { color: #95a5a6; font-size: 0.9em; margin: 10px 0; }
-        .vt-link { color: #e74c3c; text-decoration: none; }
+        .vt-link { color: #3498db; text-decoration: none; font-weight: 500; }
+        .vt-link:hover { color: #5dade2; text-decoration: underline; }
         .vt-link:hover { color: #c0392b; text-decoration: underline; }
     </style>
 </head>
@@ -1253,15 +1286,14 @@ function Hunt-ForensicDump {
         }
 
         $html += @"
-            </div>
         </div>
-        
+        </div>
         <div id="settings-tab" class="tab-content">
             <div class="csv-section">
                 <h2 style="color: #3498db; margin-bottom: 15px;">Display Settings</h2>
                 <p style="margin-bottom: 20px; color: #bdc3c7;">Adjust how data is displayed in tables. Changes apply immediately.</p>
                 
-                <div style="background: #2c2c2c; padding: 20px; border-radius: 8px; max-width: 600px;">
+                <div style="background: #333; padding: 20px; border-radius: 8px; max-width: 600px;">
                     <div style="margin-bottom: 20px;">
                         <label style="display: block; color: #ecf0f1; margin-bottom: 10px; font-weight: bold;">
                             Event Display Limit (Max Rows)
@@ -1270,7 +1302,7 @@ function Hunt-ForensicDump {
                             Maximum number of records to display per table (0 = unlimited)
                         </p>
                         <input type="number" id="settings-maxrows" value="$MaxRows" min="0" step="100" 
-                            style="width: 100%; padding: 10px; background: #333; border: 1px solid #555; color: #fff; border-radius: 4px; font-size: 1em;">
+                            style="width: 100%; padding: 10px; background: #1a1a1a; border: 1px solid #555; color: #fff; border-radius: 4px; font-size: 1em;">
                         <p style="color: #7f8c8d; font-size: 0.85em; margin-top: 5px;">
                             Current: <span id="current-maxrows">$MaxRows</span> records
                         </p>
@@ -1284,7 +1316,7 @@ function Hunt-ForensicDump {
                             Maximum characters to display per cell before truncation
                         </p>
                         <input type="number" id="settings-maxchars" value="$MaxChars" min="0" step="50" 
-                            style="width: 100%; padding: 10px; background: #333; border: 1px solid #555; color: #fff; border-radius: 4px; font-size: 1em;">
+                            style="width: 100%; padding: 10px; background: #1a1a1a; border: 1px solid #555; color: #fff; border-radius: 4px; font-size: 1em;">
                         <p style="color: #7f8c8d; font-size: 0.85em; margin-top: 5px;">
                             Current: <span id="current-maxchars">$MaxChars</span> characters
                         </p>
@@ -1382,10 +1414,20 @@ function Hunt-ForensicDump {
 
         function changeLogProvider() {
             var select = document.getElementById('log-provider-select');
+            if (!select) return;
+            
             currentLogProvider = select.value;
             delete loadedData['logs'];
-            loadData('logs');
-        }
+            
+            var logsContent = document.getElementById('logs-content');
+            if (logsContent) {
+                logsContent.innerHTML = '<div class="loading">Loading data...</div>';
+            }
+            
+            setTimeout(function() {
+                loadData('logs');
+            }, 100);
+        }}
 
         function isHashField(fieldName) {
             var hashFields = ['sha256', 'sha1', 'md5', 'hash', 'taskfilesha256', 'executablesha256', 'scriptfilesha256', 'lnktargetsha256'];
@@ -1417,28 +1459,54 @@ function Hunt-ForensicDump {
 
         function loadData(type) {
             var content = document.getElementById(type + '-content');
-            if (!content) return;
+            if (!content) {
+                console.error('Content element not found for type: ' + type);
+                return;
+            }
             
+            // If data already loaded, don't reload
             if (loadedData[type]) {
                 return;
             }
             
             try {
                 var data;
+                
+                // Handle log provider selection
                 if (type === 'logs') {
                     if (currentLogProvider === 'All') {
                         data = embeddedData.logs;
                     } else {
                         data = logsByProvider[currentLogProvider];
+                        // If provider has no data, set to empty array
+                        if (!data) {
+                            data = [];
+                        }
                     }
                 } else {
                     data = embeddedData[type];
                 }
                 
+                // Handle empty or missing data
                 if (!data || data.length === 0) {
-                    content.innerHTML = '<p style="color: #888;">No data available</p>';
+                    var emptyMessage = '<div style="padding: 40px; text-align: center; background: #2c2c2c; border-radius: 8px; margin: 20px 0;">';
+                    emptyMessage += '<p style="color: #95a5a6; font-size: 1.2em; margin-bottom: 10px;">No ' + type + ' data available</p>';
+                    
+                    if (type === 'logs' && currentLogProvider !== 'All') {
+                        emptyMessage += '<p style="color: #7f8c8d; font-size: 0.9em;">No events found for log provider: <strong>' + currentLogProvider + '</strong></p>';
+                        emptyMessage += '<p style="color: #7f8c8d; font-size: 0.9em; margin-top: 10px;">Try selecting a different log provider from the dropdown above.</p>';
+                    } else {
+                        emptyMessage += '<p style="color: #7f8c8d; font-size: 0.9em;">No records match the current filter criteria.</p>';
+                    }
+                    
+                    emptyMessage += '</div>';
+                    content.innerHTML = emptyMessage;
+                    loadedData[type] = [];
                     return;
                 }
+                
+                // Create a copy to avoid mutating embedded data
+                data = JSON.parse(JSON.stringify(data));
                 
                 // Auto-sort logs by TimeCreated (newest first) on initial load
                 if (type === 'logs' && data.length > 0) {
@@ -1447,7 +1515,10 @@ function Hunt-ForensicDump {
                         var dateB = b.TimeCreated || b['Formatted Time'] || '';
                         if (!dateA) return 1;
                         if (!dateB) return -1;
-                        return dateB.localeCompare(dateA, undefined, {numeric: true});
+                        // Extract date portion for Formatted Time (remove timezone suffix)
+                        var cleanA = dateA.toString().split(' (')[0];
+                        var cleanB = dateB.toString().split(' (')[0];
+                        return cleanB.localeCompare(cleanA, undefined, {numeric: true});
                     });
                     sortState['logs-TimeCreated'] = 'desc';
                 }
@@ -1464,11 +1535,70 @@ function Hunt-ForensicDump {
                     sortState['files-LastModifiedDate'] = 'desc';
                 }
                 
+                // Auto-sort tasks by LastRunTime (newest first) on initial load
+                if (type === 'tasks' && data.length > 0) {
+                    data.sort(function(a, b) {
+                        var dateA = a.LastRunTime || '';
+                        var dateB = b.LastRunTime || '';
+                        if (!dateA || dateA === 'N/A' || dateA === '') return 1;
+                        if (!dateB || dateB === 'N/A' || dateB === '') return -1;
+                        return dateB.localeCompare(dateA, undefined, {numeric: true});
+                    });
+                    sortState['tasks-LastRunTime'] = 'desc';
+                }
+                
+                // Auto-sort services by LastModified (newest first) on initial load
+                if (type === 'services' && data.length > 0) {
+                    data.sort(function(a, b) {
+                        var dateA = a.LastModified || '';
+                        var dateB = b.LastModified || '';
+                        if (!dateA || dateA === 'N/A' || dateA === '') return 1;
+                        if (!dateB || dateB === 'N/A' || dateB === '') return -1;
+                        return dateB.localeCompare(dateA, undefined, {numeric: true});
+                    });
+                    sortState['services-LastModified'] = 'desc';
+                }
+                
+                // Auto-sort browser by FullString (newest first) on initial load
+                if (type === 'browser' && data.length > 0) {
+                    data.sort(function(a, b) {
+                        var dateA = a.FullString || '';
+                        var dateB = b.FullString || '';
+                        return dateB.localeCompare(dateA, undefined, {numeric: true});
+                    });
+                    sortState['browser-FullString'] = 'desc';
+                }
+                
+                // Auto-sort persistence by Flag (highest priority first) on initial load
+                if (type === 'persistence' && data.length > 0) {
+                    data.sort(function(a, b) {
+                        var flagA = a.Flag || '';
+                        var flagB = b.Flag || '';
+                        // Priority order: Critical > High > Medium > Low > Info
+                        var priority = {'Critical': 5, 'High': 4, 'Medium': 3, 'Low': 2, 'Info': 1, '': 0};
+                        var valA = priority[flagA] || 0;
+                        var valB = priority[flagB] || 0;
+                        return valB - valA;
+                    });
+                    sortState['persistence-Flag'] = 'desc';
+                }
+                
+                // Store the sorted data
                 loadedData[type] = data;
+                
+                // Render the table
                 renderTable(type, data);
+                
             } catch (error) {
-                content.innerHTML = '<div class="error">Error loading data: ' + error.message + '</div>';
+                var errorHtml = '<div style="padding: 30px; background: #2c2c2c; border-radius: 8px; border-left: 4px solid #e74c3c; margin: 20px 0;">';
+                errorHtml += '<h3 style="color: #e74c3c; margin-bottom: 10px;">Error Loading Data</h3>';
+                errorHtml += '<p style="color: #ecf0f1;">An error occurred while loading ' + type + ' data:</p>';
+                errorHtml += '<p style="color: #95a5a6; font-family: monospace; margin-top: 10px;">' + error.message + '</p>';
+                errorHtml += '<p style="color: #7f8c8d; margin-top: 15px; font-size: 0.9em;">Please check the browser console for more details.</p>';
+                errorHtml += '</div>';
+                content.innerHTML = errorHtml;
                 console.error('Error loading ' + type + ':', error);
+                loadedData[type] = [];
             }
         }
 
@@ -1798,6 +1928,8 @@ function Hunt-ForensicDump {
     Write-Host "[+] Date Range: $parsedStartDate to $parsedEndDate" -ForegroundColor Green
     Write-Host ""
     
+    $progressTimes = @{}
+    
     # Create subdirectories
     $csvDir = Join-Path $OutputDir "CSV_Data"
     New-Item -Path $csvDir -ItemType Directory -Force | Out-Null
@@ -1830,13 +1962,13 @@ function Hunt-ForensicDump {
     Write-Host "[+] Active modules: $(if ($runAll) { 'All' } else { ($Config -join ', ') })" -ForegroundColor Green
     
     # Collect System Information (always runs)
-    Write-Progress -Activity "Forensic Dump" -Status "Collecting system information..." -PercentComplete 5
+    Update-ProgressWithEstimate -Activity "Forensic Dump" -StepTimes ([ref]$progressTimes) -Status "Collecting system information..." -PercentComplete 5
     Write-Host "[+] Collecting system information..." -ForegroundColor Yellow
     $forensicData.SystemInfo = Get-SystemInformation -OutputDir $csvDir
     
     # Collect Persistence Data
     if ($runPersistence) {
-        Write-Progress -Activity "Forensic Dump" -Status "Analyzing persistence mechanisms..." -PercentComplete 15
+        Update-ProgressWithEstimate -Activity "Forensic Dump" -StepTimes ([ref]$progressTimes) -Status "Analyzing persistence mechanisms..." -PercentComplete 15
         Write-Host "[+] Analyzing persistence mechanisms..." -ForegroundColor Yellow
         try {
             $persistenceParams = @{
@@ -1860,7 +1992,7 @@ function Hunt-ForensicDump {
     
     # Collect File System Data
     if ($runFiles) {
-        Write-Progress -Activity "Forensic Dump" -Status "Scanning file system..." -PercentComplete 25
+        Update-ProgressWithEstimate -Activity "Forensic Dump" -StepTimes ([ref]$progressTimes) -Status "Scanning file system..." -PercentComplete 25
         Write-Host "[+] Scanning file system..." -ForegroundColor Yellow
         try {
             $fileParams = @{
@@ -1910,7 +2042,7 @@ function Hunt-ForensicDump {
     
     # Collect Registry Data
     if ($runRegistry) {
-        Write-Progress -Activity "Forensic Dump" -Status "Analyzing registry..." -PercentComplete 35
+        Update-ProgressWithEstimate -Activity "Forensic Dump" -StepTimes ([ref]$progressTimes) -Status "Analyzing registry..." -PercentComplete 35
         Write-Host "[+] Analyzing registry..." -ForegroundColor Yellow
         try {
             $forensicData.Registry = Get-RegistryForensics -OutputDir $csvDir
@@ -1927,7 +2059,7 @@ function Hunt-ForensicDump {
     
     # Collect Browser Data
     if ($runBrowser) {
-        Write-Progress -Activity "Forensic Dump" -Status "Extracting browser history..." -PercentComplete 45
+        Update-ProgressWithEstimate -Activity "Forensic Dump" -StepTimes ([ref]$progressTimes) -Status "Extracting browser history..." -PercentComplete 45
         Write-Host "[+] Extracting browser history..." -ForegroundColor Yellow
         try {
             $browserParams = @{
@@ -1957,7 +2089,7 @@ function Hunt-ForensicDump {
 
     # Collect Event Logs
     if ($runLogs) {
-        Write-Progress -Activity "Forensic Dump" -Status "Analyzing event logs..." -PercentComplete 55
+        Update-ProgressWithEstimate -Activity "Forensic Dump" -StepTimes ([ref]$progressTimes) -Status "Analyzing event logs..." -PercentComplete 55
         Write-Host "[+] Analyzing event logs..." -ForegroundColor Yellow
         try {
             $logParams = @{
@@ -1994,7 +2126,7 @@ function Hunt-ForensicDump {
     
     # Collect Services
     if ($runServices) {
-        Write-Progress -Activity "Forensic Dump" -Status "Enumerating services..." -PercentComplete 70
+        Update-ProgressWithEstimate -Activity "Forensic Dump" -StepTimes ([ref]$progressTimes) -Status "Enumerating services..." -PercentComplete 70
         Write-Host "[+] Enumerating services..." -ForegroundColor Yellow
         try {
             $serviceParams = @{
@@ -2017,7 +2149,7 @@ function Hunt-ForensicDump {
     
     # Collect Scheduled Tasks
     if ($runTasks) {
-        Write-Progress -Activity "Forensic Dump" -Status "Analyzing scheduled tasks..." -PercentComplete 80
+        Update-ProgressWithEstimate -Activity "Forensic Dump" -StepTimes ([ref]$progressTimes) -Status "Analyzing scheduled tasks..." -PercentComplete 80
         Write-Host "[+] Analyzing scheduled tasks..." -ForegroundColor Yellow
         try {
             $taskParams = @{
@@ -2040,7 +2172,7 @@ function Hunt-ForensicDump {
     }
 
     # Export JSON data for HTML report
-    Write-Progress -Activity "Forensic Dump" -Status "Exporting JSON data..." -PercentComplete 85
+    Update-ProgressWithEstimate -Activity "Forensic Dump" -StepTimes ([ref]$progressTimes) -Status "Exporting JSON data..." -PercentComplete 85
     Write-Host "[+] Exporting JSON data for interactive report..." -ForegroundColor Yellow
     try {
         Export-ForensicJSON -OutputDir $OutputDir -ForensicData $forensicData
@@ -2050,7 +2182,7 @@ function Hunt-ForensicDump {
     }
     
     # Generate HTML Report
-    Write-Progress -Activity "Forensic Dump" -Status "Generating HTML report..." -PercentComplete 90
+    Update-ProgressWithEstimate -Activity "Forensic Dump" -StepTimes ([ref]$progressTimes) -Status "Generating HTML report..." -PercentComplete 90
     Write-Host "[+] Generating interactive HTML report..." -ForegroundColor Yellow
     
     try {
