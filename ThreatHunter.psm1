@@ -234,6 +234,7 @@ function Hunt-ForensicDump {
         [string]$Timezone = ""
     )
 
+
     # Helper function: Progress tracking with estimation
     function Update-ProgressWithEstimate {
         param(
@@ -250,15 +251,22 @@ function Hunt-ForensicDump {
         $currentTime = Get-Date
         $StepTimes.Value[$PercentComplete] = $currentTime
         
-        # Calculate estimated completion
-        if ($PercentComplete -gt 5 -and $StepTimes.Value.Count -gt 1) {
+        # Calculate time remaining using simple estimation
+        if ($PercentComplete -gt 10 -and $PercentComplete -lt 100) {
             $elapsed = ($currentTime - $script:StartTime).TotalSeconds
-            $rate = $PercentComplete / $elapsed
-            if ($rate -gt 0) {
+            if ($elapsed -gt 0) {
+                $rate = $PercentComplete / $elapsed
                 $remainingPercent = 100 - $PercentComplete
                 $estimatedRemaining = [math]::Round($remainingPercent / $rate)
-                $estimatedCompletion = $currentTime.AddSeconds($estimatedRemaining)
-                $Status = "$Status (Est. complete: $($estimatedCompletion.ToString('HH:mm:ss')))"
+                
+                if ($estimatedRemaining -ge 60) {
+                    $minutes = [math]::Floor($estimatedRemaining / 60)
+                    $seconds = $estimatedRemaining % 60
+                    $Status = "$Status (Est. ~${minutes}m ${seconds}s remaining)"
+                }
+                else {
+                    $Status = "$Status (Est. ~${estimatedRemaining}s remaining)"
+                }
             }
         }
         
@@ -1119,7 +1127,6 @@ function Hunt-ForensicDump {
         .csv-link:hover { background: #2980b9; }
         .record-count { color: #95a5a6; font-size: 0.9em; margin: 10px 0; }
         .vt-link { color: #3498db; text-decoration: none; font-weight: 500; }
-        .vt-link:hover { color: #5dade2; text-decoration: underline; }
         .vt-link:hover { color: #c0392b; text-decoration: underline; }
     </style>
 </head>
@@ -1286,8 +1293,10 @@ function Hunt-ForensicDump {
         }
 
         $html += @"
+                </div>
+            </div>
         </div>
-        </div>
+        
         <div id="settings-tab" class="tab-content">
             <div class="csv-section">
                 <h2 style="color: #3498db; margin-bottom: 15px;">Display Settings</h2>
@@ -1427,7 +1436,7 @@ function Hunt-ForensicDump {
             setTimeout(function() {
                 loadData('logs');
             }, 100);
-        }}
+        }
 
         function isHashField(fieldName) {
             var hashFields = ['sha256', 'sha1', 'md5', 'hash', 'taskfilesha256', 'executablesha256', 'scriptfilesha256', 'lnktargetsha256'];
