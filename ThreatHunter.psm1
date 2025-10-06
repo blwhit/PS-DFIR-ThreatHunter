@@ -179,8 +179,11 @@ function Hunt-ForensicDump {
     .PARAMETER Timezone
     Timezone identifier for timestamp conversion. Default: system timezone.
     
-    .PARAMETER LoadTool
-    Path to local BrowsingHistoryView.exe for browser history extraction. If provided, uses LoadTool mode instead of built-in browser parsing.
+    .PARAMETER LoadBrowserTool
+    Switch to enable LoadTool mode for browser history extraction using NirSoft's BrowsingHistoryView.
+    
+    .PARAMETER LoadToolPath
+    Optional path to local BrowsingHistoryView.exe. If not provided, downloads from NirSoft.
     
     .EXAMPLE
     Hunt-ForensicDump -StartDate "7D" -Auto
@@ -199,6 +202,14 @@ function Hunt-ForensicDump {
     
     .EXAMPLE
     Hunt-ForensicDump -ExportLogs -OutputDir "C:\Evidence\Case001"
+
+    .EXAMPLE
+    Hunt-ForensicDump -LoadBrowserTool -StartDate "30D"
+    Uses LoadTool mode, downloads BrowsingHistoryView, and performs forensic dump for last 30 days.
+    
+    .EXAMPLE
+    Hunt-ForensicDump -LoadBrowserTool -LoadToolPath "C:\Tools\BrowsingHistoryView.exe" -StartDate "7D"
+    Uses local BrowsingHistoryView executable for browser history extraction.
     #>
     [CmdletBinding()]
     param(
@@ -237,9 +248,10 @@ function Hunt-ForensicDump {
         [string]$Timezone = "",
         
         [Parameter(Mandatory = $false)]
-        [AllowEmptyString()]
-        [AllowNull()]
-        [string]$LoadTool = ""
+        [switch]$LoadBrowserTool,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$LoadToolPath = ""
     )
 
 
@@ -2104,19 +2116,20 @@ function Hunt-ForensicDump {
                 OutputCSV = Join-Path $csvDir "Browser.csv"
             }
             
-            # If LoadTool parameter was explicitly passed (even if empty), handle it
-            if ($PSBoundParameters.ContainsKey('LoadTool')) {
-                if ([string]::IsNullOrWhiteSpace($LoadTool)) {
-                    # LoadTool switch used but no path provided - download from internet
-                    Write-Host "  [-] Using LoadTool mode (will download from internet)..." -ForegroundColor DarkGray
-                    $browserParams['LoadTool'] = ""
-                    $browserParams['SkipConfirmation'] = $false  # Ask for confirmation when downloading
+            # Handle LoadTool mode based on LoadBrowserTool switch and LoadToolPath
+            if ($LoadBrowserTool) {
+                $browserParams['LoadTool'] = $true
+                
+                if (![string]::IsNullOrWhiteSpace($LoadToolPath)) {
+                    # Local path provided
+                    Write-Host "  [-] Using LoadTool mode with path: $LoadToolPath" -ForegroundColor DarkGray
+                    $browserParams['LoadToolPath'] = $LoadToolPath
+                    $browserParams['SkipConfirmation'] = $true
                 }
                 else {
-                    # LoadTool path provided - use local executable
-                    Write-Host "  [-] Using LoadTool mode with local executable: $LoadTool" -ForegroundColor DarkGray
-                    $browserParams['LoadTool'] = $LoadTool
-                    $browserParams['SkipConfirmation'] = $true
+                    # No path provided - will download
+                    Write-Host "  [-] Using LoadTool mode (will download from internet)..." -ForegroundColor DarkGray
+                    $browserParams['SkipConfirmation'] = $false  # Ask for confirmation
                 }
             }
             elseif ($Aggressive) {
@@ -8392,7 +8405,10 @@ Expands detection to Search broader patterns that may generate more false positi
 Returns all discovered browser artifacts without filtering.
 
 .PARAMETER LoadTool
-Downloads and uses BrowsingHistoryView tool from NirSoft for comprehensive history extraction.
+Switch to enable LoadTool mode, which uses BrowsingHistoryView tool from NirSoft for comprehensive history extraction.
+
+.PARAMETER LoadToolPath
+Optional path to local BrowsingHistoryView.exe or output CSV file. If not specified or invalid, downloads from NirSoft.
 
 .PARAMETER Truncate
 Limits the display length of discovered strings to specified number of characters.
@@ -8431,8 +8447,16 @@ Hunt-Browser -Include "*.evil.com*","*malware*" -Exclude "*google*" -PassThru | 
 Filters for specific patterns and returns objects for further PowerShell processing.
 
 .EXAMPLE
-Hunt-Browser -LoadTool "C:\Investigation\browser_history.csv" -SkipConfirmation
-Uses third-party tool to extract comprehensive browser history to specified file.
+Hunt-Browser -LoadTool -SkipConfirmation
+Downloads and uses BrowsingHistoryView tool to extract comprehensive browser history.
+
+.EXAMPLE
+Hunt-Browser -LoadTool -LoadToolPath "C:\Tools\BrowsingHistoryView.exe"
+Uses local copy of BrowsingHistoryView.exe to extract browser history.
+
+.EXAMPLE
+Hunt-Browser -LoadTool -LoadToolPath "C:\Reports\output.csv" -SkipConfirmation
+Downloads tool and saves results to specified CSV file.
 
 .NOTES
 - Requires PowerShell 5.0 or higher
@@ -8445,10 +8469,8 @@ Uses third-party tool to extract comprehensive browser history to specified file
         [switch]$Auto,
         [switch]$Aggressive,
         [switch]$All,
-        [Parameter(Mandatory = $false)]
-        [AllowNull()]
-        [AllowEmptyString()]
-        [string]$LoadTool = $null,
+        [switch]$LoadTool,
+        [string]$LoadToolPath = "",
         [int]$Truncate = 0,
         [string[]]$Search = @(),
         [string[]]$Exclude = @(),
@@ -9964,8 +9986,8 @@ Uses third-party tool to extract comprehensive browser history to specified file
     if ($OutputCSV) {
         $OutputCSV = Resolve-SafePath -Path $OutputCSV -AllowNew -Extension ".csv"
     }
-    if ($LoadTool) {
-        $LoadTool = Resolve-SafePath -Path $LoadTool -AllowNew
+    if ($LoadToolPath) {
+        $LoadToolPath = Resolve-SafePath -Path $LoadToolPath -AllowNew
     }
     
     # Determine mode logic
@@ -9978,8 +10000,8 @@ Uses third-party tool to extract comprehensive browser history to specified file
         return
     }
     
-    # Check if LoadTool was specified (even without a value)
-    $isLoadToolMode = $PSBoundParameters.ContainsKey('LoadTool')
+    # Check if LoadTool switch was specified
+    $isLoadToolMode = $LoadTool.IsPresent
     
     if ($Search.Count -gt 0 -or $Exclude.Count -gt 0) {
         $effectiveMode = if ($modeCount -eq 0) { "All" } else {
@@ -10019,9 +10041,7 @@ Uses third-party tool to extract comprehensive browser history to specified file
     try {
         # Handle LoadTool mode
         if ($isLoadToolMode) {
-            # Determine if LoadTool contains a path or is just the switch
-            $toolPath = if ([string]::IsNullOrWhiteSpace($LoadTool)) { "" } else { $LoadTool }
-            $results = Invoke-LoadToolMode -OutputPath $toolPath -ExePath $toolPath -Hostname $hostname -Quiet:$Quiet -SkipConfirmation:$SkipConfirmation
+            $results = Invoke-LoadToolMode -OutputPath $LoadToolPath -ExePath $LoadToolPath -Hostname $hostname -Quiet:$Quiet -SkipConfirmation:$SkipConfirmation
             if ($OutputCSV) {
                 Export-ResultsToCSV -Results $results -Path $OutputCSV -Quiet:$Quiet
             }
