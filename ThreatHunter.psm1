@@ -25,6 +25,7 @@
 # - Add human readable translations for Hunt-ForensicDump (i.e. start time and status and state for services/tasks/etc...)
 # - fix or remove the cache function for Hunt-Browser
 # - fix the date rang functionality with Hunt-Browser.... it right now just gets ALL existing data no matter what you input
+# - fix the ForensicDump scheduled task table display-- needs to handle new "Triggers" outputs
 
 
 #   Full Review/Pass-Through
