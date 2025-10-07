@@ -597,13 +597,19 @@ function Hunt-ForensicDump {
 
         # Define field omissions per data type
         $omitFields = if (-not $AllFields) {
-            # Check if browser data is from LoadTool mode
+        # Check if browser data is from LoadTool mode
             $browserOmitFields = @('String', 'Hostname', 'Source')
             if ($ForensicData.Browser -and $ForensicData.Browser.Count -gt 0) {
-                $sampleBrowser = $ForensicData.Browser[0]
-                if ($sampleBrowser.PSObject.Properties['MatchPattern'] -and $sampleBrowser.MatchPattern -eq 'LoadTool') {
-                    # LoadTool mode: omit additional fields
-                    $browserOmitFields = @('String', 'Hostname', 'Source', 'MatchPattern', 'Length', 'Count')
+                try {
+                    $sampleBrowser = $ForensicData.Browser[0]
+                    if ($null -ne $sampleBrowser -and $sampleBrowser.PSObject.Properties['MatchPattern'] -and $sampleBrowser.MatchPattern -eq 'LoadTool') {
+                        # LoadTool mode: omit additional fields
+                        $browserOmitFields = @('String', 'Hostname', 'Source', 'MatchPattern', 'Length', 'Count')
+                        Write-Host "  [-] Detected LoadTool browser data, adjusting field display" -ForegroundColor DarkGray
+                    }
+                }
+                catch {
+                    Write-Verbose "Could not determine browser data source mode"
                 }
             }
             
@@ -702,6 +708,56 @@ function Hunt-ForensicDump {
                 return '[]'
             }
         }
+        # Helper function to translate task state values
+        function ConvertTo-TaskStateString {
+            param([int]$State)
+            switch ($State) {
+                0 { return "Unknown" }
+                1 { return "Disabled" }
+                2 { return "Queued" }
+                3 { return "Ready" }
+                4 { return "Running" }
+                default { return "Unknown ($State)" }
+            }
+        }
+        
+        # Helper function to translate service status
+        function ConvertTo-ServiceStatusString {
+            param($Status)
+            if ($null -eq $Status) { return "Unknown" }
+            switch ($Status.ToString()) {
+                "1" { return "Stopped" }
+                "2" { return "StartPending" }
+                "3" { return "StopPending" }
+                "4" { return "Running" }
+                "5" { return "ContinuePending" }
+                "6" { return "PausePending" }
+                "7" { return "Paused" }
+                "Stopped" { return "Stopped" }
+                "Running" { return "Running" }
+                "Paused" { return "Paused" }
+                default { return $Status.ToString() }
+            }
+        }
+        
+        # Helper function to translate service start type
+        function ConvertTo-ServiceStartTypeString {
+            param($StartType)
+            if ($null -eq $StartType) { return "Unknown" }
+            switch ($StartType.ToString()) {
+                "0" { return "Boot" }
+                "1" { return "System" }
+                "2" { return "Automatic" }
+                "3" { return "Manual" }
+                "4" { return "Disabled" }
+                "Automatic" { return "Automatic" }
+                "Manual" { return "Manual" }
+                "Disabled" { return "Disabled" }
+                "Boot" { return "Boot" }
+                "System" { return "System" }
+                default { return $StartType.ToString() }
+            }
+        }
 
         # Prepare log data with provider categorization
         Write-Host "  [-] Preparing Logs JSON with provider categorization..." -ForegroundColor DarkGray
@@ -736,11 +792,59 @@ function Hunt-ForensicDump {
         Write-Host "  [-] Preparing Browser JSON..." -ForegroundColor DarkGray
         $browserJson = Prepare-DataForJSON -Data $ForensicData.Browser -Type 'browser' -MaxRows $MaxRows -OmitFields $omitFields['browser']
     
-        Write-Host "  [-] Preparing Services JSON..." -ForegroundColor DarkGray
-        $servicesJson = Prepare-DataForJSON -Data $ForensicData.Services -Type 'services' -MaxRows $MaxRows -OmitFields $omitFields['services']
+        Write-Host "  [-] Preparing Services JSON with translations..." -ForegroundColor DarkGray
+        # Translate service status and start type values
+        $servicesTranslated = @()
+        if ($ForensicData.Services -and $ForensicData.Services.Count -gt 0) {
+            foreach ($service in $ForensicData.Services) {
+                try {
+                    $translatedService = $service.PSObject.Copy()
+                    
+                    # Translate Status field
+                    if ($translatedService.PSObject.Properties['Status']) {
+                        $translatedService.Status = ConvertTo-ServiceStatusString -Status $translatedService.Status
+                    }
+                    
+                    # Translate StartType field
+                    if ($translatedService.PSObject.Properties['StartType']) {
+                        $translatedService.StartType = ConvertTo-ServiceStartTypeString -StartType $translatedService.StartType
+                    }
+                    
+                    $servicesTranslated += $translatedService
+                }
+                catch {
+                    $servicesTranslated += $service
+                    continue
+                }
+            }
+        }
+        $servicesJson = Prepare-DataForJSON -Data $servicesTranslated -Type 'services' -MaxRows $MaxRows -OmitFields $omitFields['services']
     
-        Write-Host "  [-] Preparing Tasks JSON..." -ForegroundColor DarkGray
-        $tasksJson = Prepare-DataForJSON -Data $ForensicData.Tasks -Type 'tasks' -MaxRows $MaxRows -OmitFields $omitFields['tasks']
+        Write-Host "  [-] Preparing Tasks JSON with translations..." -ForegroundColor DarkGray
+        # Translate task state values
+        $tasksTranslated = @()
+        if ($ForensicData.Tasks -and $ForensicData.Tasks.Count -gt 0) {
+            foreach ($task in $ForensicData.Tasks) {
+                try {
+                    $translatedTask = $task.PSObject.Copy()
+                    
+                    # Translate State field if it's numeric
+                    if ($translatedTask.PSObject.Properties['State']) {
+                        $stateValue = $translatedTask.State
+                        if ($stateValue -is [int] -or ($stateValue -match '^\d+$')) {
+                            $translatedTask.State = ConvertTo-TaskStateString -State ([int]$stateValue)
+                        }
+                    }
+                    
+                    $tasksTranslated += $translatedTask
+                }
+                catch {
+                    $tasksTranslated += $task
+                    continue
+                }
+            }
+        }
+        $tasksJson = Prepare-DataForJSON -Data $tasksTranslated -Type 'tasks' -MaxRows $MaxRows -OmitFields $omitFields['tasks']
     
         Write-Host "  [-] Preparing Files JSON..." -ForegroundColor DarkGray
         $filesJson = Prepare-DataForJSON -Data $ForensicData.Files.All -Type 'files' -MaxRows $MaxRows -OmitFields $omitFields['files']
@@ -1104,9 +1208,6 @@ function Hunt-ForensicDump {
             color: #ecf0f1; 
             padding: 10px 8px; 
             text-align: left; 
-            position: sticky; 
-            top: 0; 
-            z-index: 10;
             cursor: pointer; 
             white-space: nowrap; 
             overflow: hidden; 
@@ -1115,6 +1216,7 @@ function Hunt-ForensicDump {
             max-width: 400px;
             font-size: 13px;
             user-select: none;
+            position: relative;
         }
         th:hover { background: #415b76; }
         th::after { content: ' \25B8'; font-size: 0.7em; opacity: 0.5; }
@@ -1127,7 +1229,7 @@ function Hunt-ForensicDump {
             cursor: col-resize;
             user-select: none;
             height: 100%;
-            z-index: 1;
+            z-index: 2;
         }
         .resizer:hover {
             background: #3498db;
@@ -1144,25 +1246,48 @@ function Hunt-ForensicDump {
         }
         td.truncated { cursor: help; }
         tr:hover { background: #3a3a3a; }
+        
         .table-wrapper { 
             max-height: 600px; 
             overflow-y: auto; 
             overflow-x: auto;
             position: relative;
+            border: 1px solid #444;
         }
         
-        /* Make ALL table headers sticky - both system info and data tables */
-        .table-wrapper table thead th,
-        .section-card .table-wrapper table thead th {
+        /* CRITICAL: Make table headers sticky */
+        .table-wrapper table {
+            border-collapse: separate;
+            border-spacing: 0;
+        }
+        
+        .table-wrapper thead {
             position: sticky;
             top: 0;
-            z-index: 100;
-            background: #34495e;
+            z-index: 10;
         }
         
-        /* Ensure resizer works with sticky headers */
-        .table-wrapper table thead th .resizer {
-            z-index: 101;
+        .table-wrapper thead th {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background: #34495e;
+            box-shadow: 0 2px 2px -1px rgba(0, 0, 0, 0.4);
+        }
+        
+        /* System info tables also need sticky headers */
+        .section-card .table-wrapper thead {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        
+        .section-card .table-wrapper thead th {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background: #34495e;
+            box-shadow: 0 2px 2px -1px rgba(0, 0, 0, 0.4);
         }
         .csv-section {margin: 20px 0; background: #2c2c2c; padding: 20px; border-radius: 8px; }
         .csv-link { 
