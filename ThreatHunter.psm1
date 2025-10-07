@@ -2457,7 +2457,7 @@ function Hunt-ForensicDump {
     Write-Host "[+] Total Runtime: $($duration.Hours)h $($duration.Minutes)m $($duration.Seconds)s" -ForegroundColor Yellow
     Write-Host "[+] Output Directory: $OutputDir" -ForegroundColor Green
     Write-Host "[+] Forensic Report: $(Join-Path $OutputDir 'ForensicReport.html')" -ForegroundColor Green
-    Write-Host "[+] Forensic Data CSVs: $(Join-Path $OutputDir 'ForensicData_CSV')" -ForegroundColor Green
+    Write-Host "[+] Raw Data Exports: $(Join-Path $OutputDir 'ForensicData_CSV')" -ForegroundColor Green
     #Write-Host "[+] HTML Data: $(Join-Path $OutputDir 'HTML_Files')" -ForegroundColor Green
     
     if ($ExportLogs) {
@@ -4381,7 +4381,7 @@ https://attack.mitre.org/tactics/TA0003/
                 Write-Host "[+] Successfully mounted $($script:mountedHives.Count) unloaded user hive(s)" -ForegroundColor Green
             }
             else {
-                Write-Host "[X] No unloaded user hives were mounted [already loaded/none found]" -ForegroundColor Yellow
+                Write-Host "[-] No Registry Hives to Mount" -ForegroundColor Yellow
             }
         }
 
