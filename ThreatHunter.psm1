@@ -19,13 +19,8 @@
 # -------------------
 # - Make Wiki
 # - Spend genuine time building and tuning the IOC and string lists
-# - FIX persistence hunter. Registry loading/unloading needs reviewed, and unloading needs fixed
 # - add signatures functionality to the hunt-files cmdlet, display certi/sig status
-# - test local load browsinghistoryview
-# - fix ForensicDump CSV display of browsinghistoryview CSV results
 # - Add human readable translations for Hunt-ForensicDump (i.e. start time and status and state for services/tasks/etc...)
-# - fix or remove the cache function for Hunt-Browser
-# - fix the date rang functionality with Hunt-Browser.... it right now just gets ALL existing data no matter what you input
 # - fix the ForensicDump scheduled task table display-- needs to handle new "Triggers" outputs
 
 
@@ -749,7 +744,7 @@ function Hunt-ForensicDump {
                 
                 # Verify JSON doesn't contain ArrayList references
                 if ($json -like '*ArrayList*' -or $json -like '*Enumerator*') {
-                    Write-Host "  [!!!] JSON contains ArrayList/Enumerator references - DATA CORRUPTION DETECTED" -ForegroundColor Red
+                    Write-Verbose "  [!!!] JSON contains ArrayList/Enumerator references - POTENTIAL DATA CORRUPTION DETECTED" -ForegroundColor Red
                 }
                 
                 return $json
@@ -8740,6 +8735,21 @@ Uses local copy of BrowsingHistoryView.exe to extract browser history.
 Hunt-Browser -LoadTool -LoadToolPath "C:\Reports\output.csv" -SkipConfirmation
 Downloads tool and saves results to specified CSV file.
 
+    # Last 24 hours
+    Hunt-Browser -LoadTool -StartDate "1D" -SkipConfirmation
+
+    # Last 7 days
+    Hunt-Browser -LoadTool -StartDate "7D" -SkipConfirmation
+
+    # Last 48 hours
+    Hunt-Browser -LoadTool -StartDate "48H" -SkipConfirmation
+
+    # All time
+    Hunt-Browser -LoadTool -StartDate "AllTime" -SkipConfirmation
+
+    # Specific date range
+    Hunt-Browser -LoadTool -StartDate "2025-01-01" -EndDate "2025-01-31" -SkipConfirmation
+
 .NOTES
 - Requires PowerShell 5.0 or higher
 - Administrator privileges recommended for complete system access
@@ -8747,7 +8757,6 @@ Downloads tool and saves results to specified CSV file.
 - LoadTool mode downloads third-party executable from NirSoft
 #>
     param(
-        [switch]$Cache,
         [switch]$Auto,
         [switch]$Aggressive,
         [switch]$All,
@@ -8760,7 +8769,9 @@ Downloads tool and saves results to specified CSV file.
         [string]$OutputCSV,
         [switch]$Quiet,
         [switch]$PassThru,
-        [switch]$SkipConfirmation
+        [switch]$SkipConfirmation,
+        $StartDate,
+        $EndDate = "Now"
     )
 
     # Check for administrator privileges
@@ -8787,6 +8798,49 @@ Downloads tool and saves results to specified CSV file.
     $script:AllFilesToCleanup = @()
     $script:CreatedDirectories = @()
     $script:PersistentFiles = @()
+
+
+    function ConvertTo-DateTime {
+        param($InputValue)
+    
+        if ($InputValue -is [datetime]) {
+            return $InputValue
+        }
+    
+        if ($InputValue -is [string]) {
+            $InputValue = $InputValue.Trim()
+        
+            if ($InputValue.ToLower() -eq 'now') {
+                return Get-Date
+            }
+            
+            if ($InputValue.ToLower() -eq 'alltime' -or $InputValue.ToLower() -eq 'all') {
+                return [datetime]::new(1970, 1, 1)
+            }
+        
+            if ($InputValue -match '^(\d+)([DHMdhm])$') {
+                $number = [int]$matches[1]
+                $unit = $matches[2].ToUpper()
+            
+                $currentTime = Get-Date
+                switch ($unit) {
+                    'D' { return $currentTime.AddDays(-$number) }
+                    'H' { return $currentTime.AddHours(-$number) }
+                    'M' { return $currentTime.AddMinutes(-$number) }
+                }
+            }
+            else {
+                try {
+                    return [datetime]$InputValue
+                }
+                catch {
+                    throw "Invalid date format: $InputValue. Use datetime, 'now', 'alltime', or relative format like '7D', '24H', or '30M'"
+                }
+            }
+        }
+    
+        throw "Invalid date input: $InputValue"
+    }
 
 
     function Sanitize-SearchPattern {
@@ -8966,7 +9020,6 @@ Downloads tool and saves results to specified CSV file.
             [string]$OutputDir,
             [string]$Timestamp,
             [string]$Hostname,
-            [switch]$Cache,
             [string]$EffectiveMode,
             [string[]]$Search,
             [string[]]$Exclude,
@@ -9040,7 +9093,7 @@ Downloads tool and saves results to specified CSV file.
             foreach ($filePath in $searchPaths) {
                 try {
                     if (Test-Path $filePath -ErrorAction SilentlyContinue) {
-                        $fileResults = Process-SingleBrowserFile -FilePath $filePath -BrowserName $Browser.Name -UserName $UserName -OutputDir $OutputDir -Timestamp $Timestamp -Cache:$Cache -EffectiveMode $EffectiveMode -Include $Search -Exclude $Exclude -Truncate $Truncate -Hostname $Hostname -Quiet:$Quiet
+                        $fileResults = Process-SingleBrowserFile -FilePath $filePath -BrowserName $Browser.Name -UserName $UserName -OutputDir $OutputDir -Timestamp $Timestamp -EffectiveMode $EffectiveMode -Include $Search -Exclude $Exclude -Truncate $Truncate -Hostname $Hostname -Quiet:$Quiet
                         if ($fileResults) {
                             $results += $fileResults
                         }
@@ -9067,7 +9120,6 @@ Downloads tool and saves results to specified CSV file.
             [string]$OutputDir,
             [string]$Timestamp,
             [string]$Hostname,
-            [switch]$Cache,
             [string]$EffectiveMode,
             [string[]]$Search,
             [string[]]$Exclude,
@@ -9120,42 +9172,15 @@ Downloads tool and saves results to specified CSV file.
         }
     
         try {
-            # Handle Cache mode
-            if ($Cache) {
-                try {
-                    $sanitizedUser = $UserName -replace '[^\w\-]', '_'
-                    $sanitizedBrowser = $BrowserName -replace '[^\w\-]', '_'
-                    $cacheFile = Join-Path $OutputDir "$Timestamp-$sanitizedUser-$sanitizedBrowser-CACHE.txt"
-                
-                    # Ensure cache file path is safe
-                    $cacheFile = [System.IO.Path]::GetFullPath($cacheFile)
-                
-                    Copy-Item $FilePath $cacheFile -Force -ErrorAction Stop
-                    $script:AllFilesToCleanup += $cacheFile
-                    Set-Variable -Name "Cache_$($UserName)_$BrowserName" -Value $cacheFile -Scope Script -ErrorAction SilentlyContinue
-                
-                    if (-not $Quiet) {
-                        Write-Host "[CACHE] $BrowserName for $UserName cached" -ForegroundColor Cyan
-                    }
-                    return @()
-                }
-                catch {
-                    return @()
-                }
+            # Create temporary copy for processing
+            $tempFile = Join-Path $env:TEMP "browser_temp_$([guid]::NewGuid())"
+            try {
+                Copy-Item $FilePath $tempFile -Force -ErrorAction Stop
+                $script:AllFilesToCleanup += $tempFile
+                $sourceFile = $tempFile
             }
-        
-            # Get source file
-            $sourceFile = Get-CachedPath -UserName $UserName -BrowserName $BrowserName
-            if (-not $sourceFile -or -not (Test-Path $sourceFile -ErrorAction SilentlyContinue)) {
-                $tempFile = Join-Path $env:TEMP "browser_temp_$([guid]::NewGuid())"
-                try {
-                    Copy-Item $FilePath $tempFile -Force -ErrorAction Stop
-                    $script:AllFilesToCleanup += $tempFile
-                    $sourceFile = $tempFile
-                }
-                catch {
-                    return @()
-                }
+            catch {
+                return @()
             }
         
             # Extract and filter strings
@@ -9523,7 +9548,9 @@ Downloads tool and saves results to specified CSV file.
             [string]$Hostname,
             [string]$ExePath,
             [switch]$Quiet,
-            [switch]$SkipConfirmation
+            [switch]$SkipConfirmation,
+            $StartDate,
+            $EndDate
         )
 
         if (-not $Quiet) {
@@ -9714,8 +9741,60 @@ Downloads tool and saves results to specified CSV file.
 
             # Execute the tool
             try {
+                # Process date parameters
+                $parsedStartDate = $null
+                $parsedEndDate = $null
+                $useTimeFilter = $false
+                
+                if ($null -ne $StartDate) {
+                    try {
+                        $parsedStartDate = ConvertTo-DateTime -InputValue $StartDate
+                        $parsedEndDate = if ($null -ne $EndDate) { ConvertTo-DateTime -InputValue $EndDate } else { Get-Date }
+                        
+                        # Check if start date is "all time" (1970)
+                        if ($parsedStartDate.Year -gt 1970) {
+                            $useTimeFilter = $true
+                        }
+                    }
+                    catch {
+                        Write-Warning "Invalid date format, loading all history: $($_.Exception.Message)"
+                    }
+                }
+                
+                # Build arguments for BrowsingHistoryView
                 $safeOutputPath = "`"$outputCsv`""
-                $arguments = @("/HistorySource", "1", "/VisitTimeFilterType", "1", "/SaveDirect", "/scomma", $safeOutputPath)
+                
+                if ($useTimeFilter) {
+                    # Format dates for BrowsingHistoryView: dd-mm-yyyy hh:mm:ss
+                    $startDateStr = $parsedStartDate.ToString("dd-MM-yyyy HH:mm:ss")
+                    $endDateStr = $parsedEndDate.ToString("dd-MM-yyyy HH:mm:ss")
+                    
+                    $arguments = @(
+                        "/HistorySource", "1",
+                        "/VisitTimeFilterType", "4",
+                        "/VisitTimeFrom", "`"$startDateStr`"",
+                        "/VisitTimeTo", "`"$endDateStr`"",
+                        "/SaveDirect",
+                        "/scomma", $safeOutputPath
+                    )
+                    
+                    if (-not $Quiet) {
+                        Write-Host "[FILTER]   Time range: $startDateStr to $endDateStr" -ForegroundColor Cyan
+                    }
+                }
+                else {
+                    # No time filter - load all history
+                    $arguments = @(
+                        "/HistorySource", "1",
+                        "/VisitTimeFilterType", "1",
+                        "/SaveDirect",
+                        "/scomma", $safeOutputPath
+                    )
+                    
+                    if (-not $Quiet) {
+                        Write-Host "[FILTER]   Loading all available history" -ForegroundColor Cyan
+                    }
+                }
         
                 if (-not $Quiet) {
                     Write-Host "[EXEC]     Executing BrowsingHistoryView..." -ForegroundColor Green
@@ -10060,16 +10139,6 @@ Downloads tool and saves results to specified CSV file.
         }
     }
 
-    function Get-CachedPath {
-        param([string]$UserName, [string]$BrowserName)
-        try {
-            return Get-Variable -Name "Cache_$($UserName)_$BrowserName" -Scope Script -ValueOnly -ErrorAction SilentlyContinue
-        }
-        catch {
-            return $null
-        }
-    }
-
     function Get-UniqueResults {
         param([array]$Results)
     
@@ -10317,7 +10386,7 @@ Downloads tool and saves results to specified CSV file.
             }
         }
     }
-    elseif ($modeCount -eq 0 -and -not $Cache -and -not $LoadTool) {
+    elseif ($modeCount -eq 0 -and -not $LoadTool) {
         $effectiveMode = "Auto"
     }
     else {
@@ -10325,12 +10394,11 @@ Downloads tool and saves results to specified CSV file.
             $Auto { "Auto" }
             $Aggressive { "Aggressive" }
             $All { "All" }
-            $Cache { "Cache" }
             default { "Auto" }
         }
     }
     
-    if (-not $effectiveMode -and -not $Cache -and -not $LoadTool) {
+    if (-not $effectiveMode -and -not $LoadTool) {
         Write-Error "Unable to determine operation mode"
         if ($PassThru) { return @() }
         return
@@ -10343,10 +10411,30 @@ Downloads tool and saves results to specified CSV file.
     $fullhostname = ([Net.Dns]::GetHostByName($env:computerName)).HostName
     $hostname = if ($fullhostname) { $fullhostname } else { "Unknown" }
     
+    # Process dates
+    $parsedStartDate = $null
+    $parsedEndDate = $null
+    
+    if ($null -ne $StartDate) {
+        try {
+            $parsedStartDate = ConvertTo-DateTime -InputValue $StartDate
+            $parsedEndDate = if ($null -ne $EndDate) { ConvertTo-DateTime -InputValue $EndDate } else { Get-Date }
+            
+            if (-not $Quiet) {
+                Write-Host "[DATE] Filtering from $parsedStartDate to $parsedEndDate" -ForegroundColor Cyan
+            }
+        }
+        catch {
+            Write-Warning "Date parsing failed: $($_.Exception.Message)"
+            $parsedStartDate = $null
+            $parsedEndDate = $null
+        }
+    }
+    
     try {
         # Handle LoadTool mode
         if ($isLoadToolMode) {
-            $results = Invoke-LoadToolMode -OutputPath $LoadToolPath -ExePath $LoadToolPath -Hostname $hostname -Quiet:$Quiet -SkipConfirmation:$SkipConfirmation
+            $results = Invoke-LoadToolMode -OutputPath $LoadToolPath -ExePath $LoadToolPath -Hostname $hostname -Quiet:$Quiet -SkipConfirmation:$SkipConfirmation -StartDate $StartDate -EndDate $EndDate
             if ($OutputCSV) {
                 Export-ResultsToCSV -Results $results -Path $OutputCSV -Quiet:$Quiet
             }
@@ -10436,7 +10524,7 @@ Downloads tool and saves results to specified CSV file.
 
                 foreach ($browser in $browsers) {
                     try {
-                        $browserResults = Process-BrowserData -UserProfile $userProfile -UserName $userName -Browser $browser -OutputDir $OutputDir -Timestamp $timestamp -Cache:$Cache -EffectiveMode $effectiveMode -Include $Search -Exclude $Exclude -Truncate $Truncate -Hostname $hostname -Quiet:$Quiet
+                        $browserResults = Process-BrowserData -UserProfile $userProfile -UserName $userName -Browser $browser -OutputDir $OutputDir -Timestamp $timestamp -EffectiveMode $effectiveMode -Include $Search -Exclude $Exclude -Truncate $Truncate -Hostname $hostname -Quiet:$Quiet
                 
                         if ($browserResults) {
                             if (-not $Quiet) {
@@ -10546,14 +10634,12 @@ Downloads tool and saves results to specified CSV file.
         }
     }
     finally {
-        if (-not $Cache) {
-            try {
-                Complete-Cleanup -Quiet:$Quiet | out-null
-            }
-            catch {
-                if (-not $Quiet) {
-                    Write-Warning "Cleanup failed: $($_.Exception.Message)"
-                }
+        try {
+            Complete-Cleanup -Quiet:$Quiet | out-null
+        }
+        catch {
+            if (-not $Quiet) {
+                Write-Warning "Cleanup failed: $($_.Exception.Message)"
             }
         }
     }
