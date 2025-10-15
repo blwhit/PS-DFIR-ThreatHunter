@@ -8913,32 +8913,34 @@ Downloads tool and saves results to specified CSV file.
                 }
             }
         
-            $csvData = $Results | ForEach-Object {
-                $result = $_
+            # CRITICAL: Use regular foreach loop instead of pipeline to prevent enumeration corruption
+            $csvData = [System.Collections.ArrayList]::new($Results.Count)
+        
+            # Excel-safe sanitization function (defined once, outside loop)
+            $sanitizeForExcel = {
+                param($value)
+                if ($null -eq $value) { return "" }
             
-                # Excel-safe sanitization function
-                $sanitizeForExcel = {
-                    param($value)
-                    if ($null -eq $value) { return "" }
-                
-                    $stringValue = $value.ToString()
-                    # Escape leading = to prevent formula injection
-                    if ($stringValue.StartsWith("=")) {
-                        $stringValue = "'" + $stringValue
-                    }
-                    # Remove or escape other formula triggers
-                    $stringValue = $stringValue -replace '^[@+\-]', "'$&"
-                    # Remove control characters but preserve newlines as spaces
-                    $stringValue = $stringValue -replace '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', ''
-                    # Escape double quotes for CSV
-                    $stringValue = $stringValue -replace '"', '""'
-                    # Limit length to Excel's cell limit
-                    if ($stringValue.Length -gt 32767) {
-                        $stringValue = $stringValue.Substring(0, 32764) + "..."
-                    }
-                    return $stringValue
+                $stringValue = $value.ToString()
+                # Escape leading = to prevent formula injection
+                if ($stringValue.StartsWith("=")) {
+                    $stringValue = "'" + $stringValue
                 }
-            
+                # Remove or escape other formula triggers
+                $stringValue = $stringValue -replace '^[@+\-]', "'$&"
+                # Remove control characters but preserve newlines as spaces
+                $stringValue = $stringValue -replace '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', ''
+                # Escape double quotes for CSV
+                $stringValue = $stringValue -replace '"', '""'
+                # Limit length to Excel's cell limit
+                if ($stringValue.Length -gt 32767) {
+                    $stringValue = $stringValue.Substring(0, 32764) + "..."
+                }
+                return $stringValue
+            }
+        
+            # Use regular foreach to avoid pipeline enumeration corruption
+            foreach ($result in $Results) {
                 $csvRow = [PSCustomObject]@{
                     Timestamp    = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
                     Hostname     = & $sanitizeForExcel $result.Hostname
@@ -8954,9 +8956,8 @@ Downloads tool and saves results to specified CSV file.
                     VisitTime    = if ($null -ne $result.VisitTime) { & $sanitizeForExcel $result.VisitTime } else { "" }
                 }
             
-                return $csvRow
-            }
-                
+                [void]$csvData.Add($csvRow)
+            }                
             $csvData | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
         
             if (-not $Quiet) {
@@ -10281,7 +10282,7 @@ Downloads tool and saves results to specified CSV file.
 
     # Initialize progress tracking
     $progressId = Get-Random
-    Write-Progress -Id $progressId -Activity "Hunt-Browser Analysis" -Status "Initializing..." -PercentComplete 0
+    #Write-Progress -Id $progressId -Activity "Hunt-Browser Analysis" -Status "Initializing..." -PercentComplete 0
     
     # Input validation and sanitization
     if ($null -ne $Search -and $Search.Count -gt 0) {
