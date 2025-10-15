@@ -1535,10 +1535,9 @@ function Hunt-ForensicDump {
                 
                 <div style="background: #333; padding: 20px; border-radius: 8px; max-width: 700px;">
                     <div style="background: #2c3e50; padding: 15px; border-radius: 6px; margin-bottom: 20px; border-left: 4px solid #3498db;">
-                        <h3 style="color: #3498db; margin: 0 0 10px 0; font-size: 1.1em;">How This Works</h3>
                         <p style="color: #bdc3c7; font-size: 0.9em; margin: 0; line-height: 1.6;">
                             All forensic data is embedded in this HTML report. Changing these settings will re-process 
-                            and re-display the data with your new limits - no need to re-run the PowerShell script!
+                            and re-display the data with your new limits.
                         </p>
                     </div>
                     
@@ -1737,8 +1736,12 @@ function Hunt-ForensicDump {
                 return;
             }
             
-            // If data already loaded, don't reload
-            if (loadedData[type]) {
+            // CRITICAL FIX: Check if we're forcing a reload (settings changed)
+            // If loadedData exists but we're forcing reload, we'll re-process it
+            var forceReload = window.forceDataReload || false;
+            
+            // If data already loaded and not forcing reload, skip
+            if (loadedData[type] && !forceReload) {
                 return;
             }
             
@@ -1895,11 +1898,12 @@ function Hunt-ForensicDump {
                 return;
             }
 
-            var displayData = data;
-            if (MAX_ROWS > 0 && data.length > MAX_ROWS) {
-                displayData = data.slice(0, MAX_ROWS);
-            }
-            
+            // CRITICAL FIX: Always use full data, apply MAX_ROWS limit here
+            var fullData = data;
+            var displayData = fullData;
+            if (MAX_ROWS > 0 && fullData.length > MAX_ROWS) {
+                displayData = fullData.slice(0, MAX_ROWS);
+            }            
             var keys = [];
             var keySet = {};
             for (var i = 0; i < displayData.length; i++) {
@@ -2135,11 +2139,18 @@ function Hunt-ForensicDump {
             document.getElementById('current-maxrows').textContent = newMaxRows === 0 ? 'Unlimited' : newMaxRows;
             document.getElementById('current-maxchars').textContent = newMaxChars;
             
-            // Clear all loaded data to force reload
+            // CRITICAL FIX: Force reload flag and clear sortState to reset tables
+            window.forceDataReload = true;
+            sortState = {};
+            systemSortState = {};
+            
+            // Clear all loaded data to force complete reload
+            var dataTypes = ['persistence', 'registry', 'logs', 'browser', 'services', 'tasks', 'files'];
+            
+            // Reset loadedData by re-processing from embedded data
             loadedData = {};
             
-            // Show loading message
-            var dataTypes = ['persistence', 'registry', 'logs', 'browser', 'services', 'tasks', 'files'];
+            // Show loading message on all data tabs
             for (var i = 0; i < dataTypes.length; i++) {
                 var content = document.getElementById(dataTypes[i] + '-content');
                 if (content) {
@@ -2147,15 +2158,23 @@ function Hunt-ForensicDump {
                 }
             }
             
-            // Reload current tab if it's a data tab
-            if (dataTypes.indexOf(currentTab) !== -1) {
-                setTimeout(function() {
+            // Force reload current tab if it's a data tab
+            setTimeout(function() {
+                if (dataTypes.indexOf(currentTab) !== -1) {
                     loadData(currentTab);
-                    alert('Settings applied! ' + currentTab.charAt(0).toUpperCase() + currentTab.slice(1) + ' data reloaded.\n\nSwitch to other tabs to reload their data with new settings.');
-                }, 100);
-            } else {
-                alert('Settings applied successfully!\n\nSwitch to any data tab to see results with new limits.');
-            }
+                    window.forceDataReload = false;
+                    
+                    var displayMsg = 'Settings applied successfully!\n\n';
+                    displayMsg += 'Max Rows: ' + (newMaxRows === 0 ? 'Unlimited' : newMaxRows) + '\n';
+                    displayMsg += 'Max Chars: ' + newMaxChars + '\n\n';
+                    displayMsg += 'Current tab (' + currentTab + ') has been reloaded.\n';
+                    displayMsg += 'Switch to other tabs to see them with new settings.';
+                    alert(displayMsg);
+                } else {
+                    window.forceDataReload = false;
+                    alert('Settings applied successfully.\n\nSwitch to any data tab to see results with new limits.');
+                }
+            }, 100);
         }
 
         window.onload = function() {
