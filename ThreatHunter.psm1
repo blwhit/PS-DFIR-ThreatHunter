@@ -700,8 +700,12 @@ function Hunt-ForensicDump {
             $keysToKeep = [System.Collections.ArrayList]::new()
             foreach ($key in $allKeys) {
                 $hasValue = $false
-                for ($i = 0; $i -lt [Math]::Min(50, $dataToProcess.Count); $i++) {
-                    $value = $dataToProcess[$i].$key
+                $sampleLimit = [Math]::Min(50, $dataToProcess.Count)
+                
+                for ($i = 0; $i -lt $sampleLimit; $i++) {
+                    # CRITICAL: Store item in variable first to avoid enumeration issues
+                    $currentItem = $dataToProcess[$i]
+                    $value = $currentItem.$key
                     
                     # DEBUG: Check if property access causes corruption
                     if ($Type -eq 'browser' -and $i -eq 0) {
@@ -736,22 +740,51 @@ function Hunt-ForensicDump {
                     }
                 }
             }
+            
+            # DEBUG: Check before building filtered data
+            Write-Host "  [DEBUG-JSON] Before building filteredData, checking integrity..." -ForegroundColor Magenta
+            if ($dataToProcess.Count -gt 0) {
+                $testItem3 = $dataToProcess[0]
+                foreach ($key in $keysToKeep) {
+                    $testVal = $testItem3.$key
+                    if ($Type -eq 'browser' -and $testVal.GetType().Name -like "*Enumerator*") {
+                        Write-Host "  [!!!] CORRUPTION: Key '$key' has Enumerator value!" -ForegroundColor Red
+                    }
+                    # Only show first 3 keys to avoid spam
+                    if ($keysToKeep.IndexOf($key) -lt 3) {
+                        Write-Host "  [DEBUG-JSON] Key '$key' = type $($testVal.GetType().FullName)" -ForegroundColor Magenta
+                    }
+                }
+            }
 
             $filteredData = [System.Collections.ArrayList]::new($dataToProcess.Count)
-            foreach ($item in $dataToProcess) {
+            
+            # CRITICAL: Use for loop with index instead of foreach to avoid enumeration issues
+            for ($i = 0; $i -lt $dataToProcess.Count; $i++) {
+                $item = $dataToProcess[$i]
                 $newObj = [ordered]@{}
+                
                 foreach ($key in $keysToKeep) {
+                    # Access property directly to avoid enumeration corruption
                     $value = $item.$key
+                    
+                    # Convert value to proper type
                     if ($null -eq $value) {
                         $newObj[$key] = ''
                     }
                     elseif ($value -is [datetime]) {
                         $newObj[$key] = $value.ToString('yyyy-MM-dd HH:mm:ss')
                     }
+                    elseif ($value -is [System.Collections.IEnumerable] -and $value -isnot [string]) {
+                        # If we somehow got an enumerable that's not a string, convert it
+                        $newObj[$key] = $value -join ', '
+                    }
                     else {
-                        $newObj[$key] = $value
+                        # Force to string for safety
+                        $newObj[$key] = "$value"
                     }
                 }
+                
                 [void]$filteredData.Add([PSCustomObject]$newObj)
             }
 
@@ -1895,15 +1928,32 @@ function Hunt-ForensicDump {
             html += '</tr></thead><tbody>';
             
             for (var i = 0; i < displayData.length; i++) {
+                var item = displayData[i];
                 html += '<tr>';
                 for (var j = 0; j < keys.length; j++) {
                     var key = keys[j];
-                    var val = displayData[i][key];
+                    
+                    // Access property value directly from the object
+                    // Avoid using displayData[i][key] which can cause enumeration issues
+                    var val = item[key];
+                    
+                    // Check if we got an enumerator instead of actual value (corruption detection)
+                    if (val && typeof val === 'object' && val.constructor && 
+                        val.constructor.name && val.constructor.name.indexOf('Enumerator') !== -1) {
+                        // Corruption detected - try to extract actual value
+                        console.warn('Enumerator detected for key: ' + key + ' in item ' + i);
+                        val = '';
+                    }
                     
                     if (val === null || val === undefined) {
                         val = '';
-                    } else if (typeof val === 'object') {
-                        val = JSON.stringify(val);
+                    } else if (typeof val === 'object' && val !== null) {
+                        // If it's still an object, stringify it
+                        try {
+                            val = JSON.stringify(val);
+                        } catch (e) {
+                            val = String(val);
+                        }
                     } else {
                         val = String(val);
                     }
@@ -1917,8 +1967,8 @@ function Hunt-ForensicDump {
                     }
                 }
                 html += '</tr>';
-            }
-            
+            }            
+
             html += '</tbody></table></div>';
             content.innerHTML = html;
             
@@ -2360,13 +2410,19 @@ function Hunt-ForensicDump {
                 $browserParams['Auto'] = $true
             }
             
-            # Clear any lingering progress from Hunt-Browser
+            # Clear any lingering progress from Hunt-Browser before calling
             Write-Progress -Activity "Hunt-Browser Analysis" -Completed -ErrorAction SilentlyContinue
+            Write-Progress -Activity "Hunt-Browser" -Completed -ErrorAction SilentlyContinue
+            Write-Progress -Activity "Browser History Extraction" -Completed -ErrorAction SilentlyContinue
             
             $browserResults = Hunt-Browser @browserParams
             
-            # Ensure progress is cleared again after Hunt-Browser completes
+            # Aggressively clear all possible progress bars after Hunt-Browser completes
             Write-Progress -Activity "Hunt-Browser Analysis" -Completed -ErrorAction SilentlyContinue
+            Write-Progress -Activity "Hunt-Browser" -Completed -ErrorAction SilentlyContinue
+            Write-Progress -Activity "Browser History Extraction" -Completed -ErrorAction SilentlyContinue
+            Write-Progress -Activity "Initializing" -Completed -ErrorAction SilentlyContinue
+            Write-Progress -Activity "Processing" -Completed -ErrorAction SilentlyContinue
             
             # DEBUG: Check object types before assignment
             if ($null -ne $browserResults) {
