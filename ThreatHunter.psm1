@@ -634,6 +634,7 @@ function Hunt-ForensicDump {
             }
         }
 
+
         # Helper function to prepare data for JSON embedding
         function Prepare-DataForJSON {
             param($Data, $Type, $MaxRows, $OmitFields)
@@ -688,63 +689,59 @@ function Hunt-ForensicDump {
                 }
             }
 
-            # Build filtered data with explicit type conversion to prevent JSON issues
-            $filteredData = [System.Collections.ArrayList]::new($dataToProcess.Count)
+            # Build filtered data - CRITICAL: Must NOT iterate over $dataToProcess directly
+            # Using Select-Object to create NEW objects prevents enumeration corruption
+            $filteredData = @()
             
-            for ($i = 0; $i -lt $dataToProcess.Count; $i++) {
-                $item = $dataToProcess[$i]
+            foreach ($item in $dataToProcess) {
                 $newObj = [ordered]@{}
                 
                 foreach ($key in $keysToKeep) {
-                    $value = $item.$key
+                    # Get the property value
+                    $propValue = $item.PSObject.Properties[$key].Value
                     
-                    # CRITICAL: Aggressively convert all values to prevent ArrayList/Enumerator issues
-                    if ($null -eq $value) {
+                    # CRITICAL: Use .ToString() method instead of -as [string] or "$value"
+                    # This prevents PowerShell from creating ArrayList enumerators
+                    if ($null -eq $propValue -or $propValue -eq '') {
                         $newObj[$key] = ''
                     }
-                    elseif ($value -is [datetime]) {
-                        $newObj[$key] = $value.ToString('yyyy-MM-dd HH:mm:ss')
+                    elseif ($propValue -is [datetime]) {
+                        $newObj[$key] = $propValue.ToString('yyyy-MM-dd HH:mm:ss')
                     }
-                    elseif ($value -is [bool]) {
-                        $newObj[$key] = $value.ToString()
+                    elseif ($propValue -is [bool]) {
+                        $newObj[$key] = $propValue.ToString()
                     }
-                    elseif ($value -is [int] -or $value -is [long] -or $value -is [double] -or $value -is [decimal]) {
-                        $newObj[$key] = $value
+                    elseif ($propValue -is [int] -or $propValue -is [long] -or $propValue -is [double] -or $propValue -is [decimal]) {
+                        $newObj[$key] = $propValue
                     }
-                    elseif ($value -is [System.Collections.IEnumerable] -and $value -isnot [string]) {
-                        # If we got an enumerable that's not a string, join it
-                        $newObj[$key] = ($value | ForEach-Object { $_ }) -join ', '
+                    elseif ($propValue -is [string]) {
+                        # Already a string, keep as-is
+                        $newObj[$key] = $propValue
                     }
                     else {
-                        # Force everything else to string to prevent enumeration issues
-                        $stringValue = $value -as [string]
-                        $newObj[$key] = if ($stringValue) { $stringValue } else { '' }
+                        # Use .ToString() method for everything else
+                        try {
+                            $newObj[$key] = $propValue.ToString()
+                        }
+                        catch {
+                            $newObj[$key] = ''
+                        }
                     }
                 }
                 
-                [void]$filteredData.Add([PSCustomObject]$newObj)
+                $filteredData += [PSCustomObject]$newObj
             }
 
-            # Convert to JSON with corruption detection
+            # Convert to JSON
             try {
                 Write-Host "  [-] Serializing $Type to JSON ($($filteredData.Count) records)..." -ForegroundColor DarkGray
                 
                 $json = $filteredData | ConvertTo-Json -Depth 3 -Compress -ErrorAction Stop
                 
-                # Verify JSON doesn't contain ArrayList references (corruption check)
+                # Verify JSON doesn't contain ArrayList references
                 if ($json -like '*ArrayList*' -or $json -like '*Enumerator*') {
-                    Write-Host "  [!!!] JSON contains ArrayList/Enumerator references - attempting repair..." -ForegroundColor Red
-                    
-                    # Try deeper conversion
-                    $json = $filteredData | ConvertTo-Json -Depth 5 -Compress -ErrorAction Stop
-                    
-                    if ($json -like '*ArrayList*' -or $json -like '*Enumerator*') {
-                        Write-Host "  [!!!] Repair failed - JSON still corrupted" -ForegroundColor Red
-                        Write-Host "  [DEBUG] First 500 chars of JSON: $($json.Substring(0, [Math]::Min(500, $json.Length)))" -ForegroundColor Yellow
-                    }
-                    else {
-                        Write-Host "  [OK] JSON repaired successfully" -ForegroundColor Green
-                    }
+                    Write-Host "  [!!!] JSON contains ArrayList/Enumerator references - DATA CORRUPTION DETECTED" -ForegroundColor Red
+                    Write-Host "  [DEBUG] First 200 chars: $($json.Substring(0, [Math]::Min(200, $json.Length)))" -ForegroundColor Yellow
                 }
                 
                 return $json
@@ -754,6 +751,7 @@ function Hunt-ForensicDump {
                 return '[]'
             }
         }
+
         # Helper function to translate task state values
         function ConvertTo-TaskStateString {
             param([int]$State)
@@ -10273,7 +10271,7 @@ Downloads tool and saves results to specified CSV file.
 
     # Initialize progress tracking
     $progressId = Get-Random
-    Write-Progress -Id $progressId -Activity "Hunt-Browser Analysis" -Status "Initializing..." -PercentComplete 0
+    #Write-Progress -Id $progressId -Activity "Hunt-Browser Analysis" -Status "Initializing..." -PercentComplete 0
     
     # Input validation and sanitization
     if ($null -ne $Search -and $Search.Count -gt 0) {
