@@ -19,8 +19,9 @@
 # -------------------
 # - Make Wiki
 # - Spend genuine time building and tuning the IOC and string lists
-# - Add human readable translations for Hunt-ForensicDump (i.e. start time and status and state for services/tasks/etc...)
-# - fix the ForensicDump scheduled task table display-- needs to handle new "Triggers" outputs
+# - fix the ForensicDump scheduled task table display-- cleanup display for TriggerType string lists (empty commas, extra spaces, etc.)
+# - The persistence objects dont have flags in the HTML report for some reason. The column doesnt exist even though its not omitted.
+# - !!!  add caching functionality to subfunctions (add -DontCache switch, use in ForensicDump to avoid extra PS session vars)... cache cmdlet search results in PS variable for quicker subsequent searching 
 
 
 #   Full Review/Pass-Through
@@ -32,7 +33,7 @@
 # - Have AI write a WIKI page for every single function/cmdlet
 # - Use AI to audit and scrutinize cmdlets... ask strong question to investigate if usage/functionality is actually working or correct
 # - Do a general review check for any critical errors
-# - Rename and standardize any variable names
+# - Rename and standardize any variable names (loadtool vs loadbrowsertool, etc.)
 
 # ----------------------------------------------------------------
 # ----------------------------------------------------------------
@@ -134,7 +135,7 @@ function Hunt-ForensicDump {
     
     - Aggressive Mode: Comprehensive detection with broader scope
     * All available Windows event logs
-    * Expanded file extension coverage (100+ suspicious types)
+    * Expanded file extension coverage (more suspicious file types)
     * Includes system folders (Windows, Program Files)
     * More permissive detection rules (higher false positive rate)
 
