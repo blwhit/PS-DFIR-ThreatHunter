@@ -9746,9 +9746,13 @@ Downloads tool and saves results to specified CSV file.
                         
                         foreach ($row in $csvData) {
                             try {
+                                # CRITICAL: CSV column names have spaces - use dot notation with quotes
+                                $webBrowser = $row.'Web Browser'
+                                $visitTime = $row.'Visit Time'
+                                
                                 $resultObj = [PSCustomObject]@{
                                     User         = Sanitize-Output $currentUser
-                                    Browser      = Sanitize-Output ($row.WebBrowser -replace '\s+', ' ')
+                                    Browser      = Sanitize-Output ($webBrowser -replace '\s+', ' ')
                                     String       = Sanitize-Output ($row.URL)
                                     FullString   = Sanitize-Output ($row.URL)
                                     MatchPattern = "LoadTool"
@@ -9757,16 +9761,15 @@ Downloads tool and saves results to specified CSV file.
                                     Hostname     = Sanitize-Output $Hostname
                                     Count        = 1
                                     Title        = Sanitize-Output ($row.Title)
-                                    VisitTime    = Sanitize-Output ($row.VisitTime)
+                                    VisitTime    = Sanitize-Output $visitTime
                                 }
                                 $results.Add($resultObj)
                             }
                             catch {
-                                Write-Verbose "Failed to process CSV row: $($_.Exception.Message)"
+                                Write-Warning "Failed to process CSV row: $($_.Exception.Message)"
                                 continue
                             }
-                        }
-                
+                        }                
                         if (-not $Quiet) {
                             Write-Host "[SUCCESS]  Extracted $($results.Count) browser history entries" -ForegroundColor Green
                             Write-Host "[SAVED]    CSV file preserved at: $outputCsv" -ForegroundColor Green
