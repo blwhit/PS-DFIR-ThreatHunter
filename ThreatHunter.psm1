@@ -598,7 +598,7 @@ function Hunt-ForensicDump {
 
         # Define field omissions per data type
         $omitFields = if (-not $AllFields) {
-        # Check if browser data is from LoadTool mode
+            # Check if browser data is from LoadTool mode
             $browserOmitFields = @('String', 'Hostname', 'Source')
             if ($ForensicData.Browser -and $ForensicData.Browser.Count -gt 0) {
                 try {
@@ -2304,18 +2304,66 @@ function Hunt-ForensicDump {
                 $browserParams['Auto'] = $true
             }
             
-            $forensicData.Browser = Hunt-Browser @browserParams
+            # Clear any lingering progress from Hunt-Browser
+            Write-Progress -Activity "Hunt-Browser Analysis" -Completed -ErrorAction SilentlyContinue
             
-            if ($null -eq $forensicData.Browser) {
+            $browserResults = Hunt-Browser @browserParams
+            
+            # Ensure progress is cleared again after Hunt-Browser completes
+            Write-Progress -Activity "Hunt-Browser Analysis" -Completed -ErrorAction SilentlyContinue
+            
+            # DEBUG: Check object types before assignment
+            if ($null -ne $browserResults) {
+                Write-Host "  [DEBUG] Browser results type: $($browserResults.GetType().FullName)" -ForegroundColor Magenta
+                Write-Host "  [DEBUG] Browser results count: $($browserResults.Count)" -ForegroundColor Magenta
+                
+                if ($browserResults.Count -gt 0) {
+                    $sampleItem = $browserResults[0]
+                    Write-Host "  [DEBUG] Sample item type: $($sampleItem.GetType().FullName)" -ForegroundColor Magenta
+                    
+                    # Check if properties are accessible
+                    $propCount = ($sampleItem.PSObject.Properties | Measure-Object).Count
+                    Write-Host "  [DEBUG] Sample item has $propCount properties" -ForegroundColor Magenta
+                    
+                    # Test property access
+                    $testProp = $sampleItem.PSObject.Properties | Select-Object -First 1
+                    if ($testProp) {
+                        Write-Host "  [DEBUG] First property: $($testProp.Name) = $($testProp.Value.GetType().FullName)" -ForegroundColor Magenta
+                        $testValue = $testProp.Value
+                        if ($testValue -is [System.Collections.IEnumerable] -and $testValue -isnot [string]) {
+                            Write-Host "  [!!! CORRUPTION DETECTED !!!] Property value is enumerable but not string!" -ForegroundColor Red
+                        }
+                    }
+                }
+            }
+            
+            # Assign results - avoid array wrapping that causes corruption
+            if ($null -eq $browserResults) {
                 $forensicData.Browser = @()
                 Write-Host "  [!] No browser data returned" -ForegroundColor Yellow
             }
+            elseif ($browserResults -is [System.Collections.Generic.List[PSObject]]) {
+                # It's already a List, keep it as-is
+                Write-Host "  [DEBUG] Browser results is List<PSObject>, preserving structure" -ForegroundColor Magenta
+                $forensicData.Browser = $browserResults
+                Write-Host "  [+] Collected $($browserResults.Count) browser entries" -ForegroundColor Green
+            }
+            elseif ($browserResults -is [array]) {
+                # It's an array, keep it as-is without re-wrapping
+                Write-Host "  [DEBUG] Browser results is array, preserving structure" -ForegroundColor Magenta
+                $forensicData.Browser = $browserResults
+                Write-Host "  [+] Collected $($browserResults.Count) browser entries" -ForegroundColor Green
+            }
             else {
-                Write-Host "  [+] Collected $($forensicData.Browser.Count) browser entries" -ForegroundColor Green
+                # Single object - wrap carefully
+                Write-Host "  [DEBUG] Browser results is single object, wrapping" -ForegroundColor Magenta
+                $forensicData.Browser = @($browserResults)
+                Write-Host "  [+] Collected 1 browser entry" -ForegroundColor Green
             }
         }
         catch {
             Write-Host "  [!] Browser history extraction error: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "  [!] Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
             $forensicData.Browser = @()
         }
     }
@@ -2323,7 +2371,6 @@ function Hunt-ForensicDump {
         Write-Host "[SKIP] Browser history extraction (not in Config)" -ForegroundColor DarkGray
         $forensicData.Browser = @()
     }
-
     # Collect Event Logs
     if ($runLogs) {
         Update-ProgressWithEstimate -Activity "Forensic Dump" -StepTimes ([ref]$progressTimes) -Status "Analyzing event logs..." -PercentComplete 55
