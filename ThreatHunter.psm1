@@ -1531,45 +1531,77 @@ function Hunt-ForensicDump {
         <div id="settings-tab" class="tab-content">
             <div class="csv-section">
                 <h2 style="color: #3498db; margin-bottom: 15px;">Display Settings</h2>
-                <p style="margin-bottom: 20px; color: #bdc3c7;">Adjust how data is displayed in tables. Changes apply immediately.</p>
+                <p style="margin-bottom: 20px; color: #bdc3c7;">Adjust how data is displayed in tables. Changes apply immediately without regenerating the report.</p>
                 
-                <div style="background: #333; padding: 20px; border-radius: 8px; max-width: 600px;">
+                <div style="background: #333; padding: 20px; border-radius: 8px; max-width: 700px;">
+                    <div style="background: #2c3e50; padding: 15px; border-radius: 6px; margin-bottom: 20px; border-left: 4px solid #3498db;">
+                        <h3 style="color: #3498db; margin: 0 0 10px 0; font-size: 1.1em;">How This Works</h3>
+                        <p style="color: #bdc3c7; font-size: 0.9em; margin: 0; line-height: 1.6;">
+                            All forensic data is embedded in this HTML report. Changing these settings will re-process 
+                            and re-display the data with your new limits - no need to re-run the PowerShell script!
+                        </p>
+                    </div>
+                    
                     <div style="margin-bottom: 20px;">
                         <label style="display: block; color: #ecf0f1; margin-bottom: 10px; font-weight: bold;">
-                            Event Display Limit (Max Rows)
+                            <span style="font-size: 1.1em;">Display Limit (Max Rows Per Table)</span>
                         </label>
                         <p style="color: #95a5a6; font-size: 0.9em; margin-bottom: 10px;">
-                            Maximum number of records to display per table (0 = unlimited)
+                            Control how many records appear in each table. Set to 0 for unlimited (may be slow with large datasets).
                         </p>
                         <input type="number" id="settings-maxrows" value="$MaxRows" min="0" step="100" 
                             style="width: 100%; padding: 10px; background: #1a1a1a; border: 1px solid #555; color: #fff; border-radius: 4px; font-size: 1em;">
-                        <p style="color: #7f8c8d; font-size: 0.85em; margin-top: 5px;">
-                            Current: <span id="current-maxrows">$MaxRows</span> records
-                        </p>
+                        <div style="display: flex; justify-content: space-between; margin-top: 8px;">
+                            <p style="color: #7f8c8d; font-size: 0.85em; margin: 0;">
+                                Current: <span id="current-maxrows" style="color: #3498db; font-weight: bold;">$(if ($MaxRows -eq 0) { 'Unlimited' } else { $MaxRows })</span> records
+                            </p>
+                            <div>
+                                <button onclick="document.getElementById('settings-maxrows').value=1000" 
+                                    style="padding: 4px 8px; background: #34495e; color: #fff; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em; margin-left: 5px;">1K</button>
+                                <button onclick="document.getElementById('settings-maxrows').value=5000" 
+                                    style="padding: 4px 8px; background: #34495e; color: #fff; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em; margin-left: 5px;">5K</button>
+                                <button onclick="document.getElementById('settings-maxrows').value=0" 
+                                    style="padding: 4px 8px; background: #34495e; color: #fff; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em; margin-left: 5px;">All</button>
+                            </div>
+                        </div>
                     </div>
                     
                     <div style="margin-bottom: 20px;">
                         <label style="display: block; color: #ecf0f1; margin-bottom: 10px; font-weight: bold;">
-                            Row Character Limit (Truncation)
+                            <span style="font-size: 1.1em;">Character Limit (Cell Truncation)</span>
                         </label>
                         <p style="color: #95a5a6; font-size: 0.9em; margin-bottom: 10px;">
-                            Maximum characters to display per cell before truncation
+                            Maximum characters per cell before truncation. Hover over truncated cells to see full content.
                         </p>
-                        <input type="number" id="settings-maxchars" value="$MaxChars" min="0" step="50" 
+                        <input type="number" id="settings-maxchars" value="$MaxChars" min="50" step="50" 
                             style="width: 100%; padding: 10px; background: #1a1a1a; border: 1px solid #555; color: #fff; border-radius: 4px; font-size: 1em;">
-                        <p style="color: #7f8c8d; font-size: 0.85em; margin-top: 5px;">
-                            Current: <span id="current-maxchars">$MaxChars</span> characters
-                        </p>
+                        <div style="display: flex; justify-content: space-between; margin-top: 8px;">
+                            <p style="color: #7f8c8d; font-size: 0.85em; margin: 0;">
+                                Current: <span id="current-maxchars" style="color: #3498db; font-weight: bold;">$MaxChars</span> characters
+                            </p>
+                            <div>
+                                <button onclick="document.getElementById('settings-maxchars').value=200" 
+                                    style="padding: 4px 8px; background: #34495e; color: #fff; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em; margin-left: 5px;">200</button>
+                                <button onclick="document.getElementById('settings-maxchars').value=500" 
+                                    style="padding: 4px 8px; background: #34495e; color: #fff; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em; margin-left: 5px;">500</button>
+                                <button onclick="document.getElementById('settings-maxchars').value=1000" 
+                                    style="padding: 4px 8px; background: #34495e; color: #fff; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em; margin-left: 5px;">1K</button>
+                            </div>
+                        </div>
                     </div>
                     
                     <button onclick="applySettings()" 
-                        style="width: 100%; padding: 12px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1em; font-weight: bold;">
+                        style="width: 100%; padding: 15px; background: linear-gradient(135deg, #3498db, #2980b9); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1.1em; font-weight: bold; transition: all 0.3s;"
+                        onmouseover="this.style.background='linear-gradient(135deg, #2980b9, #3498db)'"
+                        onmouseout="this.style.background='linear-gradient(135deg, #3498db, #2980b9)'">
                         Apply Settings and Reload Data
                     </button>
                     
-                    <p style="color: #f39c12; font-size: 0.9em; margin-top: 15px; padding: 10px; background: rgba(243, 156, 18, 0.1); border-radius: 4px;">
-                        Note: Applying new settings will reload all table data. This may take a moment for large datasets.
-                    </p>
+                    <div style="margin-top: 15px; padding: 12px; background: rgba(243, 156, 18, 0.1); border-radius: 4px; border-left: 4px solid #f39c12;">
+                        <p style="color: #f39c12; font-size: 0.85em; margin: 0;">
+                            <strong>Note:</strong> Changes apply to future tab loads. Switch between tabs to see updated limits in action.
+                        </p>
+                    </div>
                 </div>
             </div>
         </div>
@@ -2085,20 +2117,45 @@ function Hunt-ForensicDump {
             var newMaxRows = parseInt(document.getElementById('settings-maxrows').value) || 0;
             var newMaxChars = parseInt(document.getElementById('settings-maxchars').value) || 200;
             
+            // Validate inputs
+            if (newMaxRows < 0) {
+                alert('Max Rows must be 0 or greater (0 = unlimited)');
+                return;
+            }
+            if (newMaxChars < 50) {
+                alert('Max Characters must be at least 50');
+                return;
+            }
+            
+            // Update global settings
             MAX_ROWS = newMaxRows;
             MAX_CHARS = newMaxChars;
             
-            document.getElementById('current-maxrows').textContent = newMaxRows;
+            // Update display
+            document.getElementById('current-maxrows').textContent = newMaxRows === 0 ? 'Unlimited' : newMaxRows;
             document.getElementById('current-maxchars').textContent = newMaxChars;
             
+            // Clear all loaded data to force reload
             loadedData = {};
             
-            var dataTypes = ['persistence', 'logs', 'browser', 'services', 'tasks', 'files'];
-            if (dataTypes.indexOf(currentTab) !== -1) {
-                loadData(currentTab);
+            // Show loading message
+            var dataTypes = ['persistence', 'registry', 'logs', 'browser', 'services', 'tasks', 'files'];
+            for (var i = 0; i < dataTypes.length; i++) {
+                var content = document.getElementById(dataTypes[i] + '-content');
+                if (content) {
+                    content.innerHTML = '<div class="loading">Reloading with new settings...</div>';
+                }
             }
             
-            alert('Settings applied successfully! Tables will reload with new limits.');
+            // Reload current tab if it's a data tab
+            if (dataTypes.indexOf(currentTab) !== -1) {
+                setTimeout(function() {
+                    loadData(currentTab);
+                    alert('Settings applied! ' + currentTab.charAt(0).toUpperCase() + currentTab.slice(1) + ' data reloaded.\n\nSwitch to other tabs to reload their data with new settings.');
+                }, 100);
+            } else {
+                alert('Settings applied successfully!\n\nSwitch to any data tab to see results with new limits.');
+            }
         }
 
         window.onload = function() {
@@ -2188,7 +2245,7 @@ function Hunt-ForensicDump {
     }
     
     Write-Host ""
-    Write-Host "[ FORENSIC DUMP INITIATED ]" -ForegroundColor Yellow
+    Write-Host "---------------------------`n[ FORENSIC DUMP INITIATED ]`n---------------------------" -ForegroundColor Yellow;
     Write-Host "[+] Output Directory: $OutputDir" -ForegroundColor Green
     Write-Host "[+] Mode: $(if ($Aggressive) { 'Aggressive' } else { 'Auto' })" -ForegroundColor Green
     Write-Host "[+] Date Range: $parsedStartDate to $parsedEndDate" -ForegroundColor Green
@@ -2580,7 +2637,7 @@ function Hunt-ForensicDump {
     $duration = $endTime - $script:StartTime
     
     Write-Host ""
-    Write-Host "[ FORENSIC DUMP COMPLETE ]" -ForegroundColor Green
+    Write-Host "---------------------------`n[ FORENSIC DUMP COMPLETE ]`n---------------------------" -ForegroundColor Green
     Write-Host "[+] Total Runtime: $($duration.Hours)h $($duration.Minutes)m $($duration.Seconds)s" -ForegroundColor Yellow
     Write-Host "[+] Output Directory: $OutputDir" -ForegroundColor Green
     Write-Host "[+] Forensic Report: $(Join-Path $OutputDir 'ForensicReport.html')" -ForegroundColor Green
