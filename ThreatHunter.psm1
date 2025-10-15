@@ -22,6 +22,7 @@
 # - FIX persistence hunter. Registry loading/unloading needs reviewed, and unloading needs fixed
 # - add signatures functionality to the hunt-files cmdlet, display certi/sig status
 # - test local load browsinghistoryview
+# - fix ForensicDump CSV display of browsinghistoryview CSV results
 # - Add human readable translations for Hunt-ForensicDump (i.e. start time and status and state for services/tasks/etc...)
 # - fix or remove the cache function for Hunt-Browser
 # - fix the date rang functionality with Hunt-Browser.... it right now just gets ALL existing data no matter what you input
