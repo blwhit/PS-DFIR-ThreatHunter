@@ -8735,20 +8735,23 @@ Uses local copy of BrowsingHistoryView.exe to extract browser history.
 Hunt-Browser -LoadTool -LoadToolPath "C:\Reports\output.csv" -SkipConfirmation
 Downloads tool and saves results to specified CSV file.
 
+    # Last 1 hour (case-insensitive)
+    Hunt-Browser -LoadTool -StartDate "1h" -SkipConfirmation
+
     # Last 24 hours
-    Hunt-Browser -LoadTool -StartDate "1D" -SkipConfirmation
+    Hunt-Browser -LoadTool -StartDate "24h" -SkipConfirmation
 
     # Last 7 days
-    Hunt-Browser -LoadTool -StartDate "7D" -SkipConfirmation
+    Hunt-Browser -LoadTool -StartDate "7d" -SkipConfirmation
 
-    # Last 48 hours
-    Hunt-Browser -LoadTool -StartDate "48H" -SkipConfirmation
+    # All time (default)
+    Hunt-Browser -LoadTool -SkipConfirmation
 
-    # All time
+    # All time (explicit)
     Hunt-Browser -LoadTool -StartDate "AllTime" -SkipConfirmation
 
     # Specific date range
-    Hunt-Browser -LoadTool -StartDate "2025-01-01" -EndDate "2025-01-31" -SkipConfirmation
+    Hunt-Browser -LoadTool -StartDate "2025-10-01" -EndDate "2025-10-14" -SkipConfirmation
 
 .NOTES
 - Requires PowerShell 5.0 or higher
@@ -8800,7 +8803,7 @@ Downloads tool and saves results to specified CSV file.
     $script:PersistentFiles = @()
 
 
-    function ConvertTo-DateTime {
+function ConvertTo-DateTime {
         param($InputValue)
     
         if ($InputValue -is [datetime]) {
@@ -8818,6 +8821,7 @@ Downloads tool and saves results to specified CSV file.
                 return [datetime]::new(1970, 1, 1)
             }
         
+            # Case-insensitive regex for relative dates
             if ($InputValue -match '^(\d+)([DHMdhm])$') {
                 $number = [int]$matches[1]
                 $unit = $matches[2].ToUpper()
@@ -8834,12 +8838,13 @@ Downloads tool and saves results to specified CSV file.
                     return [datetime]$InputValue
                 }
                 catch {
-                    throw "Invalid date format: $InputValue. Use datetime, 'now', 'alltime', or relative format like '7D', '24H', or '30M'"
+                    throw "Invalid date format: $InputValue. Use datetime, 'now', 'alltime', or relative format like '7d', '24h', or '30m' (case-insensitive)"
                 }
             }
         }
-    
-        throw "Invalid date input: $InputValue"
+        
+        # Default to all time if null or empty
+        return [datetime]::new(1970, 1, 1)
     }
 
 
@@ -9741,26 +9746,72 @@ Downloads tool and saves results to specified CSV file.
 
             # Execute the tool
             try {
-                # Process date parameters
+# Process date parameters
                 $parsedStartDate = $null
                 $parsedEndDate = $null
                 $useTimeFilter = $false
                 
-                if ($null -ne $StartDate) {
+                if ($null -ne $StartDate -and $StartDate -ne '') {
                     try {
                         $parsedStartDate = ConvertTo-DateTime -InputValue $StartDate
-                        $parsedEndDate = if ($null -ne $EndDate) { ConvertTo-DateTime -InputValue $EndDate } else { Get-Date }
+                        $parsedEndDate = if ($null -ne $EndDate -and $EndDate -ne '') { 
+                            ConvertTo-DateTime -InputValue $EndDate 
+                        } else { 
+                            Get-Date 
+                        }
                         
-                        # Check if start date is "all time" (1970)
+                        # Check if start date is "all time" (1970) - if so, don't use time filter
                         if ($parsedStartDate.Year -gt 1970) {
                             $useTimeFilter = $true
+                            
+                            if (-not $Quiet) {
+                                Write-Host "[DEBUG]    Start: $($parsedStartDate.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor DarkGray
+                                Write-Host "[DEBUG]    End:   $($parsedEndDate.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor DarkGray
+                            }
                         }
                     }
                     catch {
                         Write-Warning "Invalid date format, loading all history: $($_.Exception.Message)"
+                        $useTimeFilter = $false
                     }
                 }
                 
+                # Build arguments for BrowsingHistoryView
+                $safeOutputPath = "`"$outputCsv`""
+                
+                if ($useTimeFilter) {
+                    # CRITICAL: BrowsingHistoryView appears to use American date format (mm-dd-yyyy) 
+                    # despite documentation saying dd-mm-yyyy
+                    # Also using 12-hour format with AM/PM to match tool's expected format
+                    $startDateStr = $parsedStartDate.ToString("MM-dd-yyyy hh:mm:ss tt")
+                    $endDateStr = $parsedEndDate.ToString("MM-dd-yyyy hh:mm:ss tt")
+                    
+                    $arguments = @(
+                        "/HistorySource", "1",
+                        "/VisitTimeFilterType", "4",
+                        "/VisitTimeFrom", "`"$startDateStr`"",
+                        "/VisitTimeTo", "`"$endDateStr`"",
+                        "/SaveDirect",
+                        "/scomma", $safeOutputPath
+                    )
+                    
+                    if (-not $Quiet) {
+                        Write-Host "[FILTER]   Time range: $startDateStr to $endDateStr" -ForegroundColor Cyan
+                    }
+                }
+                else {
+                    # No time filter - load all history (default behavior)
+                    $arguments = @(
+                        "/HistorySource", "1",
+                        "/VisitTimeFilterType", "1",
+                        "/SaveDirect",
+                        "/scomma", $safeOutputPath
+                    )
+                    
+                    if (-not $Quiet) {
+                        Write-Host "[FILTER]   Loading all available history (no date filter)" -ForegroundColor Cyan
+                    }
+                }                
                 # Build arguments for BrowsingHistoryView
                 $safeOutputPath = "`"$outputCsv`""
                 
@@ -10411,23 +10462,35 @@ Downloads tool and saves results to specified CSV file.
     $fullhostname = ([Net.Dns]::GetHostByName($env:computerName)).HostName
     $hostname = if ($fullhostname) { $fullhostname } else { "Unknown" }
     
-    # Process dates
-    $parsedStartDate = $null
-    $parsedEndDate = $null
-    
-    if ($null -ne $StartDate) {
+    # Process dates - show info only if date filtering is being used
+    if ($null -ne $StartDate -and $StartDate -ne '') {
         try {
             $parsedStartDate = ConvertTo-DateTime -InputValue $StartDate
-            $parsedEndDate = if ($null -ne $EndDate) { ConvertTo-DateTime -InputValue $EndDate } else { Get-Date }
+            $parsedEndDate = if ($null -ne $EndDate -and $EndDate -ne '') { 
+                ConvertTo-DateTime -InputValue $EndDate 
+            } else { 
+                Get-Date 
+            }
             
-            if (-not $Quiet) {
-                Write-Host "[DATE] Filtering from $parsedStartDate to $parsedEndDate" -ForegroundColor Cyan
+            # Only show date message if not "all time"
+            if ($parsedStartDate.Year -gt 1970) {
+                if (-not $Quiet) {
+                    Write-Host "[DATE] Filtering from $($parsedStartDate.ToString('yyyy-MM-dd HH:mm:ss')) to $($parsedEndDate.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor Cyan
+                }
+            }
+            else {
+                if (-not $Quiet) {
+                    Write-Host "[DATE] Loading all available history (no date filter)" -ForegroundColor Cyan
+                }
             }
         }
         catch {
-            Write-Warning "Date parsing failed: $($_.Exception.Message)"
-            $parsedStartDate = $null
-            $parsedEndDate = $null
+            Write-Warning "Date parsing failed, defaulting to all history: $($_.Exception.Message)"
+        }
+    }
+    else {
+        if (-not $Quiet) {
+            Write-Host "[DATE] No date filter specified, loading all available history" -ForegroundColor Cyan
         }
     }
     
