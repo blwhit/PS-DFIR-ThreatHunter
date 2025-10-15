@@ -635,7 +635,6 @@ function Hunt-ForensicDump {
         }
 
         # Helper function to prepare data for JSON embedding
-        # Helper function to prepare data for JSON embedding
         function Prepare-DataForJSON {
             param($Data, $Type, $MaxRows, $OmitFields)
 
@@ -644,30 +643,14 @@ function Hunt-ForensicDump {
             }
 
             Write-Host "  [-] Processing $Type data: $($Data.Count) records..." -ForegroundColor DarkGray
-            
-            # DEBUG: Check input data type
-            Write-Host "  [DEBUG-JSON] Input data type for $Type : $($Data.GetType().FullName)" -ForegroundColor Magenta
 
             $dataToProcess = $Data
             if ($MaxRows -gt 0 -and $Data.Count -gt $MaxRows) {
                 Write-Host "  [-] Limiting to first $MaxRows records..." -ForegroundColor DarkGray
                 $dataToProcess = $Data | Select-Object -First $MaxRows
-                
-                # DEBUG: Check if Select-Object caused corruption
-                Write-Host "  [DEBUG-JSON] After Select-Object, type: $($dataToProcess.GetType().FullName)" -ForegroundColor Magenta
-                if ($dataToProcess.Count -gt 0) {
-                    $testItem = $dataToProcess[0]
-                    Write-Host "  [DEBUG-JSON] After Select-Object, first item type: $($testItem.GetType().FullName)" -ForegroundColor Magenta
-                    $testProp = $testItem.PSObject.Properties | Select-Object -First 1
-                    if ($testProp) {
-                        Write-Host "  [DEBUG-JSON] After Select-Object, test property value type: $($testProp.Value.GetType().FullName)" -ForegroundColor Magenta
-                        if ($testProp.Value.GetType().Name -like "*Enumerator*") {
-                            Write-Host "  [!!!] CORRUPTION DETECTED after Select-Object!" -ForegroundColor Red
-                        }
-                    }
-                }
             }
 
+            # Collect all unique keys from sample of data
             $allKeysSet = [System.Collections.Generic.HashSet[string]]::new()
             $sampleSize = [Math]::Min(50, $dataToProcess.Count)
 
@@ -679,41 +662,21 @@ function Hunt-ForensicDump {
                 }
             }
             $allKeys = @($allKeysSet)
-            
-            # DEBUG: Check after key collection
-            Write-Host "  [DEBUG-JSON] After key collection, checking data integrity..." -ForegroundColor Magenta
-            if ($dataToProcess.Count -gt 0) {
-                $testItem2 = $dataToProcess[0]
-                $testProp2 = $testItem2.PSObject.Properties | Select-Object -First 1
-                if ($testProp2) {
-                    Write-Host "  [DEBUG-JSON] After key collection, test property value type: $($testProp2.Value.GetType().FullName)" -ForegroundColor Magenta
-                    if ($testProp2.Value.GetType().Name -like "*Enumerator*") {
-                        Write-Host "  [!!!] CORRUPTION DETECTED after key collection!" -ForegroundColor Red
-                    }
-                }
-            }
 
+            # Filter out omitted fields
             if ($OmitFields -and $OmitFields.Count -gt 0) {
                 $allKeys = $allKeys | Where-Object { $_ -notin $OmitFields }
             }
 
+            # Determine which keys have meaningful values
             $keysToKeep = [System.Collections.ArrayList]::new()
             foreach ($key in $allKeys) {
                 $hasValue = $false
                 $sampleLimit = [Math]::Min(50, $dataToProcess.Count)
                 
                 for ($i = 0; $i -lt $sampleLimit; $i++) {
-                    # CRITICAL: Store item in variable first to avoid enumeration issues
                     $currentItem = $dataToProcess[$i]
                     $value = $currentItem.$key
-                    
-                    # DEBUG: Check if property access causes corruption
-                    if ($Type -eq 'browser' -and $i -eq 0) {
-                        Write-Host "  [DEBUG-JSON] Accessing property '$key', value type: $($value.GetType().FullName)" -ForegroundColor Magenta
-                        if ($value.GetType().Name -like "*Enumerator*") {
-                            Write-Host "  [!!!] CORRUPTION: Property '$key' returns Enumerator!" -ForegroundColor Red
-                        }
-                    }
                     
                     if ($null -ne $value -and $value -ne '' -and $value -ne 0) {
                         $hasValue = $true
@@ -724,73 +687,66 @@ function Hunt-ForensicDump {
                     [void]$keysToKeep.Add($key)
                 }
             }
-            
-            # DEBUG: Check before building filtered data
-            Write-Host "  [DEBUG-JSON] Before building filteredData, checking integrity..." -ForegroundColor Magenta
-            if ($dataToProcess.Count -gt 0) {
-                $testItem3 = $dataToProcess[0]
-                foreach ($key in $keysToKeep) {
-                    $testVal = $testItem3.$key
-                    if ($Type -eq 'browser' -and $testVal.GetType().Name -like "*Enumerator*") {
-                        Write-Host "  [!!!] CORRUPTION: Key '$key' has Enumerator value!" -ForegroundColor Red
-                    }
-                    # Only show first 3 keys to avoid spam
-                    if ($keysToKeep.IndexOf($key) -lt 3) {
-                        Write-Host "  [DEBUG-JSON] Key '$key' = type $($testVal.GetType().FullName)" -ForegroundColor Magenta
-                    }
-                }
-            }
-            
-            # DEBUG: Check before building filtered data
-            Write-Host "  [DEBUG-JSON] Before building filteredData, checking integrity..." -ForegroundColor Magenta
-            if ($dataToProcess.Count -gt 0) {
-                $testItem3 = $dataToProcess[0]
-                foreach ($key in $keysToKeep) {
-                    $testVal = $testItem3.$key
-                    if ($Type -eq 'browser' -and $testVal.GetType().Name -like "*Enumerator*") {
-                        Write-Host "  [!!!] CORRUPTION: Key '$key' has Enumerator value!" -ForegroundColor Red
-                    }
-                    # Only show first 3 keys to avoid spam
-                    if ($keysToKeep.IndexOf($key) -lt 3) {
-                        Write-Host "  [DEBUG-JSON] Key '$key' = type $($testVal.GetType().FullName)" -ForegroundColor Magenta
-                    }
-                }
-            }
 
+            # Build filtered data with explicit type conversion to prevent JSON issues
             $filteredData = [System.Collections.ArrayList]::new($dataToProcess.Count)
             
-            # CRITICAL: Use for loop with index instead of foreach to avoid enumeration issues
             for ($i = 0; $i -lt $dataToProcess.Count; $i++) {
                 $item = $dataToProcess[$i]
                 $newObj = [ordered]@{}
                 
                 foreach ($key in $keysToKeep) {
-                    # Access property directly to avoid enumeration corruption
                     $value = $item.$key
                     
-                    # Convert value to proper type
+                    # CRITICAL: Aggressively convert all values to prevent ArrayList/Enumerator issues
                     if ($null -eq $value) {
                         $newObj[$key] = ''
                     }
                     elseif ($value -is [datetime]) {
                         $newObj[$key] = $value.ToString('yyyy-MM-dd HH:mm:ss')
                     }
+                    elseif ($value -is [bool]) {
+                        $newObj[$key] = $value.ToString()
+                    }
+                    elseif ($value -is [int] -or $value -is [long] -or $value -is [double] -or $value -is [decimal]) {
+                        $newObj[$key] = $value
+                    }
                     elseif ($value -is [System.Collections.IEnumerable] -and $value -isnot [string]) {
-                        # If we somehow got an enumerable that's not a string, convert it
-                        $newObj[$key] = $value -join ', '
+                        # If we got an enumerable that's not a string, join it
+                        $newObj[$key] = ($value | ForEach-Object { $_ }) -join ', '
                     }
                     else {
-                        # Force to string for safety
-                        $newObj[$key] = "$value"
+                        # Force everything else to string to prevent enumeration issues
+                        $stringValue = $value -as [string]
+                        $newObj[$key] = if ($stringValue) { $stringValue } else { '' }
                     }
                 }
                 
                 [void]$filteredData.Add([PSCustomObject]$newObj)
             }
 
+            # Convert to JSON with corruption detection
             try {
                 Write-Host "  [-] Serializing $Type to JSON ($($filteredData.Count) records)..." -ForegroundColor DarkGray
+                
                 $json = $filteredData | ConvertTo-Json -Depth 3 -Compress -ErrorAction Stop
+                
+                # Verify JSON doesn't contain ArrayList references (corruption check)
+                if ($json -like '*ArrayList*' -or $json -like '*Enumerator*') {
+                    Write-Host "  [!!!] JSON contains ArrayList/Enumerator references - attempting repair..." -ForegroundColor Red
+                    
+                    # Try deeper conversion
+                    $json = $filteredData | ConvertTo-Json -Depth 5 -Compress -ErrorAction Stop
+                    
+                    if ($json -like '*ArrayList*' -or $json -like '*Enumerator*') {
+                        Write-Host "  [!!!] Repair failed - JSON still corrupted" -ForegroundColor Red
+                        Write-Host "  [DEBUG] First 500 chars of JSON: $($json.Substring(0, [Math]::Min(500, $json.Length)))" -ForegroundColor Yellow
+                    }
+                    else {
+                        Write-Host "  [OK] JSON repaired successfully" -ForegroundColor Green
+                    }
+                }
+                
                 return $json
             }
             catch {
@@ -2410,19 +2366,31 @@ function Hunt-ForensicDump {
                 $browserParams['Auto'] = $true
             }
             
-            # Clear any lingering progress from Hunt-Browser before calling
-            Write-Progress -Activity "Hunt-Browser Analysis" -Completed -ErrorAction SilentlyContinue
-            Write-Progress -Activity "Hunt-Browser" -Completed -ErrorAction SilentlyContinue
-            Write-Progress -Activity "Browser History Extraction" -Completed -ErrorAction SilentlyContinue
-            
             $browserResults = Hunt-Browser @browserParams
             
-            # Aggressively clear all possible progress bars after Hunt-Browser completes
-            Write-Progress -Activity "Hunt-Browser Analysis" -Completed -ErrorAction SilentlyContinue
-            Write-Progress -Activity "Hunt-Browser" -Completed -ErrorAction SilentlyContinue
-            Write-Progress -Activity "Browser History Extraction" -Completed -ErrorAction SilentlyContinue
-            Write-Progress -Activity "Initializing" -Completed -ErrorAction SilentlyContinue
-            Write-Progress -Activity "Processing" -Completed -ErrorAction SilentlyContinue
+            # Nuclear option: Clear ALL possible progress activities
+            $progressActivities = @(
+                "Hunt-Browser Analysis",
+                "Hunt-Browser",
+                "Browser History Extraction",
+                "Initializing",
+                "Processing",
+                "Extracting Browser History",
+                "Loading Tool",
+                "Download",
+                "Analyzing"
+            )
+            
+            foreach ($activity in $progressActivities) {
+                Write-Progress -Activity $activity -Completed -ErrorAction SilentlyContinue
+            }
+            
+            # Force UI refresh with multiple cycles
+            Start-Sleep -Milliseconds 50
+            foreach ($activity in $progressActivities) {
+                Write-Progress -Activity $activity -Completed -ErrorAction SilentlyContinue
+            }
+            Start-Sleep -Milliseconds 50
             
             # DEBUG: Check object types before assignment
             if ($null -ne $browserResults) {
