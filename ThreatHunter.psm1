@@ -689,19 +689,23 @@ function Hunt-ForensicDump {
                 }
             }
 
-            # Build filtered data - CRITICAL: Must NOT iterate over $dataToProcess directly
-            # Using Select-Object to create NEW objects prevents enumeration corruption
-            $filteredData = @()
+            # Build filtered data - CRITICAL: Use ArrayList.Add() instead of += operator
+            $filteredData = [System.Collections.ArrayList]::new($dataToProcess.Count)
             
             foreach ($item in $dataToProcess) {
                 $newObj = [ordered]@{}
                 
                 foreach ($key in $keysToKeep) {
-                    # Get the property value
-                    $propValue = $item.PSObject.Properties[$key].Value
+                    # Get property value using PSObject.Properties to avoid enumeration
+                    $prop = $item.PSObject.Properties[$key]
+                    if ($null -eq $prop) {
+                        $newObj[$key] = ''
+                        continue
+                    }
                     
-                    # CRITICAL: Use .ToString() method instead of -as [string] or "$value"
-                    # This prevents PowerShell from creating ArrayList enumerators
+                    $propValue = $prop.Value
+                    
+                    # CRITICAL: Handle each type explicitly to prevent enumeration corruption
                     if ($null -eq $propValue -or $propValue -eq '') {
                         $newObj[$key] = ''
                     }
@@ -729,14 +733,19 @@ function Hunt-ForensicDump {
                     }
                 }
                 
-                $filteredData += [PSCustomObject]$newObj
+                # Use ArrayList.Add() instead of += to prevent corruption
+                [void]$filteredData.Add([PSCustomObject]$newObj)
             }
 
             # Convert to JSON
             try {
                 Write-Host "  [-] Serializing $Type to JSON ($($filteredData.Count) records)..." -ForegroundColor DarkGray
                 
-                $json = $filteredData | ConvertTo-Json -Depth 3 -Compress -ErrorAction Stop
+                # CRITICAL: Convert ArrayList to regular array before JSON conversion
+                # This prevents ArrayList metadata from leaking into JSON
+                $arrayData = @($filteredData.ToArray())
+                
+                $json = $arrayData | ConvertTo-Json -Depth 3 -Compress -ErrorAction Stop
                 
                 # Verify JSON doesn't contain ArrayList references
                 if ($json -like '*ArrayList*' -or $json -like '*Enumerator*') {
@@ -10272,7 +10281,7 @@ Downloads tool and saves results to specified CSV file.
 
     # Initialize progress tracking
     $progressId = Get-Random
-    #Write-Progress -Id $progressId -Activity "Hunt-Browser Analysis" -Status "Initializing..." -PercentComplete 0
+    Write-Progress -Id $progressId -Activity "Hunt-Browser Analysis" -Status "Initializing..." -PercentComplete 0
     
     # Input validation and sanitization
     if ($null -ne $Search -and $Search.Count -gt 0) {
