@@ -8803,7 +8803,7 @@ Downloads tool and saves results to specified CSV file.
     $script:PersistentFiles = @()
 
 
-function ConvertTo-DateTime {
+    function ConvertTo-DateTime {
         param($InputValue)
     
         if ($InputValue -is [datetime]) {
@@ -9746,7 +9746,7 @@ function ConvertTo-DateTime {
 
             # Execute the tool
             try {
-# Process date parameters
+                # Process date parameters
                 $parsedStartDate = $null
                 $parsedEndDate = $null
                 $useTimeFilter = $false
@@ -9756,7 +9756,8 @@ function ConvertTo-DateTime {
                         $parsedStartDate = ConvertTo-DateTime -InputValue $StartDate
                         $parsedEndDate = if ($null -ne $EndDate -and $EndDate -ne '') { 
                             ConvertTo-DateTime -InputValue $EndDate 
-                        } else { 
+                        }
+                        else { 
                             Get-Date 
                         }
                         
@@ -9780,11 +9781,11 @@ function ConvertTo-DateTime {
                 $safeOutputPath = "`"$outputCsv`""
                 
                 if ($useTimeFilter) {
-                    # CRITICAL: BrowsingHistoryView appears to use American date format (mm-dd-yyyy) 
-                    # despite documentation saying dd-mm-yyyy
-                    # Also using 12-hour format with AM/PM to match tool's expected format
-                    $startDateStr = $parsedStartDate.ToString("MM-dd-yyyy hh:mm:ss tt")
-                    $endDateStr = $parsedEndDate.ToString("MM-dd-yyyy hh:mm:ss tt")
+                    # CRITICAL: BrowsingHistoryView uses EUROPEAN date format (dd-mm-yyyy) with 24-hour time
+                    # Format: dd-mm-yyyy HH:mm:ss (day-month-year hour:minute:second in 24-hour format)
+                    # Example from docs: "10-01-2012 12:00:00" means January 10, 2012 at 12:00 PM
+                    $startDateStr = $parsedStartDate.ToString("dd-MM-yyyy HH:mm:ss")
+                    $endDateStr = $parsedEndDate.ToString("dd-MM-yyyy HH:mm:ss")
                     
                     $arguments = @(
                         "/HistorySource", "1",
@@ -9811,42 +9812,7 @@ function ConvertTo-DateTime {
                     if (-not $Quiet) {
                         Write-Host "[FILTER]   Loading all available history (no date filter)" -ForegroundColor Cyan
                     }
-                }                
-                # Build arguments for BrowsingHistoryView
-                $safeOutputPath = "`"$outputCsv`""
-                
-                if ($useTimeFilter) {
-                    # Format dates for BrowsingHistoryView: dd-mm-yyyy hh:mm:ss
-                    $startDateStr = $parsedStartDate.ToString("dd-MM-yyyy HH:mm:ss")
-                    $endDateStr = $parsedEndDate.ToString("dd-MM-yyyy HH:mm:ss")
-                    
-                    $arguments = @(
-                        "/HistorySource", "1",
-                        "/VisitTimeFilterType", "4",
-                        "/VisitTimeFrom", "`"$startDateStr`"",
-                        "/VisitTimeTo", "`"$endDateStr`"",
-                        "/SaveDirect",
-                        "/scomma", $safeOutputPath
-                    )
-                    
-                    if (-not $Quiet) {
-                        Write-Host "[FILTER]   Time range: $startDateStr to $endDateStr" -ForegroundColor Cyan
-                    }
-                }
-                else {
-                    # No time filter - load all history
-                    $arguments = @(
-                        "/HistorySource", "1",
-                        "/VisitTimeFilterType", "1",
-                        "/SaveDirect",
-                        "/scomma", $safeOutputPath
-                    )
-                    
-                    if (-not $Quiet) {
-                        Write-Host "[FILTER]   Loading all available history" -ForegroundColor Cyan
-                    }
-                }
-        
+                }        
                 if (-not $Quiet) {
                     Write-Host "[EXEC]     Executing BrowsingHistoryView..." -ForegroundColor Green
                     Write-Host "[OUTPUT]   Results will be saved to: $outputCsv" -ForegroundColor Cyan
@@ -10468,7 +10434,8 @@ function ConvertTo-DateTime {
             $parsedStartDate = ConvertTo-DateTime -InputValue $StartDate
             $parsedEndDate = if ($null -ne $EndDate -and $EndDate -ne '') { 
                 ConvertTo-DateTime -InputValue $EndDate 
-            } else { 
+            }
+            else { 
                 Get-Date 
             }
             
