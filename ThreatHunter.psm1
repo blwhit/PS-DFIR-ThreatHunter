@@ -637,7 +637,7 @@ function Hunt-ForensicDump {
                 return '[]'
             }
 
-            Write-Host "  [-] Processing $Type data: $($Data.Count) records..." -ForegroundColor DarkGray
+            #Write-Host "  [-] Processing $Type data: $($Data.Count) records..." -ForegroundColor DarkGray
 
             $dataToProcess = $Data
             if ($MaxRows -gt 0 -and $Data.Count -gt $MaxRows) {
@@ -733,7 +733,7 @@ function Hunt-ForensicDump {
 
             # Convert to JSON
             try {
-                Write-Host "  [-] Serializing $Type to JSON ($($filteredData.Count) records)..." -ForegroundColor DarkGray
+                #Write-Host "  [-] Serializing $Type to JSON ($($filteredData.Count) records)..." -ForegroundColor DarkGray
                 
                 # CRITICAL: Convert ArrayList to regular array before JSON conversion
                 # This prevents ArrayList metadata from leaking into JSON
@@ -743,7 +743,7 @@ function Hunt-ForensicDump {
                 
                 # Verify JSON doesn't contain ArrayList references
                 if ($json -like '*ArrayList*' -or $json -like '*Enumerator*') {
-                    Write-Verbose "  [!!!] JSON contains ArrayList/Enumerator references - POTENTIAL DATA CORRUPTION DETECTED" -ForegroundColor Red
+                    Write-Verbose "  [!!!] JSON contains ArrayList/Enumerator references - POTENTIAL DATA CORRUPTION DETECTED"
                 }
                 
                 return $json
@@ -2111,7 +2111,6 @@ function Hunt-ForensicDump {
 
         try {
             $html | Out-File -FilePath $OutputPath -Encoding UTF8 -ErrorAction Stop
-            Write-Host "  [+] HTML report generated successfully" -ForegroundColor Green
         }
         catch {
             Write-Warning "HTML report generation failed: $($_.Exception.Message)"
@@ -2189,9 +2188,7 @@ function Hunt-ForensicDump {
     }
     
     Write-Host ""
-    Write-Host "=================================" -ForegroundColor Yellow
-    Write-Host "    FORENSIC DUMP INITIATED" -ForegroundColor Yellow
-    Write-Host "=================================" -ForegroundColor Yellow
+    Write-Host "[ FORENSIC DUMP INITIATED ]" -ForegroundColor Yellow
     Write-Host "[+] Output Directory: $OutputDir" -ForegroundColor Green
     Write-Host "[+] Mode: $(if ($Aggressive) { 'Aggressive' } else { 'Auto' })" -ForegroundColor Green
     Write-Host "[+] Date Range: $parsedStartDate to $parsedEndDate" -ForegroundColor Green
@@ -2571,8 +2568,6 @@ function Hunt-ForensicDump {
         Generate-HTMLReport -ForensicData $forensicData -OutputPath $htmlPath -CSVDir $csvDir `
             -StartDate $parsedStartDate -EndDate $parsedEndDate -Mode $(if ($Aggressive) { "Aggressive" } else { "Auto" }) `
             -MaxChars $htmlMaxChars -MaxRows $htmlMaxRows -AllFields:$htmlAllFields
-
-        Write-Host "[+] HTML report generated: $htmlPath" -ForegroundColor Green
     }
     catch {
         Write-Warning "HTML report generation failed: $($_.Exception.Message)"
@@ -2585,9 +2580,7 @@ function Hunt-ForensicDump {
     $duration = $endTime - $script:StartTime
     
     Write-Host ""
-    Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "    FORENSIC DUMP COMPLETE" -ForegroundColor Green
-    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "[ FORENSIC DUMP COMPLETE ]" -ForegroundColor Green
     Write-Host "[+] Total Runtime: $($duration.Hours)h $($duration.Minutes)m $($duration.Seconds)s" -ForegroundColor Yellow
     Write-Host "[+] Output Directory: $OutputDir" -ForegroundColor Green
     Write-Host "[+] Forensic Report: $(Join-Path $OutputDir 'ForensicReport.html')" -ForegroundColor Green
