@@ -844,28 +844,31 @@ function Hunt-ForensicDump {
         if ($ForensicData.Services -and $ForensicData.Services.Count -gt 0) {
             foreach ($service in $ForensicData.Services) {
                 try {
-                    $translatedService = $service.PSObject.Copy()
+                    # Create new object with translated values
+                    $props = @{}
+                    foreach ($prop in $service.PSObject.Properties) {
+                        $props[$prop.Name] = $prop.Value
+                    }
                     
                     # Translate Status field
-                    if ($translatedService.PSObject.Properties['Status']) {
-                        $translatedService.Status = ConvertTo-ServiceStatusString -Status $translatedService.Status
+                    if ($props.ContainsKey('Status')) {
+                        $props['Status'] = ConvertTo-ServiceStatusString -Status $props['Status']
                     }
                     
                     # Translate StartType field
-                    if ($translatedService.PSObject.Properties['StartType']) {
-                        $translatedService.StartType = ConvertTo-ServiceStartTypeString -StartType $translatedService.StartType
+                    if ($props.ContainsKey('StartType')) {
+                        $props['StartType'] = ConvertTo-ServiceStartTypeString -StartType $props['StartType']
                     }
                     
-                    $servicesTranslated += $translatedService
+                    $servicesTranslated += [PSCustomObject]$props
                 }
                 catch {
+                    Write-Verbose "Service translation error: $($_.Exception.Message)"
                     $servicesTranslated += $service
-                    continue
                 }
             }
         }
-        $servicesJson = Prepare-DataForJSON -Data $servicesTranslated -Type 'services' -MaxRows $MaxRows -OmitFields $omitFields['services']
-    
+        $servicesJson = Prepare-DataForJSON -Data $servicesTranslated -Type 'services' -MaxRows $MaxRows -OmitFields $omitFields['services']    
         Write-Host "  [-] Preparing Tasks JSON with translations..." -ForegroundColor DarkGray
         # Translate task state values
         $tasksTranslated = @()
@@ -1753,7 +1756,6 @@ function Hunt-ForensicDump {
                         var dateB = b.TimeCreated || b['Formatted Time'] || '';
                         if (!dateA) return 1;
                         if (!dateB) return -1;
-                        // Extract date portion for Formatted Time (remove timezone suffix)
                         var cleanA = dateA.toString().split(' (')[0];
                         var cleanB = dateB.toString().split(' (')[0];
                         return cleanB.localeCompare(cleanA, undefined, {numeric: true});
@@ -1764,10 +1766,10 @@ function Hunt-ForensicDump {
                 // Auto-sort files by LastModifiedDate (newest first) on initial load
                 if (type === 'files' && data.length > 0) {
                     data.sort(function(a, b) {
-                        var dateA = a.LastModifiedDate || a.LastModified || '';
-                        var dateB = b.LastModifiedDate || b.LastModified || '';
-                        if (!dateA) return 1;
-                        if (!dateB) return -1;
+                        var dateA = a.LastModifiedDate || a.LastModified || a.CreationDate || '';
+                        var dateB = b.LastModifiedDate || b.LastModified || b.CreationDate || '';
+                        if (!dateA || dateA === 'N/A') return 1;
+                        if (!dateB || dateB === 'N/A') return -1;
                         return dateB.localeCompare(dateA, undefined, {numeric: true});
                     });
                     sortState['files-LastModifiedDate'] = 'desc';
@@ -1776,8 +1778,8 @@ function Hunt-ForensicDump {
                 // Auto-sort tasks by LastRunTime (newest first) on initial load
                 if (type === 'tasks' && data.length > 0) {
                     data.sort(function(a, b) {
-                        var dateA = a.LastRunTime || '';
-                        var dateB = b.LastRunTime || '';
+                        var dateA = a.LastRunTime || a.NextRunTime || '';
+                        var dateB = b.LastRunTime || b.NextRunTime || '';
                         if (!dateA || dateA === 'N/A' || dateA === '') return 1;
                         if (!dateB || dateB === 'N/A' || dateB === '') return -1;
                         return dateB.localeCompare(dateA, undefined, {numeric: true});
@@ -1788,8 +1790,8 @@ function Hunt-ForensicDump {
                 // Auto-sort services by LastModified (newest first) on initial load
                 if (type === 'services' && data.length > 0) {
                     data.sort(function(a, b) {
-                        var dateA = a.LastModified || '';
-                        var dateB = b.LastModified || '';
+                        var dateA = a.LastModified || a.LastModifiedDate || '';
+                        var dateB = b.LastModified || b.LastModifiedDate || '';
                         if (!dateA || dateA === 'N/A' || dateA === '') return 1;
                         if (!dateB || dateB === 'N/A' || dateB === '') return -1;
                         return dateB.localeCompare(dateA, undefined, {numeric: true});
@@ -1797,14 +1799,26 @@ function Hunt-ForensicDump {
                     sortState['services-LastModified'] = 'desc';
                 }
                 
-                // Auto-sort browser by FullString (newest first) on initial load
+                // Auto-sort browser by timestamp fields (newest first) on initial load
                 if (type === 'browser' && data.length > 0) {
                     data.sort(function(a, b) {
-                        var dateA = a.FullString || '';
-                        var dateB = b.FullString || '';
+                        var dateA = a.FullString || a.Timestamp || a.VisitTime || '';
+                        var dateB = b.FullString || b.Timestamp || b.VisitTime || '';
+                        if (!dateA || dateA === 'N/A') return 1;
+                        if (!dateB || dateB === 'N/A') return -1;
                         return dateB.localeCompare(dateA, undefined, {numeric: true});
                     });
                     sortState['browser-FullString'] = 'desc';
+                }
+                
+                // Auto-sort registry by recent activity (newest first) on initial load
+                if (type === 'registry' && data.length > 0) {
+                    data.sort(function(a, b) {
+                        var pathA = a.KeyPath || '';
+                        var pathB = b.KeyPath || '';
+                        return pathB.localeCompare(pathA, undefined, {numeric: true});
+                    });
+                    sortState['registry-KeyPath'] = 'desc';
                 }
                 
                 // Auto-sort persistence by Flag (highest priority first) on initial load
@@ -1812,7 +1826,6 @@ function Hunt-ForensicDump {
                     data.sort(function(a, b) {
                         var flagA = a.Flag || '';
                         var flagB = b.Flag || '';
-                        // Priority order: Critical > High > Medium > Low > Info
                         var priority = {'Critical': 5, 'High': 4, 'Medium': 3, 'Low': 2, 'Info': 1, '': 0};
                         var valA = priority[flagA] || 0;
                         var valB = priority[flagB] || 0;
@@ -1820,6 +1833,7 @@ function Hunt-ForensicDump {
                     });
                     sortState['persistence-Flag'] = 'desc';
                 }
+                    
                 
                 // Store the sorted data
                 loadedData[type] = data;
