@@ -19,7 +19,6 @@
 # -------------------
 # - Make Wiki
 # - Spend genuine time building and tuning the IOC and string lists
-# - add signatures functionality to the hunt-files cmdlet, display certi/sig status
 # - Add human readable translations for Hunt-ForensicDump (i.e. start time and status and state for services/tasks/etc...)
 # - fix the ForensicDump scheduled task table display-- needs to handle new "Triggers" outputs
 
@@ -11142,6 +11141,77 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
         }
     }
 
+    # Signature verification function
+    function Get-FileSignatureInfo {
+        param($FilePath)
+        
+        try {
+            # Get signature for all files - let Get-AuthenticodeSignature determine if applicable
+            $signature = Get-AuthenticodeSignature -FilePath $FilePath -ErrorAction Stop
+            
+            if ($null -eq $signature) {
+                return ""
+            }
+            
+            # Check signature status
+            switch ($signature.Status) {
+                'NotSigned' {
+                    return "[NOT_SIGNED]"
+                }
+                'Valid' {
+                    if ($null -ne $signature.SignerCertificate) {
+                        $subject = $signature.SignerCertificate.Subject -replace 'CN=', '' -replace ',.*$', ''
+                        $issuer = $signature.SignerCertificate.Issuer -replace 'CN=', '' -replace ',.*$', ''
+                        $expires = $signature.SignerCertificate.NotAfter.ToString("MM-dd-yyyy")
+                        
+                        # Check if expired
+                        if ($signature.SignerCertificate.NotAfter -lt (Get-Date)) {
+                            return "[VALID_EXPIRED] Subject: $subject, Issuer: $issuer, Expires: $expires"
+                        }
+                        else {
+                            return "[VALID] Subject: $subject, Issuer: $issuer, Expires: $expires"
+                        }
+                    }
+                    else {
+                        return "[VALID] No certificate details available"
+                    }
+                }
+                'UnknownError' {
+                    return "[UNKNOWN_ERROR] Unable to verify signature"
+                }
+                'NotSupportedFileFormat' {
+                    # Return empty string for unsupported formats - won't display
+                    return ""
+                }
+                'HashMismatch' {
+                    return "[INVALID] Hash mismatch - file may be tampered"
+                }
+                'NotTrusted' {
+                    if ($null -ne $signature.SignerCertificate) {
+                        $subject = $signature.SignerCertificate.Subject -replace 'CN=', '' -replace ',.*$', ''
+                        $issuer = $signature.SignerCertificate.Issuer -replace 'CN=', '' -replace ',.*$', ''
+                        $expires = $signature.SignerCertificate.NotAfter.ToString("MM-dd-yyyy")
+                        return "[NOT_TRUSTED] Subject: $subject, Issuer: $issuer, Expires: $expires"
+                    }
+                    else {
+                        return "[NOT_TRUSTED] Certificate not trusted"
+                    }
+                }
+                'Incompatible' {
+                    return "[INCOMPATIBLE] Signature incompatible with this system"
+                }
+                default {
+                    # For any other status, return empty (won't display)
+                    return ""
+                }
+            }
+        }
+        catch {
+            # Silently handle errors - return empty string
+            return ""
+        }
+    }
+
     Write-Progress -Activity "Hunt-Files" -Status "Validating parameters..." -PercentComplete 10
 
     # Parameter validation
@@ -11484,6 +11554,7 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                             # Hash matching - optimized
                             if ($normalizedHashes.Count -gt 0 -and -not $isDirectory) {
                                 $hashMatches = @()
+                                $sha256Computed = $false
                                         
                                 try {
                                     # Check main stream
@@ -11494,6 +11565,11 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                                         $computedHash = Get-FileHashCustom -FilePath $item.FullName -Algorithm $algo
                                         if (![string]::IsNullOrEmpty($computedHash) -and $computedHash -eq $targetHash) {
                                             $hashMatches += "$algo($targetHash):DATA"
+                                            # If we computed SHA256, save it
+                                            if ($algo -eq 'SHA256') {
+                                                $sha256 = $computedHash
+                                                $sha256Computed = $true
+                                            }
                                         }
                                     }
                                             
@@ -11513,24 +11589,11 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                                     if ($hashMatches.Count -gt 0) {
                                         $itemMatchReasons += "Hash:$($hashMatches -join ',')"
                                     }
-                                            
-                                    # Always compute SHA256 for matched files if not already done
-                                    if ($itemMatchReasons.Count -gt 0 -and [string]::IsNullOrEmpty($sha256)) {
-                                        try {
-                                            $sha256 = Get-FileHashCustom -FilePath $item.FullName -Algorithm 'SHA256'
-                                        }
-                                        catch {
-                                            if ($VerboseOutput) {
-                                                Write-Warning "Error computing SHA256 for $($item.FullName): $($_.Exception.Message)"
-                                            }
-                                        }
-                                    }
                                 }
                                 catch {
                                     # Skip files we can't hash
                                 }
-                            }
-                            
+                            }                            
 
                             # Include item if any criteria matched OR if in match-everything mode
                             if ($itemMatchReasons.Count -gt 0 -or $specialSwitchMatch -or $matchEverything) {
@@ -11539,7 +11602,7 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                                 }
                                 else {
                                     $filesMatched++
-                                    # Compute SHA256 for files if not done yet
+                                    # Compute SHA256 for files if not done yet (only once)
                                     if ([string]::IsNullOrEmpty($sha256)) {
                                         try {
                                             $sha256 = Get-FileHashCustom -FilePath $item.FullName -Algorithm 'SHA256'
@@ -11548,8 +11611,7 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                                             # Skip if can't compute hash
                                         }
                                     }
-                                }
-                                    
+                                }                                    
                                 # Handle LNK files
                                 $lnkTarget = ""
                                 $lnkTargetHash = ""
@@ -11565,6 +11627,17 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                                     }
                                 }
                                 
+                                # Get signature information for files only
+                                $signatureInfo = ""
+                                if (-not $isDirectory) {
+                                    try {
+                                        $signatureInfo = Get-FileSignatureInfo -FilePath $item.FullName
+                                    }
+                                    catch {
+                                        $signatureInfo = "[UNKNOWN_ERROR] Unable to check signature"
+                                    }
+                                }
+                                
                                 $result = [PSCustomObject]@{
                                     FullPath             = $item.FullName
                                     Name                 = $item.Name
@@ -11574,6 +11647,7 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                                     LastWriteTime        = $item.LastWriteTime
                                     LastAccessTime       = $item.LastAccessTime
                                     SHA256               = $sha256
+                                    Signature            = $signatureInfo
                                     MatchReason          = ($itemMatchReasons -join " | ")
                                     MatchedContent       = ($matchedContent -join ', ')
                                     MatchedNames         = ($matchedNames -join ', ')
@@ -11584,7 +11658,7 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                                     LnkTarget            = $lnkTarget
                                     LnkTargetSHA256      = $lnkTargetHash
                                 }
-                                    
+
                                 $results += $result
                             }
                         }
@@ -11644,33 +11718,80 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
 
             Write-Host ""
             Write-Host "----------------------------------------" -ForegroundColor Gray
-            Write-Host "Type         : $itemType" -ForegroundColor Yellow
-            Write-Host "Path         : $($result.FullPath)" -ForegroundColor Cyan
-            Write-Host "Filename     : $($result.Name)" -ForegroundColor White
+            Write-Host "Type         : " -ForegroundColor Yellow -NoNewline
+            Write-Host "$itemType" -ForegroundColor DarkYellow
+            Write-Host "Path         : " -ForegroundColor Yellow -NoNewline
+            Write-Host "$($result.FullPath)" -ForegroundColor Cyan
+            Write-Host "Name         : " -ForegroundColor Yellow -NoNewline
+            Write-Host "$($result.Name)" -ForegroundColor White
         
             if (-not $result.IsDirectory) {
-                Write-Host "Size         : $($result.SizeMB) MB" -ForegroundColor White
+                Write-Host "Size         : " -ForegroundColor Yellow -NoNewline
+                Write-Host "$($result.SizeMB) MB" -ForegroundColor White
             }
         
-            Write-Host "Created      : $(Format-DateTimeWithTimeZone -DateTime $result.CreationTime -TargetTimeZone $targetTimeZone)" -ForegroundColor White
-            Write-Host "Modified     : $(Format-DateTimeWithTimeZone -DateTime $result.LastWriteTime -TargetTimeZone $targetTimeZone)" -ForegroundColor White
-            Write-Host "Accessed     : $(Format-DateTimeWithTimeZone -DateTime $result.LastAccessTime -TargetTimeZone $targetTimeZone)" -ForegroundColor White
+            Write-Host "Created      : " -ForegroundColor Yellow -NoNewline
+            Write-Host "$(Format-DateTimeWithTimeZone -DateTime $result.CreationTime -TargetTimeZone $targetTimeZone)" -ForegroundColor White
+            Write-Host "Modified     : " -ForegroundColor Yellow -NoNewline
+            Write-Host "$(Format-DateTimeWithTimeZone -DateTime $result.LastWriteTime -TargetTimeZone $targetTimeZone)" -ForegroundColor White
+            Write-Host "Accessed     : " -ForegroundColor Yellow -NoNewline
+            Write-Host "$(Format-DateTimeWithTimeZone -DateTime $result.LastAccessTime -TargetTimeZone $targetTimeZone)" -ForegroundColor White
         
             if (-not $result.IsDirectory -and ![string]::IsNullOrWhiteSpace($result.SHA256)) {
-                Write-Host "SHA256       : $($result.SHA256)" -ForegroundColor Gray
+                Write-Host "SHA256       : " -ForegroundColor Yellow -NoNewline
+                Write-Host "$($result.SHA256)" -ForegroundColor Gray
+            }
+
+            # Display signature information
+            if (-not $result.IsDirectory -and ![string]::IsNullOrWhiteSpace($result.Signature)) {
+                $sigValue = $result.Signature
+                $sigColor = "Gray"  # Default color
+                
+                # Determine color based on signature status
+                if ($sigValue.StartsWith("[VALID_EXPIRED]")) {
+                    $sigColor = "DarkYellow"
+                }
+                elseif ($sigValue.StartsWith("[VALID]")) {
+                    $sigColor = "Green"
+                }
+                elseif ($sigValue.StartsWith("[NOT_SIGNED]")) {
+                    $sigColor = "DarkYellow"
+                }
+                elseif ($sigValue.StartsWith("[INVALID]")) {
+                    $sigColor = "Red"
+                }
+                elseif ($sigValue.StartsWith("[NOT_TRUSTED]")) {
+                    $sigColor = "DarkYellow"
+                }
+                elseif ($sigValue.StartsWith("[UNKNOWN")) {
+                    $sigColor = "Gray"
+                }
+                elseif ($sigValue.StartsWith("[INCOMPATIBLE]")) {
+                    $sigColor = "DarkRed"
+                }
+                
+                # Print with colors
+                Write-Host "Signature    : " -ForegroundColor Yellow -NoNewline
+                Write-Host $sigValue -ForegroundColor $sigColor
             }
 
             if (![string]::IsNullOrWhiteSpace($result.LnkTarget)) {
-                Write-Host "LNK Target   : $($result.LnkTarget)" -ForegroundColor Magenta
+                Write-Host "LNK Target   : " -ForegroundColor Yellow -NoNewline
+                Write-Host "$($result.LnkTarget)" -ForegroundColor Magenta
                 if (![string]::IsNullOrWhiteSpace($result.LnkTargetSHA256)) {
-                    Write-Host "Target SHA256: $($result.LnkTargetSHA256)" -ForegroundColor Gray
+                    Write-Host "Target SHA256: " -ForegroundColor Yellow -NoNewline
+                    Write-Host "$($result.LnkTargetSHA256)" -ForegroundColor Gray
                 }
             }
-        
-            Write-Host "Match        : $($result.MatchReason)" -ForegroundColor Red
+            
+            if (![string]::IsNullOrWhiteSpace($result.Match)) {
+                Write-Host "Match        : " -ForegroundColor Yellow -NoNewline
+                Write-Host "$($result.MatchReason)" -ForegroundColor Red
+            }
         
             if (![string]::IsNullOrWhiteSpace($result.MatchedContent)) {
-                Write-Host "Content Match: $($result.MatchedContent)" -ForegroundColor Green
+                Write-Host "Content Match: " -ForegroundColor Yellow -NoNewline
+                Write-Host "$($result.MatchedContent)" -ForegroundColor Green
             }
         
             # In the display section, only show "Name Match" if there are other match reasons too
@@ -11679,13 +11800,15 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                 $matchReasons = $result.MatchReason -split ' \| '
                 $hasOtherReasons = $matchReasons | Where-Object { $_ -notlike 'Name:*' }
                 if ($hasOtherReasons) {
-                    Write-Host "Name Match   : $($result.MatchedNames)" -ForegroundColor Green
+                    Write-Host "Name Match   : " -ForegroundColor Yellow -NoNewline
+                    Write-Host "$($result.MatchedNames)" -ForegroundColor Green
                 }
             }
         
             # Show stream information
             if ($result.AlternateStreamCount -gt 0) {
-                Write-Host "Streams [$($result.AlternateStreamCount)]  : $($result.StreamInfo)" -ForegroundColor Green
+                Write-Host "Streams [$($result.AlternateStreamCount)]  : " -ForegroundColor Yellow -NoNewline
+                Write-Host "$($result.StreamInfo)" -ForegroundColor Green
             }
         
             # Show special attributes
@@ -11693,10 +11816,12 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
             if ($result.IsHidden) { $attributes += "Hidden" }
             if ($result.IsRecycleBin) { $attributes += "Recycle Bin" }
             if ($attributes.Count -gt 0) {
-                Write-Host "Attributes   : $($attributes -join ', ')" -ForegroundColor DarkYellow
+                Write-Host "Attributes   : " -ForegroundColor Yellow -NoNewline
+                Write-Host "$($attributes -join ', ')" -ForegroundColor DarkYellow
             }
         }
-    }
+    }    
+    
     Write-Progress -Activity "Hunt-Files" -Status "Complete" -PercentComplete 100
 
     if (-not $Quiet) {
@@ -11747,6 +11872,7 @@ Requires PowerShell 5.0 or later. Administrator privileges recommended for compl
                     LastWriteTime        = Format-DateTimeWithTimeZone -DateTime $result.LastWriteTime -TargetTimeZone $targetTimeZone
                     LastAccessTime       = Format-DateTimeWithTimeZone -DateTime $result.LastAccessTime -TargetTimeZone $targetTimeZone
                     SHA256               = Sanitize-CSVValue $result.SHA256
+                    Signature            = Sanitize-CSVValue $result.Signature
                     MatchReason          = Sanitize-CSVValue $result.MatchReason
                     MatchedContent       = Sanitize-CSVValue $result.MatchedContent
                     MatchedNames         = Sanitize-CSVValue $result.MatchedNames
