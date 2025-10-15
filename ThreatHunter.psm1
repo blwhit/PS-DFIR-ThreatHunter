@@ -8869,6 +8869,12 @@ Downloads tool and saves results to specified CSV file.
         param($Value)
 
         # CRITICAL: Never use $Input as parameter name - it's a reserved automatic variable!
+        
+        # Handle null or empty values gracefully
+        if ($null -eq $Value -or $Value -eq '') {
+            return ''
+        }
+        
         # Convert to string safely
         $stringValue = $Value.ToString()    
         # Only remove characters that break CSV/Excel files
@@ -9750,9 +9756,10 @@ Downloads tool and saves results to specified CSV file.
                                 $webBrowser = $row.'Web Browser'
                                 $visitTime = $row.'Visit Time'
                                 
+                                # CRITICAL: CSV column names have spaces
                                 $resultObj = [PSCustomObject]@{
                                     User         = Sanitize-Output $currentUser
-                                    Browser      = Sanitize-Output ($webBrowser -replace '\s+', ' ')
+                                    Browser      = Sanitize-Output ($row.'Web Browser')
                                     String       = Sanitize-Output ($row.URL)
                                     FullString   = Sanitize-Output ($row.URL)
                                     MatchPattern = "LoadTool"
@@ -9761,7 +9768,7 @@ Downloads tool and saves results to specified CSV file.
                                     Hostname     = Sanitize-Output $Hostname
                                     Count        = 1
                                     Title        = Sanitize-Output ($row.Title)
-                                    VisitTime    = Sanitize-Output $visitTime
+                                    VisitTime    = Sanitize-Output ($row.'Visit Time')
                                 }
                                 $results.Add($resultObj)
                             }
