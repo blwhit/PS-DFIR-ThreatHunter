@@ -9761,8 +9761,9 @@ Downloads tool and saves results to specified CSV file.
                             Write-Host "[SAVED]    CSV file preserved at: $outputCsv" -ForegroundColor Green
                         }
                 
-                        # Return as array for compatibility
-                        return @($results)
+                        # CRITICAL: Do NOT wrap List<PSObject> in @() - it corrupts the objects!
+                        # Return the List directly - PowerShell will handle it correctly
+                        return $results
                     }
                     catch {
                         if (-not $Quiet) {
