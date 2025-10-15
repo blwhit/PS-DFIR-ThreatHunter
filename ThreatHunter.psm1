@@ -635,6 +635,7 @@ function Hunt-ForensicDump {
         }
 
         # Helper function to prepare data for JSON embedding
+        # Helper function to prepare data for JSON embedding
         function Prepare-DataForJSON {
             param($Data, $Type, $MaxRows, $OmitFields)
 
@@ -643,11 +644,28 @@ function Hunt-ForensicDump {
             }
 
             Write-Host "  [-] Processing $Type data: $($Data.Count) records..." -ForegroundColor DarkGray
+            
+            # DEBUG: Check input data type
+            Write-Host "  [DEBUG-JSON] Input data type for $Type : $($Data.GetType().FullName)" -ForegroundColor Magenta
 
             $dataToProcess = $Data
             if ($MaxRows -gt 0 -and $Data.Count -gt $MaxRows) {
                 Write-Host "  [-] Limiting to first $MaxRows records..." -ForegroundColor DarkGray
                 $dataToProcess = $Data | Select-Object -First $MaxRows
+                
+                # DEBUG: Check if Select-Object caused corruption
+                Write-Host "  [DEBUG-JSON] After Select-Object, type: $($dataToProcess.GetType().FullName)" -ForegroundColor Magenta
+                if ($dataToProcess.Count -gt 0) {
+                    $testItem = $dataToProcess[0]
+                    Write-Host "  [DEBUG-JSON] After Select-Object, first item type: $($testItem.GetType().FullName)" -ForegroundColor Magenta
+                    $testProp = $testItem.PSObject.Properties | Select-Object -First 1
+                    if ($testProp) {
+                        Write-Host "  [DEBUG-JSON] After Select-Object, test property value type: $($testProp.Value.GetType().FullName)" -ForegroundColor Magenta
+                        if ($testProp.Value.GetType().Name -like "*Enumerator*") {
+                            Write-Host "  [!!!] CORRUPTION DETECTED after Select-Object!" -ForegroundColor Red
+                        }
+                    }
+                }
             }
 
             $allKeysSet = [System.Collections.Generic.HashSet[string]]::new()
@@ -661,6 +679,19 @@ function Hunt-ForensicDump {
                 }
             }
             $allKeys = @($allKeysSet)
+            
+            # DEBUG: Check after key collection
+            Write-Host "  [DEBUG-JSON] After key collection, checking data integrity..." -ForegroundColor Magenta
+            if ($dataToProcess.Count -gt 0) {
+                $testItem2 = $dataToProcess[0]
+                $testProp2 = $testItem2.PSObject.Properties | Select-Object -First 1
+                if ($testProp2) {
+                    Write-Host "  [DEBUG-JSON] After key collection, test property value type: $($testProp2.Value.GetType().FullName)" -ForegroundColor Magenta
+                    if ($testProp2.Value.GetType().Name -like "*Enumerator*") {
+                        Write-Host "  [!!!] CORRUPTION DETECTED after key collection!" -ForegroundColor Red
+                    }
+                }
+            }
 
             if ($OmitFields -and $OmitFields.Count -gt 0) {
                 $allKeys = $allKeys | Where-Object { $_ -notin $OmitFields }
@@ -671,6 +702,15 @@ function Hunt-ForensicDump {
                 $hasValue = $false
                 for ($i = 0; $i -lt [Math]::Min(50, $dataToProcess.Count); $i++) {
                     $value = $dataToProcess[$i].$key
+                    
+                    # DEBUG: Check if property access causes corruption
+                    if ($Type -eq 'browser' -and $i -eq 0) {
+                        Write-Host "  [DEBUG-JSON] Accessing property '$key', value type: $($value.GetType().FullName)" -ForegroundColor Magenta
+                        if ($value.GetType().Name -like "*Enumerator*") {
+                            Write-Host "  [!!!] CORRUPTION: Property '$key' returns Enumerator!" -ForegroundColor Red
+                        }
+                    }
+                    
                     if ($null -ne $value -and $value -ne '' -and $value -ne 0) {
                         $hasValue = $true
                         break
@@ -678,6 +718,22 @@ function Hunt-ForensicDump {
                 }
                 if ($hasValue) {
                     [void]$keysToKeep.Add($key)
+                }
+            }
+            
+            # DEBUG: Check before building filtered data
+            Write-Host "  [DEBUG-JSON] Before building filteredData, checking integrity..." -ForegroundColor Magenta
+            if ($dataToProcess.Count -gt 0) {
+                $testItem3 = $dataToProcess[0]
+                foreach ($key in $keysToKeep) {
+                    $testVal = $testItem3.$key
+                    if ($Type -eq 'browser' -and $testVal.GetType().Name -like "*Enumerator*") {
+                        Write-Host "  [!!!] CORRUPTION: Key '$key' has Enumerator value!" -ForegroundColor Red
+                    }
+                    # Only show first 3 keys to avoid spam
+                    if ($keysToKeep.IndexOf($key) -lt 3) {
+                        Write-Host "  [DEBUG-JSON] Key '$key' = type $($testVal.GetType().FullName)" -ForegroundColor Magenta
+                    }
                 }
             }
 
