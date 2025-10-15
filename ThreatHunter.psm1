@@ -750,7 +750,6 @@ function Hunt-ForensicDump {
                 # Verify JSON doesn't contain ArrayList references
                 if ($json -like '*ArrayList*' -or $json -like '*Enumerator*') {
                     Write-Host "  [!!!] JSON contains ArrayList/Enumerator references - DATA CORRUPTION DETECTED" -ForegroundColor Red
-                    Write-Host "  [DEBUG] First 200 chars: $($json.Substring(0, [Math]::Min(200, $json.Length)))" -ForegroundColor Yellow
                 }
                 
                 return $json
@@ -2401,21 +2400,16 @@ function Hunt-ForensicDump {
             
             # DEBUG: Check object types before assignment
             if ($null -ne $browserResults) {
-                Write-Host "  [DEBUG] Browser results type: $($browserResults.GetType().FullName)" -ForegroundColor Magenta
-                Write-Host "  [DEBUG] Browser results count: $($browserResults.Count)" -ForegroundColor Magenta
                 
                 if ($browserResults.Count -gt 0) {
                     $sampleItem = $browserResults[0]
-                    Write-Host "  [DEBUG] Sample item type: $($sampleItem.GetType().FullName)" -ForegroundColor Magenta
                     
                     # Check if properties are accessible
                     $propCount = ($sampleItem.PSObject.Properties | Measure-Object).Count
-                    Write-Host "  [DEBUG] Sample item has $propCount properties" -ForegroundColor Magenta
                     
                     # Test property access
                     $testProp = $sampleItem.PSObject.Properties | Select-Object -First 1
                     if ($testProp) {
-                        Write-Host "  [DEBUG] First property: $($testProp.Name) = $($testProp.Value.GetType().FullName)" -ForegroundColor Magenta
                         $testValue = $testProp.Value
                         if ($testValue -is [System.Collections.IEnumerable] -and $testValue -isnot [string]) {
                             Write-Host "  [!!! CORRUPTION DETECTED !!!] Property value is enumerable but not string!" -ForegroundColor Red
@@ -2431,19 +2425,16 @@ function Hunt-ForensicDump {
             }
             elseif ($browserResults -is [System.Collections.Generic.List[PSObject]]) {
                 # It's already a List, keep it as-is
-                Write-Host "  [DEBUG] Browser results is List<PSObject>, preserving structure" -ForegroundColor Magenta
                 $forensicData.Browser = $browserResults
                 Write-Host "  [+] Collected $($browserResults.Count) browser entries" -ForegroundColor Green
             }
             elseif ($browserResults -is [array]) {
                 # It's an array, keep it as-is without re-wrapping
-                Write-Host "  [DEBUG] Browser results is array, preserving structure" -ForegroundColor Magenta
                 $forensicData.Browser = $browserResults
                 Write-Host "  [+] Collected $($browserResults.Count) browser entries" -ForegroundColor Green
             }
             else {
                 # Single object - wrap carefully
-                Write-Host "  [DEBUG] Browser results is single object, wrapping" -ForegroundColor Magenta
                 $forensicData.Browser = @($browserResults)
                 Write-Host "  [+] Collected 1 browser entry" -ForegroundColor Green
             }
@@ -6948,14 +6939,6 @@ https://attack.mitre.org/tactics/TA0003/
     }
     catch {
         Write-Error "Critical error during persistence hunting: $($_.Exception.Message)"
-        Write-Verbose "[DEBUG] Error occurred, but continuing to display results..."
-    }
-
-    # Display and return section - OUTSIDE try/catch so it always executes
-    Write-Verbose "[DEBUG] About to display results. Array count: $($script:globalPersistenceObjectArray.Count)"
-    Write-Verbose "[DEBUG] Quiet mode: $Quiet"
-    if ($script:globalPersistenceObjectArray.Count -gt 0) {
-        Write-Verbose "[DEBUG] First entry technique: $($script:globalPersistenceObjectArray[0].Technique)"
     }
 
     # Display results to console (unless Quiet is specified)
