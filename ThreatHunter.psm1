@@ -8866,10 +8866,11 @@ Downloads tool and saves results to specified CSV file.
     }
 
     function Sanitize-Output {
-        param($Input)
+        param($Value)
 
+        # CRITICAL: Never use $Input as parameter name - it's a reserved automatic variable!
         # Convert to string safely
-        $stringValue = $Input.ToString()    
+        $stringValue = $Value.ToString()    
         # Only remove characters that break CSV/Excel files
         $sanitized = $stringValue -replace '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', ''  # Control characters
         $sanitized = $sanitized -replace '"', '""'  # Escape double quotes for CSV    
