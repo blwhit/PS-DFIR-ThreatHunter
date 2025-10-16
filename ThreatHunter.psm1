@@ -7229,11 +7229,16 @@ Exports results to CSV format for analysis in Excel or other tools.
 CSV includes all fields: timestamps, event data, matched strings, XML data, file system results.
 
 .PARAMETER MaxEvents
-Maximum events to retrieve PER LOG before filtering. Prevents memory exhaustion on large logs.
-- 0: No limit (retrieves all events - USE WITH CAUTION)
+Maximum events to retrieve PER LOG before filtering. Controls memory usage and performance.
+- 0: No limit (retrieves ALL events - USE WITH CAUTION on large logs)
 - Positive number: Limits events retrieved per log (default: 10000)
-Recommendation: Use 10000-50000 for normal hunting, 0 only for small targeted searches.
-WARNING: Setting to 0 on large logs (Security, System) can cause severe performance issues.
+
+IMPORTANT: Get-WinEvent with MaxEvents returns events in the following order:
+- With -SortOrder "NewestFirst" (default): Returns MOST RECENT events first
+- With -SortOrder "OldestFirst": Returns OLDEST events first (reverses retrieval order)
+
+WARNING: Setting MaxEvents too low may cause you to miss events outside the retrieved window.
+Example: MaxEvents 1000 on a log with 500k events = only 0.2% coverage
 
 .EXAMPLE
 Hunt-Logs
@@ -8659,6 +8664,8 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
     $allEvents = @{}
     $eventCount = 0
     $filteredCount = 0
+    $maxEventsHitCount = 0  
+    $logsHitLimit = @()    
 
     # Determine processing mode
     if (![string]::IsNullOrWhiteSpace($FolderPath)) {
@@ -8723,11 +8730,32 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
                 if ($EventId.Count -gt 0) { $filterHash.Id = $EventId }
 
                 # PERFORMANCE: Limit events retrieved per file
+                # SortOrder controls which events are retrieved when MaxEvents is reached
                 if ($MaxEvents -gt 0) {
-                    $events = Get-WinEvent -FilterHashtable $filterHash -MaxEvents $MaxEvents -ErrorAction SilentlyContinue
+                    if ($SortOrder -eq "OldestFirst") {
+                        # Oldest first: Reverse the default retrieval order
+                        $events = Get-WinEvent -FilterHashtable $filterHash -MaxEvents $MaxEvents -Oldest -ErrorAction SilentlyContinue
+                    }
+                    else {
+                        # Newest first (default): Normal retrieval order
+                        $events = Get-WinEvent -FilterHashtable $filterHash -MaxEvents $MaxEvents -ErrorAction SilentlyContinue
+                    }
+                    
+                    # DETECTION: Check if we hit the MaxEvents limit
+                    if ($events -and $events.Count -eq $MaxEvents) {
+                        $maxEventsHitCount++
+                        $logsHitLimit += $evtxFile.Name
+                        Write-Warning "EVTX file '$($evtxFile.Name)' hit MaxEvents limit ($MaxEvents events retrieved)"
+                    }
                 }
                 else {
-                    $events = Get-WinEvent -FilterHashtable $filterHash -ErrorAction SilentlyContinue
+                    # No limit: Retrieve all events
+                    if ($SortOrder -eq "OldestFirst") {
+                        $events = Get-WinEvent -FilterHashtable $filterHash -Oldest -ErrorAction SilentlyContinue
+                    }
+                    else {
+                        $events = Get-WinEvent -FilterHashtable $filterHash -ErrorAction SilentlyContinue
+                    }
                 }
 
                 if ($events) {
@@ -8823,12 +8851,33 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
                 if ($EventId.Count -gt 0) { $filterHash.Id = $EventId }
 
                 # PERFORMANCE: Limit events retrieved per log (CRITICAL for large logs)
+                # SortOrder controls which events are retrieved when MaxEvents is reached
                 if ($MaxEvents -gt 0) {
-                    $events = Get-WinEvent -FilterHashtable $filterHash -MaxEvents $MaxEvents -ErrorAction SilentlyContinue
+                    if ($SortOrder -eq "OldestFirst") {
+                        # Oldest first: Reverse the default retrieval order
+                        $events = Get-WinEvent -FilterHashtable $filterHash -MaxEvents $MaxEvents -Oldest -ErrorAction SilentlyContinue
+                    }
+                    else {
+                        # Newest first (default): Normal retrieval order
+                        $events = Get-WinEvent -FilterHashtable $filterHash -MaxEvents $MaxEvents -ErrorAction SilentlyContinue
+                    }
+                    
+                    # DETECTION: Check if we hit the MaxEvents limit
+                    # If exactly MaxEvents returned, the log likely has more events that weren't retrieved
+                    if ($events -and $events.Count -eq $MaxEvents) {
+                        $maxEventsHitCount++
+                        $logsHitLimit += $logName
+                        Write-Warning "Log '$logName' hit MaxEvents limit ($MaxEvents events retrieved, more may exist)"
+                    }
                 }
                 else {
                     # User explicitly set MaxEvents=0, retrieve all (WARNING: can be slow)
-                    $events = Get-WinEvent -FilterHashtable $filterHash -ErrorAction SilentlyContinue
+                    if ($SortOrder -eq "OldestFirst") {
+                        $events = Get-WinEvent -FilterHashtable $filterHash -Oldest -ErrorAction SilentlyContinue
+                    }
+                    else {
+                        $events = Get-WinEvent -FilterHashtable $filterHash -ErrorAction SilentlyContinue
+                    }
                 }
 
                 if ($events) {
