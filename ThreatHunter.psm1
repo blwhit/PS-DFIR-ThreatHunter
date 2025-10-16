@@ -20,11 +20,44 @@
 # - Make Wiki
 # - Spend genuine time building and tuning the IOC and string lists
 # - fix the ForensicDump scheduled task table display-- cleanup display for TriggerType string lists (empty commas, extra spaces, etc.)
-# - The persistence objects dont have flags in the HTML report for some reason. The column doesnt exist even though its not omitted.
+# - The persistence objects dont have flags in the HTML report for some reason. The column doesnt exist even though its not omitted... might not be getting exported to CSV from Hunt-Persistence
 # - !!!  add caching functionality to subfunctions (add -DontCache switch, use in ForensicDump to avoid extra PS session vars)... cache cmdlet search results in PS variable for quicker subsequent searching 
+# - ADD switch to Hunt-Browser to get the browser extensions loaded on the machine for all browsers
+# - add logo or link to github, etc. (footer, etc.)
+# - fix and update the 'Display Settings' Tab-- notice you cant go above exported $MaxRows value, etc
+# - Add tab for "Export Information", details about where files are located, hyperlinks to ForensicData folder, runtime of dump, etc...
+# - Add a light/dark mode button in the top header
+# - will packaging as PS2EXE make it work on older windows computers? research
 
 
-#   Full Review/Pass-Through
+# Extra System checks/info:
+# ==========================
+# - AMSI providers
+# - Minifilter Drivers loaded
+# - WDAC policy
+# - VBS on or off?
+# - GPO information
+# - Browser Extensions
+# - current default browser
+# - saved RDP info? Saved profiles? Etc....
+# - possible to list when each account was created for the Local users? Can this sectino include user profiles? i.e. ALL users including domain users?
+# - Fix "CPU Time" in processes-- what does that represent?
+# - get the RunMRU key and display it-- are we doing this? Always empty
+# - bolster and improve the EDR/AV detection
+# - add 'RMM' detection if possible... determine any remote access tools on machine (Teamviewer, ScreenConnect, Etc.)
+# - include screenshot of desktop??
+# - Bitlocker status.. on or off?
+# - Secure Boot status
+# - VM detection
+# - Current internet status (can you ping google??) [Section ex: "Can Ping 1.1.1.1?: True"]
+# - current DNS server
+# - current NSLookup/Domain Controller
+# - currently logged in users (quser, etc...)
+# - information about cloud? Cloud connectivity? etc...
+# - "Installed Software", use reg key to enumerate installed programs
+
+
+#   Final/Full Review & Pass-Through
 # -----------------------------
 # - Review each function: Give full description for wiki page (every parameter and feature), and give examples, and make sure to LIST ANY NECESSARY ASSEMBLY IMPORTS (need this for the module manifest)
 # - Have AI teach you and tell you everything about each subfunction
@@ -7075,65 +7108,172 @@ Function Hunt-Logs {
     [CmdletBinding()]
     <#
 .SYNOPSIS
-Hunts for security indicators and suspicious activities across Windows Event Logs and file systems.
+Comprehensive DFIR tool for hunting threats across Windows Event Logs and file systems with advanced filtering and IOC detection.
 
 .DESCRIPTION
-Hunt-Logs is a comprehensive DFIR tool that searches Windows Event Logs and optionally scans file systems for indicators of compromise (IOCs), suspicious activities, and security events. It supports both live system analysis and offline EVTX file examination with advanced filtering, export capabilities, and automated threat hunting modes.
+Hunt-Logs searches Windows Event Logs and file systems for indicators of compromise (IOCs), suspicious activities, and security events. 
+Supports live system analysis, offline EVTX examination, automated threat hunting modes, and flexible export capabilities.
+
+Key Features:
+- Time-based log filtering with multiple date formats
+- String-based IOC searching with wildcard support
+- Event ID filtering and exclusion
+- Automated hunting modes with predefined IOCs
+- File system log scanning (aggressive mode)
+- CSV export and EVTX archive creation
+- Timezone conversion support
+- Deduplication and intelligent result sorting
 
 .PARAMETER StartDate
-Start date for log search. Accepts datetime objects, relative time strings ('7D', '24H', '30M'), or 'Now'. Defaults to 7 days ago if not specified.
+Start date for log search. Accepts multiple formats:
+- DateTime objects: [datetime]"2025-01-01 10:00:00"
+- Relative time strings: '7D' (days), '24H' (hours), '30M' (minutes)
+- Keyword: 'Now' for current time
+Default: 7 days ago (with warning message)
 
-.PARAMETER EndDate  
-End date for log search. Accepts same formats as StartDate. Defaults to current time.
+.PARAMETER EndDate
+End date for log search. Uses same formats as StartDate.
+Default: Current time ('Now')
 
 .PARAMETER Search
 Array of strings to search for in event messages and XML data. Case-insensitive wildcard matching.
+TAKES PRECEDENCE over -Exclude when specified. Any event matching a Search string will be included even if it matches Exclude strings.
+Note: Supports wildcards (* and ?). To search for literal special characters, they must be escaped: `` ` * `` ` ? `` ` [ `` ` ]
 
-.PARAMETER Exclude
-Array of strings to exclude from results. Events containing these strings will be filtered out.
+.PARAMETER Exclude  
+Array of strings to exclude from results. Events containing these strings are filtered out.
+OVERRIDDEN by -Search parameter. If an event matches both Search and Exclude, it will be included.
 
-.PARAMETER Auto
-Automated hunting mode with predefined IOC lists and time ranges:
-- Level 1: 14-day search with core logs and baseline IOCs
-- Level 2: 30-day comprehensive search with full IOC list  
-- Level 3: 30-day search plus aggressive file system scanning
+.PARAMETER EventId
+Array of Event IDs to include. Only events with these IDs will be returned.
+
+.PARAMETER ExcludeEventId
+Array of Event IDs to exclude. Takes precedence over all other filters including -Search.
+Use for filtering out noise (e.g., ExcludeEventId 4634 to remove logoff events).
+
+.PARAMETER LogNames
+Array of log names to search. If not specified, searches all available logs with activity.
+Examples: "Security", "System", "Application", "Microsoft-Windows-PowerShell/Operational"
+
+.PARAMETER SortOrder
+Sort order for results. Valid values: "NewestFirst" (default), "OldestFirst"
+
+.PARAMETER XML
+Controls XML data display. 
+- 0: Disable XML display
+- Positive number: Truncate XML to specified character length
+- -1: Show full XML (use with caution for large datasets)
+Default: 0 (disabled)
+
+.PARAMETER MSG
+Controls message display truncation.
+- 0: Disable message display
+- Positive number: Truncate messages to specified character length  
+- -1: Show full messages
+Default: 1000 characters
+
+.PARAMETER MaxPrint
+Maximum characters to print before truncating output. Use to prevent console overflow.
+- 0: No limit (default)
+- Positive number: Stop printing after specified character count
+Warning: Large result sets can overwhelm the console without this limit.
+
+.PARAMETER Timezone
+Target timezone for time display and input interpretation. System timezone used if not specified.
+Accepts: 'UTC', 'EST', 'EDT', 'CST', 'CDT', 'MST', 'MDT', 'PST', 'PDT' or full timezone names
+Example: -Timezone "UTC" displays all times in UTC regardless of system timezone
+
+.PARAMETER FolderPath
+Path to folder containing EVTX files for offline analysis, or path to specific .evtx file.
+When specified, analyzes archived logs instead of live system logs.
 
 .PARAMETER Aggressive
-Enables file system scanning for .log files. Specify path or use empty string for C:\ scan.
+Enables file system scanning for .log files containing IOCs.
+- Empty string or switch: Scans entire C:\ drive
+- Specific path: Scans only specified directory
+Requires -Search parameter. Results cached for performance on subsequent C:\ scans.
+WARNING: Full C:\ scans can be time-intensive. Files >100MB automatically skipped.
+
+.PARAMETER Auto
+Automated hunting mode with predefined IOC lists:
+- Level 1: 14-day search, core logs (Security, System, PowerShell), baseline IOCs
+- Level 2: 30-day comprehensive search, all logs, full IOC list
+- Level 3: 30-day search with filesystem scanning (aggressive mode enabled)
+Uses global $GlobalLogIOCs variable. User parameters are additive (cannot reduce scope).
+
+.PARAMETER StopLogging
+Stops Windows Event Log service and configures logs for forensic preservation.
+Sets logs to archive mode (no overwrite) and increases size limits.
+Requires Administrator privileges. Use during active incident response to preserve evidence.
+WARNING: Remember to restart EventLog service after forensics: Start-Service EventLog
+
+.PARAMETER Export
+Exports all EVTX files to compressed ZIP archive.
+- Switch only: Saves to temp directory with auto-generated name
+- Directory path: Saves to specified directory with auto-generated name  
+- Full path with .zip: Saves to exact specified location
+Requires Administrator privileges for complete log access. Uses wevtutil for active logs.
 
 .PARAMETER PassThru
 Returns PowerShell objects for programmatic processing instead of console output.
+Use with -Quiet for silent operation. Results accessible via returned object array.
 
 .PARAMETER Quiet
-Suppresses console output (use with PassThru for silent operation).
+Suppresses all console output. Use with -PassThru or -OutputCSV for silent operation.
 
 .PARAMETER OutputCSV
-Exports results to CSV format. Accepts file path or directory (auto-generates filename).
-
-.PARAMETER Export
-Exports all EVTX files to compressed archive. Specify path or use switch for default location.
-
-.PARAMETER StopLogging
-Stops Windows Event Log service to prevent log overwriting during forensics.
+Exports results to CSV format for analysis in Excel or other tools.
+- Switch only: Saves to current directory with auto-generated name
+- Directory path: Saves to specified directory with auto-generated name
+- Full path with .csv: Saves to exact specified location
+CSV includes all fields: timestamps, event data, matched strings, XML data, file system results.
 
 .EXAMPLE
-Hunt-Logs -Auto 2
-Runs comprehensive 30-day automated hunt with predefined IOCs.
+Hunt-Logs
+Searches last 7 days of all logs with no filtering (default behavior with warning).
 
 .EXAMPLE
-Hunt-Logs -StartDate "7D" -IncludeStrings "powershell","mimikatz" -OutputCSV "C:\DFIR\results.csv"
-Searches last 7 days for PowerShell and Mimikatz indicators, exports to CSV.
+Hunt-Logs -StartDate "7D" -Search "mimikatz","sekurlsa" -OutputCSV "C:\DFIR\results.csv"
+Searches last 7 days for Mimikatz indicators, exports to CSV.
 
 .EXAMPLE
-$results = Hunt-Logs -StartDate "24H" -LogNames "Security","System" -PassThru -Quiet
-Silent search returning PowerShell objects for programmatic analysis.
+Hunt-Logs -StartDate "2025-01-01" -EndDate "2025-01-31" -Search "powershell.exe","encoded" -LogNames "Security","Microsoft-Windows-PowerShell/Operational" -Timezone "UTC"
+Searches January 2025 in UTC time for PowerShell IOCs in specific logs.
 
 .EXAMPLE
-Hunt-Logs -FolderPath "C:\Evidence\logs" -IncludeStrings "lateral movement" -Aggressive "C:\Windows\Logs"
-Analyzes offline EVTX files and scans file system for lateral movement indicators.
+Hunt-Logs -Auto 2 -OutputCSV "C:\Hunt\"
+Runs Level 2 automated hunt (30-day comprehensive) with CSV export.
+
+.EXAMPLE
+Hunt-Logs -StartDate "24H" -Search "lateral movement","psexec" -Aggressive "C:\Windows\Logs" -ExcludeEventId 4634,4624
+Searches last 24 hours for lateral movement IOCs, scans filesystem, excludes logon/logoff noise.
+
+.EXAMPLE
+$results = Hunt-Logs -StartDate "48H" -Search "ransomware" -PassThru -Quiet
+Silent search returning objects for custom processing.
+
+.EXAMPLE
+Hunt-Logs -FolderPath "C:\Evidence\EVTX" -Search "malicious.exe" -XML -1 -MSG -1
+Analyzes offline EVTX files with full XML and message display.
+
+.EXAMPLE
+Hunt-Logs -Export "C:\Forensics\Evidence.zip"
+Exports all EVTX files to specified archive for offline analysis.
+
+.EXAMPLE
+Hunt-Logs -StopLogging
+Stops event logging and configures preservation mode during active incident.
 
 .NOTES
-Requires PowerShell 5.0+. Administrator privileges recommended for complete log access.
+Version: 2.0
+Requires: PowerShell 5.0+
+Privileges: Administrator recommended for complete log access and forensic features
+Performance: Use -MaxPrint for large result sets. Aggressive mode caches C:\ scans.
+Special Characters: Search uses PowerShell -like operator. Wildcards: * (any chars), ? (single char)
+                    To search literal *, ?, [, ] characters, escape with backtick: `*
+Time Ranges: Invalid date inputs will throw descriptive errors. Relative times calculated from current time.
+Search Priority: -Search takes precedence over -Exclude. -ExcludeEventId takes precedence over everything.
+Default Behavior: Without date parameters, defaults to 7-day search with warning message.
 #>
     param (
         [Parameter(Mandatory = $false)]
@@ -7154,7 +7294,7 @@ Requires PowerShell 5.0+. Administrator privileges recommended for complete log 
         [ValidateSet("OldestFirst", "NewestFirst")]
         [string]$SortOrder = "NewestFirst",
         [Parameter(Mandatory = $false)]
-        [int]$XML = 1250,
+        [int]$XML = 0,
         [Parameter(Mandatory = $false)]
         [int]$MSG = 1000,
         [Parameter(Mandatory = $false)]
@@ -7180,6 +7320,71 @@ Requires PowerShell 5.0+. Administrator privileges recommended for complete log 
         [switch]$Quiet
     )
 
+    # ============================================================================
+    # DEFENSIVE VALIDATION
+    # ============================================================================
+    
+    # Validate Search strings for potential issues with special characters
+    if ($Search.Count -gt 0) {
+        foreach ($searchStr in $Search) {
+            if ([string]::IsNullOrWhiteSpace($searchStr)) {
+                Write-Warning "Empty or whitespace-only string found in -Search parameter. Removing."
+                $Search = $Search | Where-Object { ![string]::IsNullOrWhiteSpace($_) }
+                continue
+            }
+            
+            # Warn about special wildcard characters that might cause unexpected matches
+            if ($searchStr -match '[\[\]]') {
+                Write-Warning "Search string contains bracket characters [ or ]: '$searchStr'"
+                Write-Host "  These have special meaning in PowerShell -like operator." -ForegroundColor Yellow
+                Write-Host "  To search for literal brackets, escape them: ``[ or ``]" -ForegroundColor Yellow
+            }
+        }
+    }
+    
+    # Validate Exclude strings
+    if ($Exclude.Count -gt 0) {
+        $Exclude = $Exclude | Where-Object { ![string]::IsNullOrWhiteSpace($_) }
+        if ($Exclude.Count -eq 0) {
+            Write-Warning "All Exclude strings were empty. Exclude filter disabled."
+        }
+    }
+    
+    # Validate EventId arrays contain only valid integers
+    if ($EventId.Count -gt 0) {
+        $invalidIds = $EventId | Where-Object { $_ -lt 0 -or $_ -gt 65535 }
+        if ($invalidIds) {
+            Write-Warning "Invalid Event IDs detected (must be 0-65535): $($invalidIds -join ', ')"
+            $EventId = $EventId | Where-Object { $_ -ge 0 -and $_ -le 65535 }
+        }
+    }
+    
+    if ($ExcludeEventId.Count -gt 0) {
+        $invalidIds = $ExcludeEventId | Where-Object { $_ -lt 0 -or $_ -gt 65535 }
+        if ($invalidIds) {
+            Write-Warning "Invalid Exclude Event IDs detected (must be 0-65535): $($invalidIds -join ', ')"
+            $ExcludeEventId = $ExcludeEventId | Where-Object { $_ -ge 0 -and $_ -le 65535 }
+        }
+    }
+    
+    # Validate parameter combinations
+    if ($PSBoundParameters.ContainsKey('Aggressive') -and $Search.Count -eq 0) {
+        throw "The -Aggressive parameter requires -Search to be specified. Aggressive mode searches file systems for IOCs specified in -Search."
+    }
+    
+    if ($Quiet -and -not $PassThru -and -not $PSBoundParameters.ContainsKey('OutputCSV')) {
+        Write-Warning "-Quiet specified without -PassThru or -OutputCSV. No output will be generated."
+        Write-Host "Recommend using: -Quiet -PassThru or -Quiet -OutputCSV" -ForegroundColor Yellow
+    }
+    
+    if ($PassThru -and $PSBoundParameters.ContainsKey('MaxPrint') -and $MaxPrint -gt 0) {
+        Write-Verbose "MaxPrint parameter has no effect with -PassThru (only affects console output)"
+    }
+    
+    # ============================================================================
+    # END VALIDATION
+    # ============================================================================
+
     # Define global IOC list if not already defined
     if ($null -eq (Get-Variable -Name "GlobalLogIOCs" -Scope Global -ErrorAction SilentlyContinue)) {
         Write-Warning "GlobalLogIOCs not found. Defining default IOC list."
@@ -7191,7 +7396,7 @@ Requires PowerShell 5.0+. Administrator privileges recommended for complete log 
 
     if (-not $isAdmin) {
         Write-Warning "Not running as Administrator. Some event logs may be inaccessible, reducing detection coverage."
-    }
+    } 
 
     # Initialize result collection for PassThru
     $script:HuntLogResults = @()
@@ -7970,7 +8175,7 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
     if ($null -eq $StartDate -and $null -eq $EndDate) {
         $StartDate = (Get-Date).AddDays(-7)  # Default to last 7 days
         $EndDate = Get-Date
-        Write-Host "No date range specified, using default: Last 7 days" -ForegroundColor Cyan
+        Write-Host "WARNING: No date range specified. Using default: Last 7 days" -ForegroundColor Yellow
     }
     elseif ($null -eq $StartDate) {
         throw "EndDate specified but StartDate is missing. Please provide both dates or neither."
@@ -8098,10 +8303,11 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
         return $stringValue
     }
 
-    # Function to test if strings match
+    # Function to test if strings match - Search takes precedence over Exclude
     function Test-EventMatches {
         param($Event, $Search, $Exclude)
         
+        # Get searchable content from event
         $message = if ([string]::IsNullOrWhiteSpace($Event.Message)) { "" } else { $Event.Message }
         $xmlContent = ""
         try {
@@ -8113,6 +8319,27 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
         
         $searchContent = "$message $xmlContent"
         
+        # PRIORITY 1: If Search is specified, check for matches first
+        # Search takes PRECEDENCE - if it matches, return true regardless of Exclude
+        if ($Search.Count -gt 0) {
+            $foundMatch = $false
+            foreach ($includeStr in $Search) {
+                # Escape special regex chars but preserve wildcards for -like operator
+                if ($searchContent -like "*$includeStr*") {
+                    $foundMatch = $true
+                    break
+                }
+            }
+            # If Search was specified, only return events that matched
+            if ($foundMatch) {
+                return $true  # Match found - include this event regardless of Exclude
+            }
+            else {
+                return $false  # Search specified but no match - exclude this event
+            }
+        }
+        
+        # PRIORITY 2: If no Search specified, apply Exclude filter
         if ($Exclude.Count -gt 0) {
             foreach ($excludeStr in $Exclude) {
                 if ($searchContent -like "*$excludeStr*") {
@@ -8121,15 +8348,7 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
             }
         }
         
-        if ($Search.Count -gt 0) {
-            foreach ($includeStr in $Search) {
-                if ($searchContent -like "*$includeStr*") {
-                    return $true
-                }
-            }
-            return $false
-        }
-        
+        # No Search specified and didn't match any Exclude - include event
         return $true
     }
 
@@ -8155,9 +8374,13 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
         return ($keyComponents -join '|')
     }
 
-    # Function to find matching include strings
+    # Function to find matching include strings - returns formatted string of matches with locations
     function Get-MatchedStrings {
         param($Event, $Search)
+        
+        if ($Search.Count -eq 0) {
+            return ""
+        }
         
         $matchList = @()
         $message = if ([string]::IsNullOrWhiteSpace($Event.Message)) { "" } else { $Event.Message }
@@ -8170,17 +8393,33 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
         }
         
         foreach ($includeStr in $Search) {
+            if ([string]::IsNullOrWhiteSpace($includeStr)) { continue }
+            
             $foundIn = @()
-            if ($message -like "*$includeStr*") { $foundIn += "MSG" }
-            if ($xmlContent -like "*$includeStr*") { $foundIn += "XML" }
+            try {
+                if ($message -like "*$includeStr*") { $foundIn += "MSG" }
+                if ($xmlContent -like "*$includeStr*") { $foundIn += "XML" }
+            }
+            catch {
+                # Handle any regex/wildcard errors gracefully
+                Write-Verbose "Error matching string '$includeStr': $($_.Exception.Message)"
+                continue
+            }
             
             if ($foundIn.Count -gt 0) {
-                $matchStr = if ($includeStr.Length -gt 50) { $includeStr.Substring(0, 47) + "..." } else { $includeStr }
+                # Truncate long search strings for display
+                $matchStr = if ($includeStr.Length -gt 50) { 
+                    $includeStr.Substring(0, 47) + "..." 
+                }
+                else { 
+                    $includeStr 
+                }
                 $location = $foundIn -join ","
-                $matchList += "$matchStr  [$location]"
+                $matchList += "$matchStr [$location]"
             }
         }
-        return ($matchList -join ", ")
+        
+        return ($matchList -join "; ")
     }
 
     # Function to perform aggressive log file search
@@ -8293,13 +8532,43 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
         return $logMatches
     }
 
-    # Convert input dates
+    # Convert input dates with defensive error handling
     try {
         $parsedStartDate = ConvertTo-DateTime -InputValue $StartDate -TargetTimeZone $targetTimeZone
         $parsedEndDate = ConvertTo-DateTime -InputValue $EndDate -TargetTimeZone $targetTimeZone
+        
+        # Validation: Ensure StartDate is before EndDate
+        if ($parsedStartDate -gt $parsedEndDate) {
+            throw "StartDate ($StartDate) cannot be after EndDate ($EndDate). Please check your date range."
+        }
+        
+        # Validation: Warn if date range is excessively large 
+        $daysDifference = ($parsedEndDate - $parsedStartDate).TotalDays
+        if ($daysDifference -gt 30) {
+            Write-Warning "Large date range detected: $([math]::Round($daysDifference, 0)) days. This may take significant time to process."
+        }
+        
+        # Validation: Warn if searching future dates
+        $now = Get-Date
+        if ($parsedStartDate -gt $now) {
+            Write-Warning "StartDate is in the future. No logs will be found."
+        }
+        
+        if (-not $Quiet) {
+            $formattedStart = Format-DateTimeWithTimeZone -DateTime $parsedStartDate -TargetTimeZone $targetTimeZone
+            $formattedEnd = Format-DateTimeWithTimeZone -DateTime $parsedEndDate -TargetTimeZone $targetTimeZone
+            Write-Host "Search Range: $formattedStart to $formattedEnd" -ForegroundColor Cyan
+        }
     }
     catch {
-        throw "Date parsing error: $($_.Exception.Message)"
+        Write-Error "Date parsing error: $($_.Exception.Message)"
+        Write-Host ""
+        Write-Host "Valid date formats:" -ForegroundColor Yellow
+        Write-Host "  - Relative: '7D' (days), '24H' (hours), '30M' (minutes)" -ForegroundColor Gray
+        Write-Host "  - Absolute: '2025-01-01', '2025-01-01 14:30:00'" -ForegroundColor Gray
+        Write-Host "  - Keyword: 'Now', '7D' " -ForegroundColor Gray
+        Write-Host ""
+        throw
     }
 
     # Handle Aggressive search first (will be displayed last)
@@ -8386,21 +8655,28 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
 
                 if ($events) {
                     foreach ($eventItem in $events) {
+                        # ExcludeEventId takes absolute precedence - skip immediately
                         if ($ExcludeEventId.Count -gt 0 -and $ExcludeEventId -contains $eventItem.Id) { 
                             $filteredCount++
                             continue 
                         }
                         
-                        if (-not (Test-EventMatches -Event $eventItem -IncludeStrings $Search -ExcludeStrings $Exclude)) {
+                        # Test if event matches search/exclude criteria (Search takes precedence over Exclude)
+                        if (-not (Test-EventMatches -Event $eventItem -Search $Search -Exclude $Exclude)) {
                             $filteredCount++
                             continue
                         }
 
                         $hashKey = Get-EventHashKey -Event $eventItem
                         if (-not $allEvents.ContainsKey($hashKey)) {
+                            # Always calculate matched strings if Search was specified
                             if ($Search.Count -gt 0) {
-                                $matchInfo = Get-MatchedStrings -Event $eventItem -IncludeStrings $Search
+                                $matchInfo = Get-MatchedStrings -Event $eventItem -Search $Search
                                 $eventItem | Add-Member -MemberType NoteProperty -Name "MatchedStrings" -Value $matchInfo -Force
+                            }
+                            else {
+                                # No search specified, add empty matched strings for consistency
+                                $eventItem | Add-Member -MemberType NoteProperty -Name "MatchedStrings" -Value "" -Force
                             }
                             $allEvents[$hashKey] = $eventItem
                             $eventCount++
@@ -8473,21 +8749,28 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
 
                 if ($events) {
                     foreach ($eventItem in $events) {
+                        # ExcludeEventId takes absolute precedence - skip immediately
                         if ($ExcludeEventId.Count -gt 0 -and $ExcludeEventId -contains $eventItem.Id) { 
                             $filteredCount++
                             continue 
                         }
                         
-                        if (-not (Test-EventMatches -Event $eventItem -IncludeStrings $Search -ExcludeStrings $Exclude)) {
+                        # Test if event matches search/exclude criteria (Search takes precedence over Exclude)
+                        if (-not (Test-EventMatches -Event $eventItem -Search $Search -Exclude $Exclude)) {
                             $filteredCount++
                             continue
                         }
 
                         $hashKey = Get-EventHashKey -Event $eventItem
                         if (-not $allEvents.ContainsKey($hashKey)) {
+                            # Always calculate matched strings if Search was specified
                             if ($Search.Count -gt 0) {
-                                $matchInfo = Get-MatchedStrings -Event $eventItem -IncludeStrings $Search
+                                $matchInfo = Get-MatchedStrings -Event $eventItem -Search $Search
                                 $eventItem | Add-Member -MemberType NoteProperty -Name "MatchedStrings" -Value $matchInfo -Force
+                            }
+                            else {
+                                # No search specified, add empty matched strings for consistency
+                                $eventItem | Add-Member -MemberType NoteProperty -Name "MatchedStrings" -Value "" -Force
                             }
                             $allEvents[$hashKey] = $eventItem
                             $eventCount++
@@ -8575,12 +8858,19 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
             Write-Host $formattedTime -ForegroundColor White
             Write-Host "Log Name : " -NoNewline -ForegroundColor Yellow
             Write-Host $logEvent.LogName -ForegroundColor Cyan
+
             Write-Host "Event ID : " -NoNewline -ForegroundColor Yellow
             Write-Host $logEvent.Id -ForegroundColor White
         
-            if (($Search.Count -gt 0) -and $logEvent.MatchedStrings) {
+            # Always show Match field if Search was specified (even if empty - helps debugging)
+            if ($Search.Count -gt 0) {
                 Write-Host "Match    : " -NoNewline -ForegroundColor Yellow
-                Write-Host $logEvent.MatchedStrings -ForegroundColor Red
+                if (![string]::IsNullOrWhiteSpace($logEvent.MatchedStrings)) {
+                    Write-Host $logEvent.MatchedStrings -ForegroundColor Red
+                }
+                else {
+                    Write-Host "[No match details available]" -ForegroundColor DarkYellow
+                }
             }
         
             Write-Host "Message  : " -NoNewline -ForegroundColor Yellow
