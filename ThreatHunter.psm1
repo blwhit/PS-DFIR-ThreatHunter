@@ -1,18 +1,19 @@
 #requires -version 5.0
 # ----------------------------------------------------------------
-# DFIR-Hunter Module
+# ThreatHunter
 # ------------------------
 # [ Module Manifest ]
-# ====================
+# ======================
 # [X] Hunt-Persistence
 # [X] Hunt-Logs
+# [X] Hunt-ForensicDump
+# [X] Hunt-VirusTotal
+# [X] Hunt-Browser
+# ---
 # [X] Hunt-Files
 # [X] Hunt-Tasks
-# [X] Hunt-Browser
 # [X] Hunt-Registry
 # [X] Hunt-Services
-# [X] Hunt-VirusTotal
-# [...] Hunt-ForensicDump
 # -----------------------------
 
 #   Global Notes:
@@ -28,6 +29,7 @@
 # - Add tab for "Export Information", details about where files are located, hyperlinks to ForensicData folder, runtime of dump, etc...
 # - Add a light/dark mode button in the top header
 # - will packaging as PS2EXE make it work on older windows computers? research
+# - add defensive powershell version check to each function init
 
 
 # Extra System checks/info:
@@ -67,6 +69,7 @@
 # - Use AI to audit and scrutinize cmdlets... ask strong question to investigate if usage/functionality is actually working or correct
 # - Do a general review check for any critical errors
 # - Rename and standardize any variable names (loadtool vs loadbrowsertool, etc.)
+# - redo and update all Synopsis/Parameters/Notes/Examples sections
 
 # ----------------------------------------------------------------
 # ----------------------------------------------------------------
@@ -7231,7 +7234,7 @@ CSV includes all fields: timestamps, event data, matched strings, XML data, file
 .PARAMETER MaxEvents
 Maximum events to retrieve PER LOG before filtering. Controls memory usage and performance.
 - 0: No limit (retrieves ALL events - USE WITH CAUTION on large logs)
-- Positive number: Limits events retrieved per log (default: 10000)
+- Positive number: Limits events retrieved per log (default: 100000)
 
 IMPORTANT: Get-WinEvent with MaxEvents returns events in the following order:
 - With -SortOrder "NewestFirst" (default): Returns MOST RECENT events first
@@ -7276,11 +7279,20 @@ Exports all EVTX files to specified archive for offline analysis.
 Hunt-Logs -StopLogging
 Stops event logging and configures preservation mode during active incident.
 
+.EXAMPLE
+Hunt-Logs -ClearCache
+Clears the event log cache. Use when switching between sessions or if cache behavior seems incorrect.
+
 .NOTES
-Version: 2.0
+Version: 2.1
 Requires: PowerShell 5.0+
 Privileges: Administrator recommended for complete log access and forensic features
 Performance: Use -MaxPrint for large result sets. Aggressive mode caches C:\ scans.
+Caching: Event log results are automatically cached in the PowerShell session for improved performance.
+         - Cached events are RAW (unfiltered) to ensure accuracy across different search queries
+         - Cache automatically supplements itself when queries extend beyond cached time ranges
+         - Use -ClearCache to manually clear the cache if needed
+         - Cache is invalidated when switching between Live/EVTX modes or changing timezones
 Special Characters: Search uses PowerShell -like operator. Wildcards: * (any chars), ? (single char)
                     To search literal *, ?, [, ] characters, escape with backtick: `*
 Time Ranges: Invalid date inputs will throw descriptive errors. Relative times calculated from current time.
@@ -7312,7 +7324,7 @@ Default Behavior: Without date parameters, defaults to 7-day search with warning
         [Parameter(Mandatory = $false)]
         [int]$MaxPrint = 0,
         [Parameter(Mandatory = $false)]
-        [int]$MaxEvents = 10000,  
+        [int]$MaxEvents = 100000,  
         [Parameter(Mandatory = $false)]
         [string]$Timezone = "",
         [Parameter(Mandatory = $false)]
@@ -7331,7 +7343,9 @@ Default Behavior: Without date parameters, defaults to 7-day search with warning
         [Parameter(Mandatory = $false)]
         [string]$OutputCSV,
         [Parameter(Mandatory = $false)]
-        [switch]$Quiet
+        [switch]$Quiet,
+        [Parameter(Mandatory = $false)]
+        [switch]$ClearCache
     )
 
     # ============================================================================
@@ -7419,6 +7433,366 @@ Default Behavior: Without date parameters, defaults to 7-day search with warning
     # ============================================================================
     # END VALIDATION
     # ============================================================================
+    
+    # Handle ClearCache parameter
+    if ($ClearCache) {
+        Clear-HuntLogsCache
+        Write-Host "Hunt-Logs cache cleared successfully." -ForegroundColor Green
+        return
+    }
+
+    # ============================================================================
+    # CACHING SYSTEM
+    # ============================================================================
+    
+    # Initialize global cache if not exists
+    if ($null -eq (Get-Variable -Name "HuntLogsCache" -Scope Global -ErrorAction SilentlyContinue)) {
+        $global:HuntLogsCache = @{
+            Enabled        = $true
+            LastQueryTime  = $null
+            CacheCreatedAt = $null
+            Parameters     = @{
+                StartDate  = $null  # Absolute DateTime
+                EndDate    = $null  # Absolute DateTime
+                LogNames   = @()
+                EventId    = @()
+                FolderPath = ""
+                Mode       = ""     # "Live" or "EVTX"
+                SystemTZ   = $null  # System timezone at cache time
+            }
+            RawEvents      = @{}  # HashTable keyed by event hash
+            Statistics     = @{
+                TotalEvents   = 0
+                CacheHits     = 0
+                CacheMisses   = 0
+                PartialHits   = 0
+                LastOperation = ""
+            }
+        }
+    }
+    
+    # Function to clear cache
+    function Clear-HuntLogsCache {
+        [CmdletBinding()]
+        param(
+            [switch]$Silent
+        )
+        
+        if ($global:HuntLogsCache.RawEvents.Count -gt 0 -and -not $Silent) {
+            Write-Host "Clearing Hunt-Logs cache ($($global:HuntLogsCache.RawEvents.Count) events)..." -ForegroundColor Yellow
+        }
+        
+        $global:HuntLogsCache = @{
+            Enabled        = $true
+            LastQueryTime  = $null
+            CacheCreatedAt = $null
+            Parameters     = @{
+                StartDate  = $null
+                EndDate    = $null
+                LogNames   = @()
+                EventId    = @()
+                FolderPath = ""
+                Mode       = ""
+                SystemTZ   = $null
+            }
+            RawEvents      = @{}
+            Statistics     = @{
+                TotalEvents   = 0
+                CacheHits     = 0
+                CacheMisses   = 0
+                PartialHits   = 0
+                LastOperation = ""
+            }
+        }
+    }
+    
+    # Function to test if cache can be used
+    function Test-CacheValidity {
+        [CmdletBinding()]
+        param(
+            [DateTime]$RequestedStartDate,
+            [DateTime]$RequestedEndDate,
+            [string[]]$RequestedLogNames,
+            [int[]]$RequestedEventId,
+            [string]$RequestedFolderPath,
+            [string]$RequestedMode
+        )
+        
+        try {
+            # Cache must be enabled and have data
+            if (-not $global:HuntLogsCache.Enabled) {
+                Write-Verbose "Cache is disabled"
+                return @{ Valid = $false; Reason = "Cache disabled" }
+            }
+            
+            if ($global:HuntLogsCache.RawEvents.Count -eq 0) {
+                Write-Verbose "Cache is empty"
+                return @{ Valid = $false; Reason = "Cache empty" }
+            }
+            
+            # Check if mode matches (Live vs EVTX)
+            if ($global:HuntLogsCache.Parameters.Mode -ne $RequestedMode) {
+                Write-Verbose "Cache mode mismatch: Cached=$($global:HuntLogsCache.Parameters.Mode), Requested=$RequestedMode"
+                return @{ Valid = $false; Reason = "Mode mismatch"; RequiresFullRefresh = $true }
+            }
+            
+            # For EVTX mode, folder path must match exactly
+            if ($RequestedMode -eq "EVTX") {
+                if ($global:HuntLogsCache.Parameters.FolderPath -ne $RequestedFolderPath) {
+                    Write-Verbose "EVTX path mismatch"
+                    return @{ Valid = $false; Reason = "EVTX path mismatch"; RequiresFullRefresh = $true }
+                }
+            }
+            
+            # Check timezone hasn't changed (affects time comparisons)
+            if ($global:HuntLogsCache.Parameters.SystemTZ -ne $systemTimeZone.Id) {
+                Write-Verbose "System timezone changed since cache creation"
+                return @{ Valid = $false; Reason = "Timezone changed"; RequiresFullRefresh = $true }
+            }
+            
+            # Validate cached dates exist
+            if ($null -eq $global:HuntLogsCache.Parameters.StartDate -or 
+                $null -eq $global:HuntLogsCache.Parameters.EndDate) {
+                Write-Verbose "Cache has null dates"
+                return @{ Valid = $false; Reason = "Invalid cache dates"; RequiresFullRefresh = $true }
+            }
+            
+            $cachedStart = $global:HuntLogsCache.Parameters.StartDate
+            $cachedEnd = $global:HuntLogsCache.Parameters.EndDate
+            
+            # Check time range compatibility
+            # Requested range must be within or equal to cached range for full cache use
+            # If requested range extends beyond cached, we need partial refresh
+            
+            $needsEarlierData = $RequestedStartDate -lt $cachedStart
+            $needsLaterData = $RequestedEndDate -gt $cachedEnd
+            
+            if ($needsEarlierData -or $needsLaterData) {
+                # Requested range extends beyond cached range
+                Write-Verbose "Requested range extends beyond cache: Earlier=$needsEarlierData, Later=$needsLaterData"
+                
+                return @{
+                    Valid                  = $true
+                    UseCache               = $true
+                    RequiresPartialRefresh = $true
+                    NeedsEarlierData       = $needsEarlierData
+                    NeedsLaterData         = $needsLaterData
+                    CachedStart            = $cachedStart
+                    CachedEnd              = $cachedEnd
+                    Reason                 = "Partial cache hit - needs supplemental data"
+                }
+            }
+            
+            # Check if requested logs are subset of cached logs
+            # Empty cached log list means "all logs" were cached
+            if ($global:HuntLogsCache.Parameters.LogNames.Count -gt 0) {
+                if ($RequestedLogNames.Count -eq 0) {
+                    # Requested "all logs" but cache only has specific logs
+                    Write-Verbose "Requested all logs, but cache has specific logs only"
+                    return @{ Valid = $false; Reason = "Cache has subset of logs"; RequiresFullRefresh = $true }
+                }
+                
+                # Check if all requested logs are in cache
+                $cachedLogsLower = $global:HuntLogsCache.Parameters.LogNames | ForEach-Object { $_.ToLower() }
+                foreach ($requestedLog in $RequestedLogNames) {
+                    if ($cachedLogsLower -notcontains $requestedLog.ToLower()) {
+                        Write-Verbose "Requested log '$requestedLog' not in cache"
+                        return @{ Valid = $false; Reason = "Requested log not in cache"; RequiresFullRefresh = $true }
+                    }
+                }
+            }
+            
+            # Check if requested EventIds are subset of cached EventIds
+            # Empty cached EventId list means "all event IDs" were cached
+            if ($global:HuntLogsCache.Parameters.EventId.Count -gt 0) {
+                if ($RequestedEventId.Count -eq 0) {
+                    # Requested "all event IDs" but cache only has specific IDs
+                    Write-Verbose "Requested all event IDs, but cache has specific IDs only"
+                    return @{ Valid = $false; Reason = "Cache has subset of event IDs"; RequiresFullRefresh = $true }
+                }
+                
+                # Check if all requested IDs are in cache
+                foreach ($requestedId in $RequestedEventId) {
+                    if ($global:HuntLogsCache.Parameters.EventId -notcontains $requestedId) {
+                        Write-Verbose "Requested Event ID $requestedId not in cache"
+                        return @{ Valid = $false; Reason = "Requested Event ID not in cache"; RequiresFullRefresh = $true }
+                    }
+                }
+            }
+            
+            # Cache is valid and fully covers requested query
+            Write-Verbose "Cache is valid and covers requested query"
+            return @{
+                Valid                  = $true
+                UseCache               = $true
+                RequiresPartialRefresh = $false
+                Reason                 = "Full cache hit"
+            }
+        }
+        catch {
+            Write-Verbose "Error validating cache: $($_.Exception.Message)"
+            return @{ Valid = $false; Reason = "Cache validation error: $($_.Exception.Message)"; RequiresFullRefresh = $true }
+        }
+    }
+    
+    # Function to filter cached events based on query parameters
+    function Get-FilteredCachedEvents {
+        [CmdletBinding()]
+        param(
+            [DateTime]$StartDate,
+            [DateTime]$EndDate,
+            [string[]]$LogNames,
+            [int[]]$EventId
+        )
+        
+        try {
+            $filteredEvents = @{}
+            
+            foreach ($key in $global:HuntLogsCache.RawEvents.Keys) {
+                $event = $global:HuntLogsCache.RawEvents[$key]
+                
+                # Filter by time range
+                if ($event.TimeCreated -lt $StartDate -or $event.TimeCreated -gt $EndDate) {
+                    continue
+                }
+                
+                # Filter by log names (if specified)
+                if ($LogNames.Count -gt 0) {
+                    $matchFound = $false
+                    foreach ($logName in $LogNames) {
+                        if ($event.LogName -like "*$logName*" -or $logName -like "*$($event.LogName)*") {
+                            $matchFound = $true
+                            break
+                        }
+                    }
+                    if (-not $matchFound) { continue }
+                }
+                
+                # Filter by event IDs (if specified)
+                if ($EventId.Count -gt 0) {
+                    if ($EventId -notcontains $event.Id) {
+                        continue
+                    }
+                }
+                
+                # Event passes all filters
+                $filteredEvents[$key] = $event
+            }
+            
+            Write-Verbose "Filtered cache: $($filteredEvents.Count) of $($global:HuntLogsCache.RawEvents.Count) events match query"
+            return $filteredEvents
+        }
+        catch {
+            Write-Warning "Error filtering cached events: $($_.Exception.Message)"
+            return @{}
+        }
+    }
+    
+    # Function to add events to cache
+    function Add-EventsToCache {
+        [CmdletBinding()]
+        param(
+            [hashtable]$NewEvents
+        )
+        
+        try {
+            $addedCount = 0
+            foreach ($key in $NewEvents.Keys) {
+                if (-not $global:HuntLogsCache.RawEvents.ContainsKey($key)) {
+                    $global:HuntLogsCache.RawEvents[$key] = $NewEvents[$key]
+                    $addedCount++
+                }
+            }
+            
+            $global:HuntLogsCache.Statistics.TotalEvents = $global:HuntLogsCache.RawEvents.Count
+            Write-Verbose "Added $addedCount new events to cache (Total: $($global:HuntLogsCache.RawEvents.Count))"
+            
+            return $addedCount
+        }
+        catch {
+            Write-Warning "Error adding events to cache: $($_.Exception.Message)"
+            return 0
+        }
+    }
+    
+    # Function to update cache parameters
+    function Update-CacheParameters {
+        [CmdletBinding()]
+        param(
+            [DateTime]$StartDate,
+            [DateTime]$EndDate,
+            [string[]]$LogNames,
+            [int[]]$EventId,
+            [string]$FolderPath,
+            [string]$Mode
+        )
+        
+        try {
+            # Update time range (expand if necessary)
+            if ($null -eq $global:HuntLogsCache.Parameters.StartDate -or 
+                $StartDate -lt $global:HuntLogsCache.Parameters.StartDate) {
+                $global:HuntLogsCache.Parameters.StartDate = $StartDate
+            }
+            
+            if ($null -eq $global:HuntLogsCache.Parameters.EndDate -or 
+                $EndDate -gt $global:HuntLogsCache.Parameters.EndDate) {
+                $global:HuntLogsCache.Parameters.EndDate = $EndDate
+            }
+            
+            # Update log names (expand if necessary)
+            if ($LogNames.Count -eq 0) {
+                # "All logs" query - clear specific log names
+                $global:HuntLogsCache.Parameters.LogNames = @()
+            }
+            elseif ($global:HuntLogsCache.Parameters.LogNames.Count -gt 0) {
+                # Add any new log names
+                foreach ($logName in $LogNames) {
+                    if ($global:HuntLogsCache.Parameters.LogNames -notcontains $logName) {
+                        $global:HuntLogsCache.Parameters.LogNames += $logName
+                    }
+                }
+            }
+            else {
+                # Cache had "all logs", keep it that way
+            }
+            
+            # Update event IDs (expand if necessary)
+            if ($EventId.Count -eq 0) {
+                # "All event IDs" query - clear specific IDs
+                $global:HuntLogsCache.Parameters.EventId = @()
+            }
+            elseif ($global:HuntLogsCache.Parameters.EventId.Count -gt 0) {
+                # Add any new event IDs
+                foreach ($id in $EventId) {
+                    if ($global:HuntLogsCache.Parameters.EventId -notcontains $id) {
+                        $global:HuntLogsCache.Parameters.EventId += $id
+                    }
+                }
+            }
+            else {
+                # Cache had "all IDs", keep it that way
+            }
+            
+            $global:HuntLogsCache.Parameters.FolderPath = $FolderPath
+            $global:HuntLogsCache.Parameters.Mode = $Mode
+            $global:HuntLogsCache.Parameters.SystemTZ = $systemTimeZone.Id
+            $global:HuntLogsCache.LastQueryTime = Get-Date
+            
+            if ($null -eq $global:HuntLogsCache.CacheCreatedAt) {
+                $global:HuntLogsCache.CacheCreatedAt = Get-Date
+            }
+            
+            Write-Verbose "Cache parameters updated"
+        }
+        catch {
+            Write-Warning "Error updating cache parameters: $($_.Exception.Message)"
+        }
+    }
+    
+    # ============================================================================
+    # END CACHING SYSTEM
+    # ============================================================================
+
 
     # Define global IOC list if not already defined
     if ($null -eq (Get-Variable -Name "GlobalLogIOCs" -Scope Global -ErrorAction SilentlyContinue)) {
@@ -8633,7 +9007,7 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
         if (-not $Quiet) {
             $formattedStart = Format-DateTimeWithTimeZone -DateTime $parsedStartDate -TargetTimeZone $targetTimeZone
             $formattedEnd = Format-DateTimeWithTimeZone -DateTime $parsedEndDate -TargetTimeZone $targetTimeZone
-            Write-Host "Search Range: $formattedStart to $formattedEnd" -ForegroundColor Cyan
+            Write-Host "[INFO] Search Range: $formattedStart to $formattedEnd" -ForegroundColor Cyan
         }
     }
     catch {
@@ -8646,6 +9020,91 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
         Write-Host ""
         throw
     }
+
+    # ============================================================================
+    # CACHE DECISION LOGIC
+    # ============================================================================
+    
+    # Determine query mode
+    $queryMode = if (![string]::IsNullOrWhiteSpace($FolderPath)) { "EVTX" } else { "Live" }
+    $queryFolderPath = if (![string]::IsNullOrWhiteSpace($FolderPath)) { $FolderPath } else { "" }
+    
+    # Check if we can use cache
+    $cacheDecision = Test-CacheValidity `
+        -RequestedStartDate $parsedStartDate `
+        -RequestedEndDate $parsedEndDate `
+        -RequestedLogNames $LogNames `
+        -RequestedEventId $EventId `
+        -RequestedFolderPath $queryFolderPath `
+        -RequestedMode $queryMode
+    
+    $useCache = $false
+    $requiresPartialRefresh = $false
+    $requiresFullRefresh = $true
+    $supplementalStartDate = $null
+    $supplementalEndDate = $null
+    
+    if ($cacheDecision.Valid -and $cacheDecision.UseCache) {
+        $useCache = $true
+        
+        if ($cacheDecision.RequiresPartialRefresh) {
+            $requiresPartialRefresh = $true
+            $requiresFullRefresh = $false
+            
+            # Calculate what additional data we need
+            if ($cacheDecision.NeedsEarlierData -and $cacheDecision.NeedsLaterData) {
+                # Need both earlier and later - this is complex, just do full refresh
+                Write-Verbose "Cache needs both earlier and later data - performing full refresh"
+                $requiresFullRefresh = $true
+                $requiresPartialRefresh = $false
+                $useCache = $false
+                Clear-HuntLogsCache -Silent
+            }
+            elseif ($cacheDecision.NeedsEarlierData) {
+                # Need earlier data
+                $supplementalStartDate = $parsedStartDate
+                $supplementalEndDate = $cacheDecision.CachedStart.AddSeconds(-1)
+                Write-Verbose "Cache hit (partial) - need earlier data from $supplementalStartDate to $supplementalEndDate"
+                
+                $global:HuntLogsCache.Statistics.PartialHits++
+                $global:HuntLogsCache.Statistics.LastOperation = "Partial hit - earlier data"
+            }
+            elseif ($cacheDecision.NeedsLaterData) {
+                # Need later data
+                $supplementalStartDate = $cacheDecision.CachedEnd.AddSeconds(1)
+                $supplementalEndDate = $parsedEndDate
+                Write-Verbose "Cache hit (partial) - need later data from $supplementalStartDate to $supplementalEndDate"
+                
+                $global:HuntLogsCache.Statistics.PartialHits++
+                $global:HuntLogsCache.Statistics.LastOperation = "Partial hit - later data"
+            }
+        }
+        else {
+            # Full cache hit - no refresh needed
+            $requiresFullRefresh = $false
+            Write-Verbose "Cache hit (full) - using cached data"
+            if (-not $Quiet) {
+                Write-Host "[CACHE] Using cached results ($($global:HuntLogsCache.RawEvents.Count) events in cache)" -ForegroundColor Green
+            }
+            
+            $global:HuntLogsCache.Statistics.CacheHits++
+            $global:HuntLogsCache.Statistics.LastOperation = "Full cache hit"
+        }
+    }
+    else {
+        # Cache miss or invalid - full refresh needed
+        Write-Verbose "Cache miss: $($cacheDecision.Reason)"
+        if ($cacheDecision.RequiresFullRefresh) {
+            Clear-HuntLogsCache -Silent
+        }
+        
+        $global:HuntLogsCache.Statistics.CacheMisses++
+        $global:HuntLogsCache.Statistics.LastOperation = "Cache miss - $($cacheDecision.Reason)"
+    }
+    
+    # ============================================================================
+    # END CACHE DECISION LOGIC
+    # ============================================================================
 
     # Handle Aggressive search first (will be displayed last)
     $aggressiveResults = @()
@@ -8665,259 +9124,398 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
     $eventCount = 0
     $filteredCount = 0
     $maxEventsHitCount = 0  
-    $logsHitLimit = @()    
-
-    # Determine processing mode
-    if (![string]::IsNullOrWhiteSpace($FolderPath)) {
-        # EVTX File Mode
-        if (-not (Test-Path $FolderPath)) {
-            throw "EVTX path does not exist: $FolderPath"
-        }
-
-        $evtxFileList = @()
-        if (Test-Path $FolderPath -PathType Container) {
-            $evtxFileList = Get-ChildItem -Path $FolderPath -Filter "*.evtx" -File -ErrorAction SilentlyContinue
-        }
-        else {
-            if ($FolderPath -like "*.evtx") {
-                $evtxFileList = @(Get-Item $FolderPath -ErrorAction SilentlyContinue)
-            }
-            else {
-                throw "Specified file is not an EVTX file: $FolderPath"
-            }
-        }
-
-        if ($evtxFileList.Count -eq 0) {
-            Write-Warning "No EVTX files found in: $FolderPath"
-            return
-        }
-
-        Write-Progress -Activity "Hunt-Logs Search" -Status "Found $($evtxFileList.Count) EVTX files to process" -PercentComplete 15
-
-        if ($LogNames.Count -gt 0) {
-            $filteredEvtxFiles = @()
-            foreach ($evtxFile in $evtxFileList) {
-                $fileName = [System.IO.Path]::GetFileNameWithoutExtension($evtxFile.Name)
-                foreach ($logName in $LogNames) {
-                    if ($fileName -like "*$logName*" -or $logName -like "*$fileName*") {
-                        $filteredEvtxFiles += $evtxFile
-                        break
-                    }
-                }
-            }
-            $evtxFileList = $filteredEvtxFiles
-        }
-
-        # Display timezone context for EVTX files
-        if ($targetTimeZone.Id -ne $systemTimeZone.Id) {
-            Write-Host "EVTX Timezone Note: Search range converted from $($targetTimeZone.DisplayName) to system time" -ForegroundColor Cyan
-            Write-Host "Log timestamps will be converted to $($targetTimeZone.DisplayName) for display" -ForegroundColor Cyan
-        }
-
-        $currentFileIndex = 0
-        foreach ($evtxFile in $evtxFileList) {
-            $currentFileIndex++
-            $percentComplete = [math]::Min(25 + (($currentFileIndex / $evtxFileList.Count) * 60), 85)
-            Write-Progress -Activity "Hunt-Logs Search" -Status "Processing EVTX file $currentFileIndex of $($evtxFileList.Count): $($evtxFile.Name) (Found: $eventCount events)" -PercentComplete $percentComplete
-
-            try {
-                $filterHash = @{
-                    Path      = $evtxFile.FullName
-                    StartTime = $parsedStartDate
-                    EndTime   = $parsedEndDate
-                }
-
-                if ($EventId.Count -gt 0) { $filterHash.Id = $EventId }
-
-                # PERFORMANCE: Limit events retrieved per file
-                # SortOrder controls which events are retrieved when MaxEvents is reached
-                if ($MaxEvents -gt 0) {
-                    if ($SortOrder -eq "OldestFirst") {
-                        # Oldest first: Reverse the default retrieval order
-                        $events = Get-WinEvent -FilterHashtable $filterHash -MaxEvents $MaxEvents -Oldest -ErrorAction SilentlyContinue
-                    }
-                    else {
-                        # Newest first (default): Normal retrieval order
-                        $events = Get-WinEvent -FilterHashtable $filterHash -MaxEvents $MaxEvents -ErrorAction SilentlyContinue
-                    }
-                    
-                    # DETECTION: Check if we hit the MaxEvents limit
-                    if ($events -and $events.Count -eq $MaxEvents) {
-                        $maxEventsHitCount++
-                        $logsHitLimit += $evtxFile.Name
-                        Write-Warning "EVTX file '$($evtxFile.Name)' hit MaxEvents limit ($MaxEvents events retrieved)"
-                    }
-                }
-                else {
-                    # No limit: Retrieve all events
-                    if ($SortOrder -eq "OldestFirst") {
-                        $events = Get-WinEvent -FilterHashtable $filterHash -Oldest -ErrorAction SilentlyContinue
-                    }
-                    else {
-                        $events = Get-WinEvent -FilterHashtable $filterHash -ErrorAction SilentlyContinue
-                    }
-                }
-
-                if ($events) {
-                    foreach ($eventItem in $events) {
-                        # ExcludeEventId takes absolute precedence - skip immediately
-                        if ($ExcludeEventId.Count -gt 0 -and $ExcludeEventId -contains $eventItem.Id) { 
-                            $filteredCount++
-                            continue 
-                        }
-                        
-                        # Test if event matches search/exclude criteria (Search takes precedence over Exclude)
-                        if (-not (Test-EventMatches -Event $eventItem -Search $Search -Exclude $Exclude)) {
-                            $filteredCount++
-                            continue
-                        }
-
-                        $hashKey = Get-EventHashKey -Event $eventItem
-                        if (-not $allEvents.ContainsKey($hashKey)) {
-                            # Always calculate matched strings if Search was specified
-                            if ($Search.Count -gt 0) {
-                                $matchInfo = Get-MatchedStrings -Event $eventItem -Search $Search
-                                $eventItem | Add-Member -MemberType NoteProperty -Name "MatchedStrings" -Value $matchInfo -Force
-                            }
-                            else {
-                                # No search specified, add empty matched strings for consistency
-                                $eventItem | Add-Member -MemberType NoteProperty -Name "MatchedStrings" -Value "" -Force
-                            }
-                            $allEvents[$hashKey] = $eventItem
-                            $eventCount++
-                        }
-                    }
-                }
-            }
-            catch {
-                Write-Warning "Error processing EVTX file '$($evtxFile.Name)': $($_.Exception.Message)"
-            }
-        }
-
-    }
-    else {
-        # Live Log Mode
-        $logsToQuery = @()
-        $currentQueryIndex = 0
-
+    $logsHitLimit = @()
+    
+    # ============================================================================
+    # CACHE-AWARE EVENT COLLECTION
+    # ============================================================================
+    
+    # If we have a full cache hit, use cached events directly
+    if ($useCache -and -not $requiresPartialRefresh -and -not $requiresFullRefresh) {
         try {
-            $availableLogs = Get-WinEvent -ListLog * -ErrorAction SilentlyContinue |
-            Where-Object { $_.RecordCount -gt 0 -and $_.RecordCount -lt 1000000 -and $_.LastWriteTime -ge $parsedStartDate.AddDays(-30) }
-
-            if ($LogNames.Count -gt 0) {
-                $availableLogsLower = @{}
-                foreach ($logItem in $availableLogs) { 
-                    $availableLogsLower[$logItem.LogName.ToLower()] = $logItem.LogName 
-                }
-                
-                foreach ($logName in $LogNames) {
-                    $nameLower = $logName.ToLower()
-                    if ($availableLogsLower.ContainsKey($nameLower)) {
-                        $logsToQuery += $availableLogsLower[$nameLower]
-                    }
-                    else {
-                        $logsToQuery += $logName
-                    }
-                }
+            Write-Progress -Activity "Hunt-Logs Search" -Status "Retrieving events from cache..." -PercentComplete 50
+            
+            # Get RAW events from cache - NO FILTERING YET
+            # Filtering happens later to ensure accuracy with changing query parameters
+            $allEvents = Get-FilteredCachedEvents `
+                -StartDate $parsedStartDate `
+                -EndDate $parsedEndDate `
+                -LogNames $LogNames `
+                -EventId $EventId
+            
+            $eventCount = $allEvents.Count
+            
+            if (-not $Quiet) {
+                Write-Host "[CACHE] Retrieved $eventCount raw events from cache (filtering will be applied next)" -ForegroundColor Green
             }
-            else {
-                $logsToQuery = $availableLogs | Select-Object -ExpandProperty LogName
-            }
+            
+            # Update statistics
+            Write-Progress -Activity "Hunt-Logs Search" -Status "Processing $eventCount cached events..." -PercentComplete 70
+            
+            # Skip log collection entirely - jump to filtering and display
         }
         catch {
-            Write-Verbose "Error getting log list: $($_.Exception.Message)"
+            Write-Warning "Error retrieving cached events: $($_.Exception.Message). Falling back to full refresh."
+            Clear-HuntLogsCache -Silent
+            $requiresFullRefresh = $true
+            $useCache = $false
         }
-
-        $totalQueries = $logsToQuery.Count
-        Write-Progress -Activity "Hunt-Logs Search" -Status "Found $totalQueries logs to search" -PercentComplete 15
-
-        if ($totalQueries -eq 0) { 
-            Write-Warning "No logs found to search."
-            if ($aggressiveResults.Count -eq 0) { return }
+    }
+    
+    # Collect events if needed (full or partial refresh)
+    if ($requiresFullRefresh -or $requiresPartialRefresh) {
+        # Determine what date range to query
+        $queryStartDate = if ($requiresPartialRefresh) { $supplementalStartDate } else { $parsedStartDate }
+        $queryEndDate = if ($requiresPartialRefresh) { $supplementalEndDate } else { $parsedEndDate }
+        
+        if ($requiresPartialRefresh) {
+            if (-not $Quiet) {
+                $suppStart = Format-DateTimeWithTimeZone -DateTime $queryStartDate -TargetTimeZone $targetTimeZone
+                $suppEnd = Format-DateTimeWithTimeZone -DateTime $queryEndDate -TargetTimeZone $targetTimeZone
+                Write-Host "[CACHE] Collecting supplemental data: $suppStart to $suppEnd" -ForegroundColor Yellow
+            }
+            
+            # Start with cached events
+            foreach ($key in $global:HuntLogsCache.RawEvents.Keys) {
+                $allEvents[$key] = $global:HuntLogsCache.RawEvents[$key]
+            }
+            $eventCount = $allEvents.Count
         }
+    
+        # Determine processing mode
+        if (![string]::IsNullOrWhiteSpace($FolderPath)) {
+            # EVTX File Mode
+            if (-not (Test-Path $FolderPath)) {
+                throw "EVTX path does not exist: $FolderPath"
+            }
 
-        foreach ($logName in $logsToQuery) {
-            $currentQueryIndex++
-            $percentComplete = [math]::Min(25 + (($currentQueryIndex / $totalQueries) * 60), 85)
-            Write-Progress -Activity "Hunt-Logs Search" -Status "Processing log $currentQueryIndex of $totalQueries`: $logName (Found: $eventCount events)" -PercentComplete $percentComplete
-
-            try {
-                $filterHash = @{ 
-                    LogName   = $logName
-                    StartTime = $parsedStartDate
-                    EndTime   = $parsedEndDate 
+            $evtxFileList = @()
+            if (Test-Path $FolderPath -PathType Container) {
+                $evtxFileList = Get-ChildItem -Path $FolderPath -Filter "*.evtx" -File -ErrorAction SilentlyContinue
+            }
+            else {
+                if ($FolderPath -like "*.evtx") {
+                    $evtxFileList = @(Get-Item $FolderPath -ErrorAction SilentlyContinue)
                 }
+                else {
+                    throw "Specified file is not an EVTX file: $FolderPath"
+                }
+            }
 
-                if ($EventId.Count -gt 0) { $filterHash.Id = $EventId }
+            if ($evtxFileList.Count -eq 0) {
+                Write-Warning "No EVTX files found in: $FolderPath"
+                return
+            }
 
-                # PERFORMANCE: Limit events retrieved per log (CRITICAL for large logs)
-                # SortOrder controls which events are retrieved when MaxEvents is reached
-                if ($MaxEvents -gt 0) {
-                    if ($SortOrder -eq "OldestFirst") {
-                        # Oldest first: Reverse the default retrieval order
-                        $events = Get-WinEvent -FilterHashtable $filterHash -MaxEvents $MaxEvents -Oldest -ErrorAction SilentlyContinue
+            Write-Progress -Activity "Hunt-Logs Search" -Status "Found $($evtxFileList.Count) EVTX files to process" -PercentComplete 15
+
+            if ($LogNames.Count -gt 0) {
+                $filteredEvtxFiles = @()
+                foreach ($evtxFile in $evtxFileList) {
+                    $fileName = [System.IO.Path]::GetFileNameWithoutExtension($evtxFile.Name)
+                    foreach ($logName in $LogNames) {
+                        if ($fileName -like "*$logName*" -or $logName -like "*$fileName*") {
+                            $filteredEvtxFiles += $evtxFile
+                            break
+                        }
+                    }
+                }
+                $evtxFileList = $filteredEvtxFiles
+            }
+
+            # Display timezone context for EVTX files
+            if ($targetTimeZone.Id -ne $systemTimeZone.Id) {
+                Write-Host "EVTX Timezone Note: Search range converted from $($targetTimeZone.DisplayName) to system time" -ForegroundColor Cyan
+                Write-Host "Log timestamps will be converted to $($targetTimeZone.DisplayName) for display" -ForegroundColor Cyan
+            }
+
+            $currentFileIndex = 0
+            foreach ($evtxFile in $evtxFileList) {
+                $currentFileIndex++
+                $percentComplete = [math]::Min(25 + (($currentFileIndex / $evtxFileList.Count) * 60), 85)
+                Write-Progress -Activity "Hunt-Logs Search" -Status "Processing EVTX file $currentFileIndex of $($evtxFileList.Count): $($evtxFile.Name) (Found: $eventCount events)" -PercentComplete $percentComplete
+
+                try {
+                    $filterHash = @{
+                        Path      = $evtxFile.FullName
+                        StartTime = $queryStartDate
+                        EndTime   = $queryEndDate
+                    }
+
+                    if ($EventId.Count -gt 0) { $filterHash.Id = $EventId }
+
+                    # PERFORMANCE: Limit events retrieved per file
+                    # SortOrder controls which events are retrieved when MaxEvents is reached
+                    if ($MaxEvents -gt 0) {
+                        if ($SortOrder -eq "OldestFirst") {
+                            # Oldest first: Reverse the default retrieval order
+                            $events = Get-WinEvent -FilterHashtable $filterHash -MaxEvents $MaxEvents -Oldest -ErrorAction SilentlyContinue
+                        }
+                        else {
+                            # Newest first (default): Normal retrieval order
+                            $events = Get-WinEvent -FilterHashtable $filterHash -MaxEvents $MaxEvents -ErrorAction SilentlyContinue
+                        }
+                    
+                        # DETECTION: Check if we hit the MaxEvents limit
+                        if ($events -and $events.Count -eq $MaxEvents) {
+                            $maxEventsHitCount++
+                            $logsHitLimit += $evtxFile.Name
+                            $sortDirection = if ($SortOrder -eq "OldestFirst") { "Oldest" } else { "Newest" }
+                            Write-Verbose "EVTX file '$($evtxFile.Name)' hit MaxEvents limit, read $MaxEvents $sortDirection events."
+                        }
                     }
                     else {
-                        # Newest first (default): Normal retrieval order
-                        $events = Get-WinEvent -FilterHashtable $filterHash -MaxEvents $MaxEvents -ErrorAction SilentlyContinue
+                        # No limit: Retrieve all events
+                        if ($SortOrder -eq "OldestFirst") {
+                            $events = Get-WinEvent -FilterHashtable $filterHash -Oldest -ErrorAction SilentlyContinue
+                        }
+                        else {
+                            $events = Get-WinEvent -FilterHashtable $filterHash -ErrorAction SilentlyContinue
+                        }
                     }
-                    
-                    # DETECTION: Check if we hit the MaxEvents limit
-                    # If exactly MaxEvents returned, the log likely has more events that weren't retrieved
-                    if ($events -and $events.Count -eq $MaxEvents) {
-                        $maxEventsHitCount++
-                        $logsHitLimit += $logName
-                        Write-Warning "Log '$logName' hit MaxEvents limit ($MaxEvents events retrieved, more may exist)"
+
+                    if ($events) {
+                        foreach ($eventItem in $events) {
+                            # CACHE RAW EVENTS - NO FILTERING DURING COLLECTION
+                            # All filtering happens later to ensure cache accuracy
+                            $hashKey = Get-EventHashKey -Event $eventItem
+                            if (-not $allEvents.ContainsKey($hashKey)) {
+                                $allEvents[$hashKey] = $eventItem
+                                $eventCount++
+                            }
+                        }
+                    }
+                }
+                catch {
+                    Write-Warning "Error processing EVTX file '$($evtxFile.Name)': $($_.Exception.Message)"
+                }
+            }
+        
+            # Update cache with newly collected EVTX events
+            if ($requiresFullRefresh -or $requiresPartialRefresh) {
+                try {
+                    $newEventCount = Add-EventsToCache -NewEvents $allEvents
+                    Update-CacheParameters `
+                        -StartDate $parsedStartDate `
+                        -EndDate $parsedEndDate `
+                        -LogNames $LogNames `
+                        -EventId $EventId `
+                        -FolderPath $queryFolderPath `
+                        -Mode $queryMode
+                
+                    if (-not $Quiet -and $newEventCount -gt 0) {
+                        Write-Host "[CACHE] Added $newEventCount new RAW events to cache (unfiltered)" -ForegroundColor Green
+                    }
+                }
+                catch {
+                    Write-Warning "Error updating cache: $($_.Exception.Message)"
+                }
+            }
+
+        }
+        else {
+            # Live Log Mode
+            $logsToQuery = @()
+            $currentQueryIndex = 0
+
+            try {
+                $availableLogs = Get-WinEvent -ListLog * -ErrorAction SilentlyContinue |
+                Where-Object { $_.RecordCount -gt 0 -and $_.RecordCount -lt 1000000 -and $_.LastWriteTime -ge $parsedStartDate.AddDays(-30) }
+
+                if ($LogNames.Count -gt 0) {
+                    $availableLogsLower = @{}
+                    foreach ($logItem in $availableLogs) { 
+                        $availableLogsLower[$logItem.LogName.ToLower()] = $logItem.LogName 
+                    }
+                
+                    foreach ($logName in $LogNames) {
+                        $nameLower = $logName.ToLower()
+                        if ($availableLogsLower.ContainsKey($nameLower)) {
+                            $logsToQuery += $availableLogsLower[$nameLower]
+                        }
+                        else {
+                            $logsToQuery += $logName
+                        }
                     }
                 }
                 else {
-                    # User explicitly set MaxEvents=0, retrieve all (WARNING: can be slow)
-                    if ($SortOrder -eq "OldestFirst") {
-                        $events = Get-WinEvent -FilterHashtable $filterHash -Oldest -ErrorAction SilentlyContinue
-                    }
-                    else {
-                        $events = Get-WinEvent -FilterHashtable $filterHash -ErrorAction SilentlyContinue
-                    }
-                }
-
-                if ($events) {
-                    foreach ($eventItem in $events) {
-                        # ExcludeEventId takes absolute precedence - skip immediately
-                        if ($ExcludeEventId.Count -gt 0 -and $ExcludeEventId -contains $eventItem.Id) { 
-                            $filteredCount++
-                            continue 
-                        }
-                        
-                        # Test if event matches search/exclude criteria (Search takes precedence over Exclude)
-                        if (-not (Test-EventMatches -Event $eventItem -Search $Search -Exclude $Exclude)) {
-                            $filteredCount++
-                            continue
-                        }
-
-                        $hashKey = Get-EventHashKey -Event $eventItem
-                        if (-not $allEvents.ContainsKey($hashKey)) {
-                            # Always calculate matched strings if Search was specified
-                            if ($Search.Count -gt 0) {
-                                $matchInfo = Get-MatchedStrings -Event $eventItem -Search $Search
-                                $eventItem | Add-Member -MemberType NoteProperty -Name "MatchedStrings" -Value $matchInfo -Force
-                            }
-                            else {
-                                # No search specified, add empty matched strings for consistency
-                                $eventItem | Add-Member -MemberType NoteProperty -Name "MatchedStrings" -Value "" -Force
-                            }
-                            $allEvents[$hashKey] = $eventItem
-                            $eventCount++
-                        }
-                    }
+                    $logsToQuery = $availableLogs | Select-Object -ExpandProperty LogName
                 }
             }
             catch {
-                Write-Verbose "Error processing log '$logName': $($_.Exception.Message)"
+                Write-Verbose "Error getting log list: $($_.Exception.Message)"
+            }
+
+            $totalQueries = $logsToQuery.Count
+            Write-Progress -Activity "Hunt-Logs Search" -Status "Found $totalQueries logs to search" -PercentComplete 15
+
+            if ($totalQueries -eq 0) { 
+                Write-Warning "No logs found to search."
+                if ($aggressiveResults.Count -eq 0) { return }
+            }
+
+            foreach ($logName in $logsToQuery) {
+                $currentQueryIndex++
+                $percentComplete = [math]::Min(25 + (($currentQueryIndex / $totalQueries) * 60), 85)
+                Write-Progress -Activity "Hunt-Logs Search" -Status "Processing log $currentQueryIndex of $totalQueries`: $logName (Found: $eventCount events)" -PercentComplete $percentComplete
+
+                try {
+                    $filterHash = @{ 
+                        LogName   = $logName
+                        StartTime = $queryStartDate
+                        EndTime   = $queryEndDate 
+                    }
+
+                    if ($EventId.Count -gt 0) { $filterHash.Id = $EventId }
+
+                    # PERFORMANCE: Limit events retrieved per log (CRITICAL for large logs)
+                    # SortOrder controls which events are retrieved when MaxEvents is reached
+                    if ($MaxEvents -gt 0) {
+                        if ($SortOrder -eq "OldestFirst") {
+                            # Oldest first: Reverse the default retrieval order
+                            $events = Get-WinEvent -FilterHashtable $filterHash -MaxEvents $MaxEvents -Oldest -ErrorAction SilentlyContinue
+                        }
+                        else {
+                            # Newest first (default): Normal retrieval order
+                            $events = Get-WinEvent -FilterHashtable $filterHash -MaxEvents $MaxEvents -ErrorAction SilentlyContinue
+                        }
+                    
+                        # DETECTION: Check if we hit the MaxEvents limit
+                        # If exactly MaxEvents returned, the log likely has more events that weren't retrieved
+                        if ($events -and $events.Count -eq $MaxEvents) {
+                            $maxEventsHitCount++
+                            $logsHitLimit += $logName
+                            $sortDirection = if ($SortOrder -eq "OldestFirst") { "Oldest" } else { "Newest" }
+                            Write-Verbose "Log '$logName' hit MaxEvents limit, read $MaxEvents $sortDirection events."
+                        }
+                    }
+                    else {
+                        # User explicitly set MaxEvents=0, retrieve all (WARNING: can be slow)
+                        if ($SortOrder -eq "OldestFirst") {
+                            $events = Get-WinEvent -FilterHashtable $filterHash -Oldest -ErrorAction SilentlyContinue
+                        }
+                        else {
+                            $events = Get-WinEvent -FilterHashtable $filterHash -ErrorAction SilentlyContinue
+                        }
+                    }
+
+                    if ($events) {
+                        foreach ($eventItem in $events) {
+                            # CACHE RAW EVENTS - NO FILTERING DURING COLLECTION
+                            # All filtering happens later to ensure cache accuracy
+                            $hashKey = Get-EventHashKey -Event $eventItem
+                            if (-not $allEvents.ContainsKey($hashKey)) {
+                                $allEvents[$hashKey] = $eventItem
+                                $eventCount++
+                            }
+                        }
+                    }
+                }
+                catch {
+                    Write-Verbose "Error processing log '$logName': $($_.Exception.Message)"
+                }
+            }
+        
+            # Update cache with newly collected live log events
+            if ($requiresFullRefresh -or $requiresPartialRefresh) {
+                try {
+                    $newEventCount = Add-EventsToCache -NewEvents $allEvents
+                    Update-CacheParameters `
+                        -StartDate $parsedStartDate `
+                        -EndDate $parsedEndDate `
+                        -LogNames $LogNames `
+                        -EventId $EventId `
+                        -FolderPath $queryFolderPath `
+                        -Mode $queryMode
+                
+                    if (-not $Quiet -and $newEventCount -gt 0) {
+                        Write-Host "[CACHE] Added $newEventCount new events to cache" -ForegroundColor Green
+                    }
+                }
+                catch {
+                    Write-Warning "Error updating cache: $($_.Exception.Message)"
+                }
+            }
+    
+        } 
+    
+    } 
+    
+    # ============================================================================
+    # END CACHE-AWARE EVENT COLLECTION
+    # ============================================================================
+
+    Write-Progress -Activity "Hunt-Logs Search" -Status "Applying filters to $($allEvents.Count) events..." -PercentComplete 90
+
+    # ============================================================================
+    # UNIFIED FILTERING STEP
+    # ============================================================================
+    # Apply all content-based filters AFTER event collection/retrieval
+    # This ensures cache accuracy regardless of what filters were used previously
+    
+    $preFilterCount = $allEvents.Count
+    $filteredEvents = @{}
+    
+    foreach ($key in $allEvents.Keys) {
+        $event = $allEvents[$key]
+        
+        # FILTER 1: ExcludeEventId (highest precedence - skip immediately)
+        if ($ExcludeEventId.Count -gt 0 -and $ExcludeEventId -contains $event.Id) {
+            $filteredCount++
+            continue
+        }
+        
+        # FILTER 2: Search/Exclude (content-based filtering)
+        if ($Search.Count -gt 0 -or $Exclude.Count -gt 0) {
+            if (-not (Test-EventMatches -Event $event -Search $Search -Exclude $Exclude)) {
+                $filteredCount++
+                continue
             }
         }
+        
+        # Event passed all filters
+        $filteredEvents[$key] = $event
     }
+    
+    $allEvents = $filteredEvents
+    $eventCount = $allEvents.Count
+    
+    if (-not $Quiet -and $filteredCount -gt 0) {
+        Write-Verbose "Filtered: $preFilterCount events → $eventCount events (removed $filteredCount)"
+    }
+    
+    # ============================================================================
+    # END UNIFIED FILTERING STEP
+    # ============================================================================
 
-    Write-Progress -Activity "Hunt-Logs Search" -Status "Processing $($allEvents.Count) events..." -PercentComplete 90
+    Write-Progress -Activity "Hunt-Logs Search" -Status "Processing $eventCount filtered events..." -PercentComplete 92
+
+    # Add matched strings to events - ALWAYS recalculate for current search
+    # This is done after cache retrieval to ensure search strings match current query
+    if ($Search.Count -gt 0) {
+        foreach ($key in $allEvents.Keys) {
+            $event = $allEvents[$key]
+            # ALWAYS recalculate - don't check if property exists
+            # Search strings may have changed since event was cached
+            $matchInfo = Get-MatchedStrings -Event $event -Search $Search
+            
+            # Remove old property if it exists, then add new one
+            if ($event.PSObject.Properties['MatchedStrings']) {
+                $event.PSObject.Properties.Remove('MatchedStrings')
+            }
+            $event | Add-Member -MemberType NoteProperty -Name "MatchedStrings" -Value $matchInfo -Force
+        }
+    }
+    else {
+        # No search strings - ensure all events have empty MatchedStrings
+        foreach ($key in $allEvents.Keys) {
+            $event = $allEvents[$key]
+            if ($event.PSObject.Properties['MatchedStrings']) {
+                $event.PSObject.Properties.Remove('MatchedStrings')
+            }
+            $event | Add-Member -MemberType NoteProperty -Name "MatchedStrings" -Value "" -Force
+        }
+    }
 
     $uniqueEvents = $allEvents.Values
     $sortedEvents = if ($SortOrder -eq "OldestFirst") {
@@ -8932,6 +9530,111 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
     Write-Progress -Activity "Hunt-Logs Search" -Completed
 
     $totalOutputChars = 0
+
+    # Function to print message with highlighted search matches
+    function Write-HighlightedMessage {
+        param(
+            [string]$Message,
+            [string[]]$SearchStrings,
+            [string]$NormalColor = "Green",
+            [string]$HighlightColor = "Red"
+        )
+        
+        if ([string]::IsNullOrWhiteSpace($Message) -or $SearchStrings.Count -eq 0) {
+            Write-Host $Message -ForegroundColor $NormalColor
+            return
+        }
+        
+        try {
+            # Build a list of all match positions for all search strings
+            $allMatches = @()
+            
+            foreach ($searchStr in $SearchStrings) {
+                if ([string]::IsNullOrWhiteSpace($searchStr)) { continue }
+                
+                # Find all occurrences of this search string (case-insensitive)
+                $position = 0
+                while ($position -lt $Message.Length) {
+                    # Use -like style matching but find exact positions
+                    $foundIndex = $Message.IndexOf($searchStr, $position, [StringComparison]::OrdinalIgnoreCase)
+                    
+                    if ($foundIndex -ge 0) {
+                        $allMatches += [PSCustomObject]@{
+                            Start = $foundIndex
+                            End   = $foundIndex + $searchStr.Length
+                            Text  = $Message.Substring($foundIndex, $searchStr.Length)
+                        }
+                        $position = $foundIndex + 1  # Move past this match to find overlapping matches
+                    }
+                    else {
+                        break  # No more matches for this search string
+                    }
+                }
+            }
+            
+            if ($allMatches.Count -eq 0) {
+                # No matches found, print normally
+                Write-Host $Message -ForegroundColor $NormalColor
+                return
+            }
+            
+            # Sort matches by start position and merge overlapping matches
+            $sortedMatches = $allMatches | Sort-Object Start
+            $mergedMatches = @()
+            $currentMatch = $null
+            
+            foreach ($match in $sortedMatches) {
+                if ($null -eq $currentMatch) {
+                    $currentMatch = $match
+                }
+                elseif ($match.Start -le $currentMatch.End) {
+                    # Overlapping or adjacent - extend current match
+                    if ($match.End -gt $currentMatch.End) {
+                        $currentMatch.End = $match.End
+                        $currentMatch.Text = $Message.Substring($currentMatch.Start, $currentMatch.End - $currentMatch.Start)
+                    }
+                }
+                else {
+                    # Non-overlapping - save current and start new
+                    $mergedMatches += $currentMatch
+                    $currentMatch = $match
+                }
+            }
+            # Add the last match
+            if ($null -ne $currentMatch) {
+                $mergedMatches += $currentMatch
+            }
+            
+            # Now print the message with highlights
+            $lastEnd = 0
+            foreach ($match in $mergedMatches) {
+                # Print the text before the match (normal color)
+                if ($match.Start -gt $lastEnd) {
+                    $beforeText = $Message.Substring($lastEnd, $match.Start - $lastEnd)
+                    Write-Host $beforeText -NoNewline -ForegroundColor $NormalColor
+                }
+                
+                # Print the matched text (highlighted color)
+                Write-Host $match.Text -NoNewline -ForegroundColor $HighlightColor
+                
+                $lastEnd = $match.End
+            }
+            
+            # Print any remaining text after the last match
+            if ($lastEnd -lt $Message.Length) {
+                $afterText = $Message.Substring($lastEnd)
+                Write-Host $afterText -NoNewline -ForegroundColor $NormalColor
+            }
+            
+            # End the line
+            Write-Host ""
+        }
+        catch {
+            # If highlighting fails for any reason, fall back to normal printing
+            Write-Verbose "Error highlighting message: $($_.Exception.Message)"
+            Write-Host $Message -ForegroundColor $NormalColor
+        }
+    }
 
     # Collect results for PassThru and CSV export (always collect, regardless of PassThru)
     foreach ($logEvent in $sortedEvents) {
@@ -8995,19 +9698,28 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
             Write-Host "Event ID : " -NoNewline -ForegroundColor Yellow
             Write-Host $logEvent.Id -ForegroundColor White
         
-            # Always show Match field if Search was specified (even if empty - helps debugging)
+            # Always show Match field if Search was specified
             if ($Search.Count -gt 0) {
                 Write-Host "Match    : " -NoNewline -ForegroundColor Yellow
                 if (![string]::IsNullOrWhiteSpace($logEvent.MatchedStrings)) {
                     Write-Host $logEvent.MatchedStrings -ForegroundColor Red
                 }
                 else {
-                    Write-Host "[No match details available]" -ForegroundColor DarkYellow
+                    # This should never happen after unified filtering, but handle gracefully
+                    Write-Host "[Match info unavailable - search matched in XML]" -ForegroundColor DarkYellow
                 }
             }
         
+            # Display message with highlighted search matches
             Write-Host "Message  : " -NoNewline -ForegroundColor Yellow
-            Write-Host $displayMessage -ForegroundColor Green
+            if ($Search.Count -gt 0 -and $msgTruncateLength -ne 0) {
+                # Use highlighting when search strings are present
+                Write-HighlightedMessage -Message $displayMessage -SearchStrings $Search -NormalColor "Green" -HighlightColor "Red"
+            }
+            else {
+                # No search strings or message display disabled - print normally
+                Write-Host $displayMessage -ForegroundColor Green
+            }
 
             # Display XML data if enabled and available
             if (($xmlTruncateLength -ne 0) -and (-not [string]::IsNullOrWhiteSpace($formattedXml)) -and ($formattedXml -ne "[No XML Data]")) {
@@ -9026,6 +9738,11 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
                 }
             }
         }
+    }
+
+    # Display MaxEvents warning if limits were hit
+    if ($maxEventsHitCount -gt 0 -and -not $Quiet) {
+        Write-Host "WARNING: MaxEvents limit ($MaxEvents) was reached on $maxEventsHitCount log(s). Results may be incomplete, adjust using '-MaxEvents' parameter..." -ForegroundColor Yellow
     }
 
     # Handle aggressive results display and collection
@@ -9051,7 +9768,13 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
                 Write-Host "Match            : " -NoNewline -ForegroundColor Yellow
                 Write-Host $result.Match -ForegroundColor Red
                 Write-Host "Text             : " -NoNewline -ForegroundColor Yellow
-                Write-Host $result.Text -ForegroundColor Green
+                # Highlight the matched text in the file content
+                if ($Search.Count -gt 0) {
+                    Write-HighlightedMessage -Message $result.Text -SearchStrings $Search -NormalColor "Green" -HighlightColor "Red"
+                }
+                else {
+                    Write-Host $result.Text -ForegroundColor Green
+                }
             }
         }
     }
