@@ -7228,6 +7228,13 @@ Exports results to CSV format for analysis in Excel or other tools.
 - Full path with .csv: Saves to exact specified location
 CSV includes all fields: timestamps, event data, matched strings, XML data, file system results.
 
+.PARAMETER MaxEvents
+Maximum events to retrieve PER LOG before filtering. Prevents memory exhaustion on large logs.
+- 0: No limit (retrieves all events - USE WITH CAUTION)
+- Positive number: Limits events retrieved per log (default: 10000)
+Recommendation: Use 10000-50000 for normal hunting, 0 only for small targeted searches.
+WARNING: Setting to 0 on large logs (Security, System) can cause severe performance issues.
+
 .EXAMPLE
 Hunt-Logs
 Searches last 7 days of all logs with no filtering (default behavior with warning).
@@ -7299,6 +7306,8 @@ Default Behavior: Without date parameters, defaults to 7-day search with warning
         [int]$MSG = 1000,
         [Parameter(Mandatory = $false)]
         [int]$MaxPrint = 0,
+        [Parameter(Mandatory = $false)]
+        [int]$MaxEvents = 10000,  
         [Parameter(Mandatory = $false)]
         [string]$Timezone = "",
         [Parameter(Mandatory = $false)]
@@ -7379,6 +7388,27 @@ Default Behavior: Without date parameters, defaults to 7-day search with warning
     
     if ($PassThru -and $PSBoundParameters.ContainsKey('MaxPrint') -and $MaxPrint -gt 0) {
         Write-Verbose "MaxPrint parameter has no effect with -PassThru (only affects console output)"
+    }
+
+    # Performance warning for MaxEvents=0
+    if ($MaxEvents -eq 0) {
+        Write-Warning "MaxEvents set to 0 (unlimited), this may cause performance issues on large datasets."
+    }
+    
+    # Warn about large time ranges combined with unlimited events
+    if ($MaxEvents -eq 0 -and $null -ne $StartDate -and $null -ne $EndDate) {
+        try {
+            $testStart = ConvertTo-DateTime -InputValue $StartDate -TargetTimeZone ([System.TimeZoneInfo]::Local)
+            $testEnd = ConvertTo-DateTime -InputValue $EndDate -TargetTimeZone ([System.TimeZoneInfo]::Local)
+            $daysDiff = ($testEnd - $testStart).TotalDays
+            
+            if ($daysDiff -gt 30) {
+                Write-Warning "Large time range ($([math]::Round($daysDiff,0)) days) with unlimited MaxEvents."
+            }
+        }
+        catch {
+            # Can't parse dates yet, will catch later
+        }
     }
     
     # ============================================================================
@@ -8303,47 +8333,82 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
         return $stringValue
     }
 
+
     # Function to test if strings match - Search takes precedence over Exclude
+    # PERFORMANCE: Caches XML and uses early exit optimization
     function Test-EventMatches {
         param($Event, $Search, $Exclude)
         
-        # Get searchable content from event
+        # Build searchable content efficiently - avoid unnecessary XML parsing
         $message = if ([string]::IsNullOrWhiteSpace($Event.Message)) { "" } else { $Event.Message }
-        $xmlContent = ""
-        try {
-            $xmlContent = $Event.ToXml()
-        }
-        catch {
-            $xmlContent = ""
-        }
         
-        $searchContent = "$message $xmlContent"
+        # PERFORMANCE OPTIMIZATION: Only get XML if needed
+        # First check message-only for Search matches (most common case)
+        $needsXml = $false
         
-        # PRIORITY 1: If Search is specified, check for matches first
-        # Search takes PRECEDENCE - if it matches, return true regardless of Exclude
+        # PRIORITY 1: If Search is specified, check for matches
         if ($Search.Count -gt 0) {
-            $foundMatch = $false
+            # Fast path: Check message first without XML
+            $foundInMessage = $false
             foreach ($includeStr in $Search) {
-                # Escape special regex chars but preserve wildcards for -like operator
-                if ($searchContent -like "*$includeStr*") {
-                    $foundMatch = $true
-                    break
+                if ($message -like "*$includeStr*") {
+                    $foundInMessage = $true
+                    break  # Early exit - found match
                 }
             }
-            # If Search was specified, only return events that matched
-            if ($foundMatch) {
-                return $true  # Match found - include this event regardless of Exclude
+            
+            if ($foundInMessage) {
+                return $true  # Match found in message - skip XML entirely
             }
-            else {
-                return $false  # Search specified but no match - exclude this event
-            }
+            
+            # No match in message, need to check XML
+            $needsXml = $true
         }
         
-        # PRIORITY 2: If no Search specified, apply Exclude filter
-        if ($Exclude.Count -gt 0) {
+        # PRIORITY 2: Check Exclude only if Search didn't match or wasn't specified
+        if ($Exclude.Count -gt 0 -and -not $needsXml) {
+            # Quick check message first
             foreach ($excludeStr in $Exclude) {
-                if ($searchContent -like "*$excludeStr*") {
-                    return $false
+                if ($message -like "*$excludeStr*") {
+                    return $false  # Excluded - no need to check XML
+                }
+            }
+            $needsXml = $true  # Need XML to complete exclude check
+        }
+        
+        # Only parse XML if absolutely necessary
+        $xmlContent = ""
+        if ($needsXml) {
+            try {
+                # Cache XML on the event object to avoid re-parsing
+                if (-not $Event.PSObject.Properties['_CachedXml']) {
+                    $xmlContent = $Event.ToXml()
+                    $Event | Add-Member -MemberType NoteProperty -Name "_CachedXml" -Value $xmlContent -Force
+                }
+                else {
+                    $xmlContent = $Event._CachedXml
+                }
+            }
+            catch {
+                $xmlContent = ""
+            }
+            
+            # Complete Search check with XML
+            if ($Search.Count -gt 0) {
+                foreach ($includeStr in $Search) {
+                    if ($xmlContent -like "*$includeStr*") {
+                        return $true  # Found in XML
+                    }
+                }
+                return $false  # Search specified but no match found
+            }
+            
+            # Complete Exclude check with XML
+            if ($Exclude.Count -gt 0) {
+                foreach ($excludeStr in $Exclude) {
+                    if ($xmlContent -like "*$excludeStr*") {
+                        return $false  # Found in exclude
+                    }
                 }
             }
         }
@@ -8353,28 +8418,22 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
     }
 
     # Function to create hash key for deduplication
+    # PERFORMANCE: Simplified to avoid expensive substring operations
     function Get-EventHashKey {
         param($Event)
         
-        $messagePreview = ""
-        if (![string]::IsNullOrWhiteSpace($Event.Message)) {
-            $messagePreview = ($Event.Message -replace '\s+', ' ').Trim()
-            if ($messagePreview.Length -gt 100) {
-                $messagePreview = $messagePreview.Substring(0, 100)
-            }
+        # Use RecordId as primary key when available (unique per log)
+        # Only fall back to complex key for events without RecordId
+        if ($Event.RecordId -and $Event.LogName) {
+            return "$($Event.LogName)|$($Event.RecordId)"
         }
         
-        $keyComponents = @(
-            $Event.LogName,
-            $Event.Id,
-            $Event.TimeCreated.Ticks,
-            $Event.RecordId,
-            $messagePreview
-        )
-        return ($keyComponents -join '|')
+        # Fallback for EVTX files that might not have RecordId
+        return "$($Event.LogName)|$($Event.Id)|$($Event.TimeCreated.Ticks)"
     }
 
     # Function to find matching include strings - returns formatted string of matches with locations
+    # PERFORMANCE: Uses cached XML from Test-EventMatches
     function Get-MatchedStrings {
         param($Event, $Search)
         
@@ -8384,24 +8443,36 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
         
         $matchList = @()
         $message = if ([string]::IsNullOrWhiteSpace($Event.Message)) { "" } else { $Event.Message }
+        
+        # Use cached XML if available (already parsed by Test-EventMatches)
         $xmlContent = ""
-        try {
-            $xmlContent = $Event.ToXml()
+        if ($Event.PSObject.Properties['_CachedXml']) {
+            $xmlContent = $Event._CachedXml
         }
-        catch {
-            $xmlContent = ""
+        else {
+            try {
+                $xmlContent = $Event.ToXml()
+                $Event | Add-Member -MemberType NoteProperty -Name "_CachedXml" -Value $xmlContent -Force
+            }
+            catch {
+                $xmlContent = ""
+            }
         }
         
+        # PERFORMANCE: Early exit on first match in message, then check XML separately
         foreach ($includeStr in $Search) {
             if ([string]::IsNullOrWhiteSpace($includeStr)) { continue }
             
             $foundIn = @()
             try {
-                if ($message -like "*$includeStr*") { $foundIn += "MSG" }
-                if ($xmlContent -like "*$includeStr*") { $foundIn += "XML" }
+                if ($message -like "*$includeStr*") { 
+                    $foundIn += "MSG" 
+                }
+                if ($xmlContent -like "*$includeStr*") { 
+                    $foundIn += "XML" 
+                }
             }
             catch {
-                # Handle any regex/wildcard errors gracefully
                 Write-Verbose "Error matching string '$includeStr': $($_.Exception.Message)"
                 continue
             }
@@ -8651,7 +8722,13 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
 
                 if ($EventId.Count -gt 0) { $filterHash.Id = $EventId }
 
-                $events = Get-WinEvent -FilterHashtable $filterHash -ErrorAction SilentlyContinue
+                # PERFORMANCE: Limit events retrieved per file
+                if ($MaxEvents -gt 0) {
+                    $events = Get-WinEvent -FilterHashtable $filterHash -MaxEvents $MaxEvents -ErrorAction SilentlyContinue
+                }
+                else {
+                    $events = Get-WinEvent -FilterHashtable $filterHash -ErrorAction SilentlyContinue
+                }
 
                 if ($events) {
                     foreach ($eventItem in $events) {
@@ -8745,7 +8822,14 @@ Total Raw Size: $([math]::Round($totalSize / 1MB, 2)) MB
 
                 if ($EventId.Count -gt 0) { $filterHash.Id = $EventId }
 
-                $events = Get-WinEvent -FilterHashtable $filterHash -ErrorAction SilentlyContinue
+                # PERFORMANCE: Limit events retrieved per log (CRITICAL for large logs)
+                if ($MaxEvents -gt 0) {
+                    $events = Get-WinEvent -FilterHashtable $filterHash -MaxEvents $MaxEvents -ErrorAction SilentlyContinue
+                }
+                else {
+                    # User explicitly set MaxEvents=0, retrieve all (WARNING: can be slow)
+                    $events = Get-WinEvent -FilterHashtable $filterHash -ErrorAction SilentlyContinue
+                }
 
                 if ($events) {
                     foreach ($eventItem in $events) {
