@@ -16,18 +16,19 @@
 # [X] Hunt-Services
 # -----------------------------
 
+
 #   Global Notes:
 # -------------------
 # - Make Wiki
 # - Spend genuine time building and tuning the IOC and string lists
-
-# - !!!  add caching functionality to subfunctions (add -DontCache switch, use in ForensicDump to avoid extra PS session vars)... cache cmdlet search results in PS variable for quicker subsequent searching 
+# - !!!  add caching functionality to other subfunctions (add -DontCache switch, use in ForensicDump to avoid extra PS session vars)... cache cmdlet search results in PS variable for quicker subsequent searching 
 # - ADD switch to Hunt-Browser to get the browser extensions loaded on the machine for all browsers
 # - will packaging as PS2EXE make it work on older windows computers? research
 # - add defensive powershell version check to each function init... add defensive input param validation/sanitization too
-# - add a native "-More" or "-Page" or "-Paging" switch to the Hunt-Logs and maybe Hunt-Files function (paging ability while keeping coloring)
-# - make sure Hunt-Persistence sets flags in all mode. still want that info
+# - add a native "-More" or "-Page" or "-Paging" switch to the Hunt-Logs (and maybe Hunt-Files) function (paging ability while keeping coloring)
 # - take the extra space printing out of the Hunt-Browser execution for the forensic dump... printing an extra newline, not clean
+# - Fix the forensic dump "Settings" page.. doesnt change colors, out of date/misleading. Cant go over preset limit numbers, etc.
+
 
 #   Final/Full Review & Pass-Through
 # -----------------------------
@@ -596,10 +597,17 @@ function Hunt-ForensicDump {
             Write-Verbose "Running systeminfo command..."
             $systemInfoOutput = systeminfo.exe 2>$null
             
-            if ($LASTEXITCODE -ne 0 -or -not $systemInfoOutput) {
-                Write-Verbose "systeminfo command failed or returned no data"
+            if ($LASTEXITCODE -ne 0) {
+                Write-Verbose "systeminfo command failed with exit code: $LASTEXITCODE"
                 return $systemInfoData
             }
+            
+            if (-not $systemInfoOutput -or $systemInfoOutput.Count -eq 0) {
+                Write-Verbose "systeminfo command returned no data"
+                return $systemInfoData
+            }
+            
+            Write-Verbose "systeminfo returned $($systemInfoOutput.Count) lines of output"
             
             foreach ($line in $systemInfoOutput) {
                 # Parse key-value pairs (format: "Key:      Value")
@@ -607,47 +615,146 @@ function Hunt-ForensicDump {
                     $key = $matches[1].Trim()
                     $value = $matches[2].Trim()
                     
-                    # Skip empty values
-                    if ([string]::IsNullOrWhiteSpace($value) -or $value -eq 'N/A') {
+                    # Skip ONLY if value is completely empty or EXACTLY "N/A" (not containing N/A)
+                    # Some values like OS Version contain "N/A" as part of the string: "10.0.26100 N/A Build 26100"
+                    if ([string]::IsNullOrWhiteSpace($value)) {
+                        Write-Verbose "Skipping empty value for key: $key"
+                        continue
+                    }
+                    if ($value -eq 'N/A') {
+                        Write-Verbose "Skipping N/A value for key: $key"
                         continue
                     }
                     
                     # Map important fields
                     switch ($key) {
-                        'Host Name' { $systemInfoData.Hostname = $value }
-                        'OS Name' { $systemInfoData.OSName = $value }
-                        'OS Version' { $systemInfoData.OSVersion = $value }
-                        'OS Manufacturer' { $systemInfoData.OSManufacturer = $value }
-                        'OS Configuration' { $systemInfoData.OSConfiguration = $value }
-                        'OS Build Type' { $systemInfoData.OSBuildType = $value }
-                        'Registered Owner' { $systemInfoData.RegisteredOwner = $value }
-                        'Registered Organization' { $systemInfoData.RegisteredOrganization = $value }
-                        'Product ID' { $systemInfoData.ProductID = $value }
-                        'Original Install Date' { $systemInfoData.InstallDate = $value }
-                        'System Boot Time' { $systemInfoData.BootTime = $value }
-                        'System Manufacturer' { $systemInfoData.SystemManufacturer = $value }
-                        'System Model' { $systemInfoData.SystemModel = $value }
-                        'System Type' { $systemInfoData.SystemType = $value }
-                        'Processor(s)' { 
-                            # This line tells us how many processors, next lines have details
-                            $systemInfoData.ProcessorCount = $value 
+                        'Host Name' { 
+                            $systemInfoData.Hostname = $value 
+                            Write-Verbose "Captured Host Name: $value"
                         }
-                        'BIOS Version' { $systemInfoData.BIOSVersion = $value }
-                        'Windows Directory' { $systemInfoData.WindowsDirectory = $value }
-                        'System Directory' { $systemInfoData.SystemDirectory = $value }
-                        'Boot Device' { $systemInfoData.BootDevice = $value }
-                        'System Locale' { $systemInfoData.SystemLocale = $value }
-                        'Input Locale' { $systemInfoData.InputLocale = $value }
-                        'Time Zone' { $systemInfoData.TimeZone = $value }
-                        'Total Physical Memory' { $systemInfoData.TotalPhysicalMemory = $value }
-                        'Available Physical Memory' { $systemInfoData.AvailablePhysicalMemory = $value }
-                        'Virtual Memory: Max Size' { $systemInfoData.VirtualMemoryMax = $value }
-                        'Virtual Memory: Available' { $systemInfoData.VirtualMemoryAvailable = $value }
-                        'Virtual Memory: In Use' { $systemInfoData.VirtualMemoryInUse = $value }
-                        'Page File Location(s)' { $systemInfoData.PageFileLocation = $value }
-                        'Domain' { $systemInfoData.Domain = $value }
-                        'Logon Server' { $systemInfoData.LogonServer = $value }
-                        'Hyper-V Requirements' { $systemInfoData.HyperVRequirements = $value }
+                        'OS Name' { 
+                            $systemInfoData.OSName = $value 
+                            Write-Verbose "Captured OS Name: $value"
+                        }
+                        'OS Version' { 
+                            $systemInfoData.OSVersion = $value 
+                            Write-Verbose "Captured OS Version: $value"
+                        }
+                        'OS Manufacturer' { 
+                            $systemInfoData.OSManufacturer = $value 
+                            Write-Verbose "Captured OS Manufacturer: $value"
+                        }
+                        'OS Configuration' { 
+                            $systemInfoData.OSConfiguration = $value 
+                            Write-Verbose "Captured OS Configuration: $value"
+                        }
+                        'OS Build Type' { 
+                            $systemInfoData.OSBuildType = $value 
+                            Write-Verbose "Captured OS Build Type: $value"
+                        }
+                        'Registered Owner' { 
+                            $systemInfoData.RegisteredOwner = $value 
+                            Write-Verbose "Captured Registered Owner: $value"
+                        }
+                        'Registered Organization' { 
+                            $systemInfoData.RegisteredOrganization = $value 
+                            Write-Verbose "Captured Registered Organization: $value"
+                        }
+                        'Product ID' { 
+                            $systemInfoData.ProductID = $value 
+                            Write-Verbose "Captured Product ID: $value"
+                        }
+                        'Original Install Date' { 
+                            $systemInfoData.InstallDate = $value 
+                            Write-Verbose "Captured Install Date: $value"
+                        }
+                        'System Boot Time' { 
+                            $systemInfoData.BootTime = $value 
+                            Write-Verbose "Captured Boot Time: $value"
+                        }
+                        'System Manufacturer' { 
+                            $systemInfoData.SystemManufacturer = $value 
+                            Write-Verbose "Captured System Manufacturer: $value"
+                        }
+                        'System Model' { 
+                            $systemInfoData.SystemModel = $value 
+                            Write-Verbose "Captured System Model: $value"
+                        }
+                        'System Type' { 
+                            $systemInfoData.SystemType = $value 
+                            Write-Verbose "Captured System Type: $value"
+                        }
+                        'Processor(s)' { 
+                            $systemInfoData.ProcessorCount = $value 
+                            Write-Verbose "Captured Processor Count: $value"
+                        }
+                        'BIOS Version' { 
+                            $systemInfoData.BIOSVersion = $value 
+                            Write-Verbose "Captured BIOS Version: $value"
+                        }
+                        'Windows Directory' { 
+                            $systemInfoData.WindowsDirectory = $value 
+                            Write-Verbose "Captured Windows Directory: $value"
+                        }
+                        'System Directory' { 
+                            $systemInfoData.SystemDirectory = $value 
+                            Write-Verbose "Captured System Directory: $value"
+                        }
+                        'Boot Device' { 
+                            $systemInfoData.BootDevice = $value 
+                            Write-Verbose "Captured Boot Device: $value"
+                        }
+                        'System Locale' { 
+                            $systemInfoData.SystemLocale = $value 
+                            Write-Verbose "Captured System Locale: $value"
+                        }
+                        'Input Locale' { 
+                            $systemInfoData.InputLocale = $value 
+                            Write-Verbose "Captured Input Locale: $value"
+                        }
+                        'Time Zone' { 
+                            $systemInfoData.TimeZone = $value 
+                            Write-Verbose "Captured Time Zone: $value"
+                        }
+                        'Total Physical Memory' { 
+                            $systemInfoData.TotalPhysicalMemory = $value 
+                            Write-Verbose "Captured Total Physical Memory: $value"
+                        }
+                        'Available Physical Memory' { 
+                            $systemInfoData.AvailablePhysicalMemory = $value 
+                            Write-Verbose "Captured Available Physical Memory: $value"
+                        }
+                        'Virtual Memory: Max Size' { 
+                            $systemInfoData.VirtualMemoryMax = $value 
+                            Write-Verbose "Captured Virtual Memory Max: $value"
+                        }
+                        'Virtual Memory: Available' { 
+                            $systemInfoData.VirtualMemoryAvailable = $value 
+                            Write-Verbose "Captured Virtual Memory Available: $value"
+                        }
+                        'Virtual Memory: In Use' { 
+                            $systemInfoData.VirtualMemoryInUse = $value 
+                            Write-Verbose "Captured Virtual Memory In Use: $value"
+                        }
+                        'Page File Location(s)' { 
+                            $systemInfoData.PageFileLocation = $value 
+                            Write-Verbose "Captured Page File Location: $value"
+                        }
+                        'Domain' { 
+                            $systemInfoData.Domain = $value 
+                            Write-Verbose "Captured Domain: $value"
+                        }
+                        'Logon Server' { 
+                            $systemInfoData.LogonServer = $value 
+                            Write-Verbose "Captured Logon Server: $value"
+                        }
+                        'Hyper-V Requirements' { 
+                            $systemInfoData.HyperVRequirements = $value 
+                            Write-Verbose "Captured Hyper-V Requirements: $value"
+                        }
+                        default {
+                            Write-Verbose "Unhandled systeminfo key: $key = $value"
+                        }
                     }
                 }
                 # Collect processor details (they appear after "Processor(s):" line)
@@ -659,6 +766,7 @@ function Hunt-ForensicDump {
                         $systemInfoData.ProcessorDetails = @()
                     }
                     $systemInfoData.ProcessorDetails += $procDetails
+                    Write-Verbose "Captured Processor[$procIndex]: $procDetails"
                 }
             }
             
@@ -690,12 +798,23 @@ function Hunt-ForensicDump {
             if ($hotfixes.Count -gt 0) {
                 $systemInfoData.Hotfixes = $hotfixes
                 $systemInfoData.HotfixCount = $hotfixes.Count
+                Write-Verbose "Captured $($hotfixes.Count) hotfixes"
+            }
+            
+            Write-Verbose "systeminfo parsing complete. Captured $($systemInfoData.Count) data points"
+            
+            # Debug: List all captured keys
+            if ($systemInfoData.Count -gt 0) {
+                Write-Verbose "Captured keys: $($systemInfoData.Keys -join ', ')"
+            } else {
+                Write-Warning "systeminfo parsing captured NO data - this will result in 'N/A' values in the report"
             }
             
             return $systemInfoData
         }
         catch {
-            Write-Verbose "systeminfo parsing error: $($_.Exception.Message)"
+            Write-Warning "systeminfo parsing error: $($_.Exception.Message)"
+            Write-Verbose "Stack trace: $($_.ScriptStackTrace)"
             return @{}
         }
     }
@@ -1308,9 +1427,9 @@ function Hunt-ForensicDump {
         param(
             [string]$OutputDir
         )
-    
+
         $sysInfo = @{}
-    
+
         try {
             Write-Host "  [-] Gathering basic system info..." -ForegroundColor DarkGray
             $sysInfo.ComputerInfo = Get-ComputerInfo -ErrorAction SilentlyContinue
@@ -1318,6 +1437,13 @@ function Hunt-ForensicDump {
 
             Write-Host "  [-] Running systeminfo command..." -ForegroundColor DarkGray
             $sysInfo.SystemInfoCmd = Get-SystemInfoCommand
+            
+            # Diagnostic: Check if SystemInfoCmd was populated
+            if ($sysInfo.SystemInfoCmd -and $sysInfo.SystemInfoCmd.Count -gt 0) {
+                Write-Host "  [+] Captured $($sysInfo.SystemInfoCmd.Count) systeminfo data points" -ForegroundColor Green
+            } else {
+                Write-Host "  [!] WARNING: systeminfo command returned no data - run with -Verbose to diagnose" -ForegroundColor Yellow
+            }
         
             Write-Host "  [-] Checking domain status..." -ForegroundColor DarkGray
             try {
@@ -1669,7 +1795,7 @@ function Hunt-ForensicDump {
         catch {
             Write-Warning "System information collection error: $($_.Exception.Message)"
         }
-    
+
         return $sysInfo
     }
     function ConvertTo-DateTime {
