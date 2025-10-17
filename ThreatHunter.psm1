@@ -308,27 +308,94 @@ function Hunt-ForensicDump {
                         $providerGuid = $provider.PSChildName
                         $clsidPath = "HKLM:\SOFTWARE\Classes\CLSID\$providerGuid"
                         $providerName = "Unknown"
+                        $dllPath = "N/A"
+                        $threadingModel = "N/A"
                         
                         if (Test-Path $clsidPath) {
+                            # Get the provider name from the default value
                             $clsidKey = Get-ItemProperty -Path $clsidPath -ErrorAction SilentlyContinue
                             if ($clsidKey -and $clsidKey.PSObject.Properties['(default)']) {
                                 $providerName = $clsidKey.'(default)'
                             }
+                            
+                            # Get the DLL path from InprocServer32
+                            $inprocPath = "$clsidPath\InprocServer32"
+                            if (Test-Path $inprocPath) {
+                                $inprocKey = Get-ItemProperty -Path $inprocPath -ErrorAction SilentlyContinue
+                                if ($inprocKey) {
+                                    if ($inprocKey.PSObject.Properties['(default)']) {
+                                        $dllPath = $inprocKey.'(default)'
+                                    }
+                                    if ($inprocKey.PSObject.Properties['ThreadingModel']) {
+                                        $threadingModel = $inprocKey.ThreadingModel
+                                    }
+                                }
+                            }
+                        }
+                        
+                        # Check if DLL exists on disk
+                        $dllExists = $false
+                        $dllSize = 0
+                        if ($dllPath -ne "N/A" -and (Test-Path $dllPath -ErrorAction SilentlyContinue)) {
+                            $dllExists = $true
+                            $dllFile = Get-Item $dllPath -ErrorAction SilentlyContinue
+                            if ($dllFile) {
+                                $dllSize = [math]::Round($dllFile.Length / 1KB, 2)
+                            }
                         }
                         
                         $amsiProviders += [PSCustomObject]@{
-                            GUID = $providerGuid
-                            Name = $providerName
+                            GUID           = $providerGuid
+                            Name           = $providerName
+                            DLLPath        = $dllPath
+                            DLLExists      = $dllExists
+                            DLLSizeKB      = $dllSize
+                            ThreadingModel = $threadingModel
                         }
                     }
                     catch {
+                        Write-Verbose "Error processing AMSI provider $providerGuid : $($_.Exception.Message)"
                         continue
                     }
                 }
             }
+            
+            # Also check for loaded AMSI DLLs in running processes
+            try {
+                $loadedAMSI = @()
+                $processes = Get-Process -ErrorAction SilentlyContinue
+                foreach ($proc in $processes) {
+                    try {
+                        $modules = $proc.Modules | Where-Object { $_.ModuleName -like "*amsi*" -or $_.ModuleName -like "*guard*" }
+                        foreach ($mod in $modules) {
+                            $loadedAMSI += [PSCustomObject]@{
+                                ProcessName = $proc.Name
+                                ProcessId   = $proc.Id
+                                ModuleName  = $mod.ModuleName
+                                ModulePath  = $mod.FileName
+                            }
+                        }
+                    }
+                    catch {
+                        # Access denied for some processes - continue
+                        continue
+                    }
+                }
+                
+                # Add loaded AMSI info to provider list if found
+                if ($loadedAMSI.Count -gt 0) {
+                    $uniqueLoaded = $loadedAMSI | Select-Object ModuleName, ModulePath -Unique
+                    Write-Verbose "Found $($uniqueLoaded.Count) unique AMSI DLLs loaded in processes"
+                }
+            }
+            catch {
+                Write-Verbose "Could not enumerate loaded AMSI modules: $($_.Exception.Message)"
+            }
+            
             return $amsiProviders
         }
         catch {
+            Write-Verbose "AMSI provider enumeration failed: $($_.Exception.Message)"
             return @()
         }
     }
@@ -745,57 +812,75 @@ function Hunt-ForensicDump {
     function Get-LoggedInUsers {
         try {
             $users = @()
+            $processedUsers = @{}
             
-            # Try quser command with better parsing
+            # Method 1: Try quser command (most reliable for active sessions)
             try {
                 $quserOutput = quser 2>&1
                 if ($LASTEXITCODE -eq 0 -and $quserOutput) {
+                    # Skip header line
                     $lines = $quserOutput | Select-Object -Skip 1
+                    
                     foreach ($line in $lines) {
-                        # Handle both disconnected and active sessions
-                        # Format: USERNAME SESSIONNAME ID STATE IDLE TIME LOGON TIME
-                        # The > character indicates current session
-                        $cleanLine = $line -replace '^>', ''
+                        if ([string]::IsNullOrWhiteSpace($line)) { continue }
                         
-                        # Split by whitespace, handling variable spacing
-                        $parts = $cleanLine -split '\s+' | Where-Object { $_ -ne '' }
+                        # Remove the > character that indicates current session
+                        $line = $line.TrimStart('>')
                         
-                        if ($parts.Count -ge 4) {
-                            $username = $parts[0]
+                        # quser output format (columns can vary):
+                        # USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME
+                        # Sometimes SESSIONNAME is blank (Disc state), making parsing tricky
+                        
+                        # Use regex to parse more reliably
+                        # Pattern: USERNAME (spaces) SESSIONNAME or blank (spaces) ID (spaces) STATE (spaces) rest
+                        if ($line -match '^\s*(\S+)\s+(\S*)\s+(\d+)\s+(\S+)\s+(.*)$') {
+                            $username = $matches[1]
+                            $sessionName = if ([string]::IsNullOrWhiteSpace($matches[2]) -or $matches[2] -eq 'Disc') { 
+                                "Disconnected" 
+                            }
+                            else { 
+                                $matches[2] 
+                            }
+                            $sessionId = $matches[3]
+                            $state = $matches[4]
+                            $restOfLine = $matches[5].Trim()
                             
-                            # Determine if sessionname is present (console, rdp-tcp#X, etc)
-                            $hasSessionName = $parts[1] -match '^(console|rdp-tcp|services)' -or $parts[1] -match '^\d+$'
+                            # Parse idle time and logon time from rest of line
+                            # Format is usually: IDLE_TIME LOGON_TIME
+                            # Idle time can be: ".", "none", "1", "2:30", "3+01:45"
+                            # Logon time is typically: "1/15/2025 3:45 PM"
                             
-                            if ($hasSessionName) {
-                                if ($parts[1] -match '^\d+$') {
-                                    # No session name, parts[1] is ID
-                                    $sessionName = "Console"
-                                    $id = $parts[1]
-                                    $state = $parts[2]
-                                    $idleTime = if ($parts.Count -gt 3) { $parts[3..($parts.Count - 1)] -join ' ' } else { "." }
+                            $idleTime = "."
+                            $logonTime = "Unknown"
+                            
+                            # Split on multiple spaces to separate idle from logon time
+                            $timeParts = $restOfLine -split '\s{2,}'
+                            if ($timeParts.Count -ge 2) {
+                                $idleTime = $timeParts[0]
+                                $logonTime = ($timeParts[1..($timeParts.Count - 1)] -join ' ').Trim()
+                            }
+                            elseif ($timeParts.Count -eq 1) {
+                                # Could be just idle time or just logon time
+                                if ($timeParts[0] -match '^\d|^none|^\.|^\+') {
+                                    $idleTime = $timeParts[0]
                                 }
                                 else {
-                                    # Has session name
-                                    $sessionName = $parts[1]
-                                    $id = $parts[2]
-                                    $state = $parts[3]
-                                    $idleTime = if ($parts.Count -gt 4) { $parts[4..($parts.Count - 1)] -join ' ' } else { "." }
+                                    $logonTime = $timeParts[0]
                                 }
                             }
-                            else {
-                                # Disconnected session format
-                                $sessionName = "Disconnected"
-                                $id = $parts[1]
-                                $state = $parts[2]
-                                $idleTime = if ($parts.Count -gt 3) { $parts[3..($parts.Count - 1)] -join ' ' } else { "." }
-                            }
                             
-                            $users += [PSCustomObject]@{
-                                Username    = $username
-                                SessionName = $sessionName
-                                ID          = $id
-                                State       = $state
-                                IdleTime    = $idleTime
+                            $userKey = "$username-$sessionId"
+                            if (-not $processedUsers.ContainsKey($userKey)) {
+                                $users += [PSCustomObject]@{
+                                    Username    = $username
+                                    SessionName = $sessionName
+                                    ID          = $sessionId
+                                    State       = $state
+                                    IdleTime    = $idleTime
+                                    LogonTime   = $logonTime
+                                    Source      = "quser"
+                                }
+                                $processedUsers[$userKey] = $true
                             }
                         }
                     }
@@ -805,39 +890,101 @@ function Hunt-ForensicDump {
                 Write-Verbose "quser command failed: $($_.Exception.Message)"
             }
             
-            # Fallback: Get interactive console sessions from Win32_LogonSession
-            if ($users.Count -eq 0) {
-                try {
-                    $logonSessions = Get-CimInstance -ClassName Win32_LogonSession -Filter "LogonType=2 OR LogonType=10" -ErrorAction SilentlyContinue
-                    foreach ($session in $logonSessions) {
+            # Method 2: Win32_LogonSession for additional sessions (network, service, etc.)
+            try {
+                # LogonType: 2=Interactive, 3=Network, 4=Batch, 5=Service, 7=Unlock, 8=NetworkCleartext, 9=NewCredentials, 10=RemoteInteractive, 11=CachedInteractive
+                $logonSessions = Get-CimInstance -ClassName Win32_LogonSession -ErrorAction SilentlyContinue | 
+                Where-Object { $_.LogonType -in @(2, 10, 11) }  # Interactive, RDP, CachedInteractive
+                
+                foreach ($session in $logonSessions) {
+                    try {
                         $logonUser = Get-CimInstance -ClassName Win32_LoggedOnUser -ErrorAction SilentlyContinue | 
                         Where-Object { $_.Dependent.LogonId -eq $session.LogonId } | 
                         Select-Object -First 1
                         
                         if ($logonUser) {
-                            $username = "$($logonUser.Antecedent.Domain)\$($logonUser.Antecedent.Name)"
+                            $domain = $logonUser.Antecedent.Domain
+                            $name = $logonUser.Antecedent.Name
+                            $username = if ($domain) { "$domain\$name" } else { $name }
+                            $sessionId = $session.LogonId
+                            
                             $logonType = switch ($session.LogonType) {
                                 2 { "Interactive" }
                                 10 { "RemoteInteractive" }
-                                default { "Other" }
+                                11 { "CachedInteractive" }
+                                default { "Type$($session.LogonType)" }
                             }
                             
-                            $users += [PSCustomObject]@{
-                                Username    = $username
-                                SessionName = $logonType
-                                ID          = $session.LogonId
-                                State       = "Active"
-                                IdleTime    = "Unknown"
+                            $logonTimeStr = "Unknown"
+                            if ($session.StartTime) {
+                                try {
+                                    $logonTimeStr = $session.StartTime.ToString("yyyy-MM-dd HH:mm:ss")
+                                }
+                                catch {
+                                    $logonTimeStr = $session.StartTime.ToString()
+                                }
+                            }
+                            
+                            # Check if we already have this user from quser
+                            $userKey = "$username-$sessionId"
+                            if (-not $processedUsers.ContainsKey($userKey)) {
+                                $users += [PSCustomObject]@{
+                                    Username    = $username
+                                    SessionName = $logonType
+                                    ID          = $sessionId
+                                    State       = "Active"
+                                    IdleTime    = "Unknown"
+                                    LogonTime   = $logonTimeStr
+                                    Source      = "WMI"
+                                }
+                                $processedUsers[$userKey] = $true
                             }
                         }
                     }
-                }
-                catch {
-                    Write-Verbose "Win32_LogonSession fallback failed: $($_.Exception.Message)"
+                    catch {
+                        Write-Verbose "Error processing logon session $($session.LogonId): $($_.Exception.Message)"
+                        continue
+                    }
                 }
             }
+            catch {
+                Write-Verbose "Win32_LogonSession enumeration failed: $($_.Exception.Message)"
+            }
             
-            return $users | Sort-Object Username -Unique
+            # Method 3: Get-CimInstance Win32_ComputerSystem for current console user
+            try {
+                $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
+                if ($computerSystem -and $computerSystem.UserName) {
+                    $consoleUser = $computerSystem.UserName
+                    
+                    # Check if we already have this user
+                    $alreadyExists = $users | Where-Object { $_.Username -eq $consoleUser }
+                    
+                    if (-not $alreadyExists) {
+                        $users += [PSCustomObject]@{
+                            Username    = $consoleUser
+                            SessionName = "Console"
+                            ID          = "0"
+                            State       = "Active"
+                            IdleTime    = "Unknown"
+                            LogonTime   = "Unknown"
+                            Source      = "ComputerSystem"
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Win32_ComputerSystem query failed: $($_.Exception.Message)"
+            }
+            
+            # Sort and return unique users
+            if ($users.Count -gt 0) {
+                return $users | Sort-Object Username, ID
+            }
+            else {
+                Write-Verbose "No logged in users detected by any method"
+                return @()
+            }
         }
         catch {
             Write-Verbose "Get-LoggedInUsers failed: $($_.Exception.Message)"
@@ -1973,6 +2120,7 @@ function Hunt-ForensicDump {
             --bg-primary: #1a1a1a;
             --bg-secondary: #2c2c2c;
             --bg-tertiary: #333;
+            --bg-quaternary: #2a2a2a;
             --bg-header: linear-gradient(135deg, #2c3e50, #34495e);
             --bg-card: linear-gradient(135deg, #34495e, #2c3e50);
             --text-primary: #e0e0e0;
@@ -1989,12 +2137,17 @@ function Hunt-ForensicDump {
             --hover-bg: #3a3a3a;
             --table-header: #34495e;
             --table-header-hover: #415b76;
+            --input-bg: #1a1a1a;
+            --input-border: #555;
+            --button-bg: #34495e;
+            --shadow: rgba(0, 0, 0, 0.4);
         }
         
         [data-theme="light"] {
             --bg-primary: #f5f5f5;
             --bg-secondary: #ffffff;
             --bg-tertiary: #f0f0f0;
+            --bg-quaternary: #fafafa;
             --bg-header: linear-gradient(135deg, #4a90e2, #357abd);
             --bg-card: linear-gradient(135deg, #5a9fd4, #4a90e2);
             --text-primary: #2c3e50;
@@ -2011,6 +2164,10 @@ function Hunt-ForensicDump {
             --hover-bg: #e8e8e8;
             --table-header: #4a90e2;
             --table-header-hover: #5a9fd4;
+            --input-bg: #ffffff;
+            --input-border: #ccc;
+            --button-bg: #4a90e2;
+            --shadow: rgba(0, 0, 0, 0.1);
         }
         
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -2315,7 +2472,7 @@ function Hunt-ForensicDump {
     
     <div class="tab-container">
         <div class="tabs">
-            <button class="tab-button active" onclick="showTab('summary')">Summary</button>
+            <button class="tab-button active" onclick="showTab('overview')">Overview</button>
             <button class="tab-button" onclick="showTab('sysinfo')">System Info</button>
             <button class="tab-button" onclick="showTab('persistence')">Persistence ($($stats.Persistence))</button>
             <button class="tab-button" onclick="showTab('registry')">Registry ($($stats.Registry))</button>
@@ -2331,7 +2488,7 @@ function Hunt-ForensicDump {
     </div>
     
     <div class="container">
-        <div id="summary-tab" class="tab-content active">
+        <div id="overview-tab" class="tab-content active">
             <h2 style="color: #3498db; margin-bottom: 20px;">System Overview</h2>
             <div class="sysinfo-grid">
                 <div class="sysinfo-card">
@@ -2580,7 +2737,7 @@ $(
             </div>
             
             <div class="section-card">
-                <h3>Currently Logged In Users</h3>
+                <h3>Currently Logged In Users ($(if ($ForensicData.SystemInfo.CurrentlyLoggedIn) { $ForensicData.SystemInfo.CurrentlyLoggedIn.Count } else { 0 }) sessions)</h3>
                 <div class="table-wrapper">
                     <table id="loggedin-table">
                         <thead>
@@ -2590,6 +2747,7 @@ $(
                                 <th onclick="sortSystemTable('loggedin-table', 2)" style="position: relative;">Session ID<div class="resizer"></div></th>
                                 <th onclick="sortSystemTable('loggedin-table', 3)" style="position: relative;">State<div class="resizer"></div></th>
                                 <th onclick="sortSystemTable('loggedin-table', 4)" style="position: relative;">Idle Time<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('loggedin-table', 5)" style="position: relative;">Logon Time<div class="resizer"></div></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -2599,11 +2757,12 @@ $(
         foreach ($loggedUser in $ForensicData.SystemInfo.CurrentlyLoggedIn) {
             $username = [System.Web.HttpUtility]::HtmlEncode($loggedUser.Username)
             $sessionName = [System.Web.HttpUtility]::HtmlEncode($loggedUser.SessionName)
-            $loggedHtml += "                            <tr><td>$username</td><td>$sessionName</td><td>$($loggedUser.ID)</td><td>$($loggedUser.State)</td><td>$($loggedUser.IdleTime)</td></tr>`n"
+            $logonTime = if ($loggedUser.PSObject.Properties['LogonTime']) { $loggedUser.LogonTime } else { "Unknown" }
+            $loggedHtml += "                            <tr><td>$username</td><td>$sessionName</td><td>$($loggedUser.ID)</td><td>$($loggedUser.State)</td><td>$($loggedUser.IdleTime)</td><td>$logonTime</td></tr>`n"
         }
         $loggedHtml
     } else {
-        "                            <tr><td colspan='5' style='text-align: center; color: #95a5a6;'>No users currently logged in</td></tr>"
+        "                            <tr><td colspan='6' style='text-align: center; color: #95a5a6;'>No users currently logged in (or detection failed)</td></tr>"
     }
 )
                         </tbody>
@@ -2641,53 +2800,7 @@ $(
         "                <p style='color: #95a5a6;'>No Run MRU entries found.</p>"
     }
 )
-            </div>
-            
-            <div class="section-card">
-                <h3>Browser Extensions ($($ForensicData.SystemInfo.BrowserExtensions.Count) extensions)</h3>
-                <div class="table-controls">
-                    <input type="text" id="extensions-search" placeholder="Search extensions..." onkeyup="filterSystemTable('extensions-table')">
-                </div>
-                <div class="table-wrapper">
-                    <table id="extensions-table">
-                        <thead>
-                            <tr>
-                                <th onclick="sortSystemTable('extensions-table', 0)" style="position: relative;">User<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('extensions-table', 1)" style="position: relative;">Browser<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('extensions-table', 2)" style="position: relative;">Profile<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('extensions-table', 3)" style="position: relative;">Name<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('extensions-table', 4)" style="position: relative;">Version<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('extensions-table', 5)" style="position: relative;">Extension ID<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('extensions-table', 6)" style="position: relative;">Description<div class="resizer"></div></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-$(
-    if ($ForensicData.SystemInfo.BrowserExtensions -and $ForensicData.SystemInfo.BrowserExtensions.Count -gt 0) {
-        $extHtml = ""
-        foreach ($ext in $ForensicData.SystemInfo.BrowserExtensions | Select-Object -First 200) {
-            $user = [System.Web.HttpUtility]::HtmlEncode($ext.User)
-            $browser = [System.Web.HttpUtility]::HtmlEncode($ext.Browser)
-            $profile = [System.Web.HttpUtility]::HtmlEncode($ext.Profile)
-            $name = [System.Web.HttpUtility]::HtmlEncode($ext.Name)
-            $version = [System.Web.HttpUtility]::HtmlEncode($ext.Version)
-            $extId = [System.Web.HttpUtility]::HtmlEncode($ext.ID)
-            $desc = if ($ext.Description) { [System.Web.HttpUtility]::HtmlEncode($ext.Description) } else { "" }
-            $extHtml += "                            <tr><td>$user</td><td>$browser</td><td style='font-size: 0.85em;'>$profile</td><td><strong>$name</strong></td><td style='text-align: center;'>$version</td><td style='font-family: Consolas, monospace; font-size: 0.75em; max-width: 200px; overflow: hidden; text-overflow: ellipsis;' title='$extId'>$extId</td><td style='font-size: 0.85em; max-width: 300px; overflow: hidden; text-overflow: ellipsis;' title='$desc'>$desc</td></tr>`n"
-        }
-        $extHtml
-    } else {
-        "                            <tr><td colspan='7' style='text-align: center; color: #95a5a6;'>No browser extensions found</td></tr>"
-    }
-)
-                        </tbody>
-                    </table>
-                </div>
-                $(if ($ForensicData.SystemInfo.BrowserExtensions -and $ForensicData.SystemInfo.BrowserExtensions.Count -gt 200) {
-                    "<p style='color: #f39c12; margin-top: 10px;'>Showing first 200 of $($ForensicData.SystemInfo.BrowserExtensions.Count) extensions. See CSV for complete data.</p>"
-                })
-            </div>
-            
+            </div>          
             <div class="section-card">
                 <h3>AMSI Providers ($($ForensicData.SystemInfo.AMSIProviders.Count) providers)</h3>
                 <div class="table-wrapper">
@@ -2695,7 +2808,10 @@ $(
                         <thead>
                             <tr>
                                 <th onclick="sortSystemTable('amsi-table', 0)" style="position: relative;">Provider Name<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('amsi-table', 1)" style="position: relative;">GUID<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('amsi-table', 1)" style="position: relative;">DLL Path<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('amsi-table', 2)" style="position: relative;">Exists<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('amsi-table', 3)" style="position: relative;">Size (KB)<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('amsi-table', 4)" style="position: relative;">GUID<div class="resizer"></div></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -2704,12 +2820,15 @@ $(
         $amsiHtml = ""
         foreach ($provider in $ForensicData.SystemInfo.AMSIProviders) {
             $name = [System.Web.HttpUtility]::HtmlEncode($provider.Name)
+            $dllPath = if ($provider.DLLPath) { [System.Web.HttpUtility]::HtmlEncode($provider.DLLPath) } else { "N/A" }
+            $dllExists = if ($provider.DLLExists) { "<span style='color: #2ecc71;'>Yes</span>" } else { "<span style='color: #e74c3c;'>No</span>" }
+            $dllSize = if ($provider.DLLSizeKB -and $provider.DLLSizeKB -gt 0) { $provider.DLLSizeKB } else { "N/A" }
             $guid = [System.Web.HttpUtility]::HtmlEncode($provider.GUID)
-            $amsiHtml += "                            <tr><td>$name</td><td style='font-family: Consolas, monospace; font-size: 0.85em;'>$guid</td></tr>`n"
+            $amsiHtml += "                            <tr><td><strong>$name</strong></td><td style='font-family: Consolas, monospace; font-size: 0.8em; max-width: 400px; overflow: hidden; text-overflow: ellipsis;' title='$dllPath'>$dllPath</td><td style='text-align: center;'>$dllExists</td><td style='text-align: center;'>$dllSize</td><td style='font-family: Consolas, monospace; font-size: 0.75em;'>$guid</td></tr>`n"
         }
         $amsiHtml
     } else {
-        "                            <tr><td colspan='2' style='text-align: center; color: #95a5a6;'>No AMSI providers detected</td></tr>"
+        "                            <tr><td colspan='5' style='text-align: center; color: #95a5a6;'>No AMSI providers detected</td></tr>"
     }
 )
                         </tbody>
@@ -2803,6 +2922,52 @@ $(
         
         <div id="browser-tab" class="tab-content">
             <div id="browser-content"></div>
+            
+            <div class="section-card" style="margin-top: 20px;">
+                <h3>Browser Extensions ($($ForensicData.SystemInfo.BrowserExtensions.Count) extensions)</h3>
+                <p style="color: var(--text-muted); margin-bottom: 15px;">Installed browser extensions across all users and browsers on this system.</p>
+                <div class="table-controls">
+                    <input type="text" id="extensions-search" placeholder="Search extensions..." onkeyup="filterSystemTable('extensions-table')">
+                </div>
+                <div class="table-wrapper">
+                    <table id="extensions-table">
+                        <thead>
+                            <tr>
+                                <th onclick="sortSystemTable('extensions-table', 0)" style="position: relative;">User<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('extensions-table', 1)" style="position: relative;">Browser<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('extensions-table', 2)" style="position: relative;">Profile<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('extensions-table', 3)" style="position: relative;">Name<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('extensions-table', 4)" style="position: relative;">Version<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('extensions-table', 5)" style="position: relative;">Extension ID<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('extensions-table', 6)" style="position: relative;">Description<div class="resizer"></div></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+$(
+    if ($ForensicData.SystemInfo.BrowserExtensions -and $ForensicData.SystemInfo.BrowserExtensions.Count -gt 0) {
+        $extHtml = ""
+        foreach ($ext in $ForensicData.SystemInfo.BrowserExtensions | Select-Object -First 200) {
+            $user = [System.Web.HttpUtility]::HtmlEncode($ext.User)
+            $browser = [System.Web.HttpUtility]::HtmlEncode($ext.Browser)
+            $profile = [System.Web.HttpUtility]::HtmlEncode($ext.Profile)
+            $name = [System.Web.HttpUtility]::HtmlEncode($ext.Name)
+            $version = [System.Web.HttpUtility]::HtmlEncode($ext.Version)
+            $extId = [System.Web.HttpUtility]::HtmlEncode($ext.ID)
+            $desc = if ($ext.Description) { [System.Web.HttpUtility]::HtmlEncode($ext.Description) } else { "" }
+            $extHtml += "                            <tr><td>$user</td><td>$browser</td><td style='font-size: 0.85em;'>$profile</td><td><strong>$name</strong></td><td style='text-align: center;'>$version</td><td style='font-family: Consolas, monospace; font-size: 0.75em; max-width: 200px; overflow: hidden; text-overflow: ellipsis;' title='$extId'>$extId</td><td style='font-size: 0.85em; max-width: 300px; overflow: hidden; text-overflow: ellipsis;' title='$desc'>$desc</td></tr>`n"
+        }
+        $extHtml
+    } else {
+        "                            <tr><td colspan='7' style='text-align: center; color: #95a5a6;'>No browser extensions found</td></tr>"
+    }
+)
+                        </tbody>
+                    </table>
+                </div>
+                $(if ($ForensicData.SystemInfo.BrowserExtensions -and $ForensicData.SystemInfo.BrowserExtensions.Count -gt 200) {
+                    "<p style='color: #f39c12; margin-top: 10px;'>Showing first 200 of $($ForensicData.SystemInfo.BrowserExtensions.Count) extensions. See CSV for complete data.</p>"
+                })
+            </div>
         </div>
         
         <div id="services-tab" class="tab-content">
@@ -2842,9 +3007,9 @@ $(
             <div class="csv-section">
                 <h2 style="color: #3498db; margin-bottom: 15px;">Display Settings</h2>
                 <p style="margin-bottom: 20px; color: #bdc3c7;">Adjust how data is displayed in tables. Changes apply immediately without regenerating the report.</p>
-                
+                <div style="background: var(--bg-tertiary); padding: 20px; border-radius: 8px; max-width: 700px;">
                 <div style="background: #333; padding: 20px; border-radius: 8px; max-width: 700px;">
-                    <div style="background: #2c3e50; padding: 15px; border-radius: 6px; margin-bottom: 20px; border-left: 4px solid #3498db;">
+                    <div style="background: var(--bg-quaternary); padding: 15px; border-radius: 6px; margin-bottom: 20px; border-left: 4px solid var(--accent-blue);">
                         <p style="color: #bdc3c7; font-size: 0.9em; margin: 0; line-height: 1.6;">
                             All forensic data is embedded in this HTML report. Changing these settings will re-process 
                             and re-display the data with your new limits.
@@ -2859,14 +3024,14 @@ $(
                             Control how many records appear in each table. Set to 0 for unlimited (may be slow with large datasets).
                         </p>
                         <input type="number" id="settings-maxrows" value="$MaxRows" min="0" step="100" 
-                            style="width: 100%; padding: 10px; background: #1a1a1a; border: 1px solid #555; color: #fff; border-radius: 4px; font-size: 1em;">
+                            style="width: 100%; padding: 10px; background: var(--input-bg); border: 1px solid var(--input-border); color: var(--text-primary); border-radius: 4px; font-size: 1em;">
                         <div style="display: flex; justify-content: space-between; margin-top: 8px;">
                             <p style="color: #7f8c8d; font-size: 0.85em; margin: 0;">
                                 Current: <span id="current-maxrows" style="color: #3498db; font-weight: bold;">$(if ($MaxRows -eq 0) { 'Unlimited' } else { $MaxRows })</span> records
                             </p>
                             <div>
                                 <button onclick="document.getElementById('settings-maxrows').value=1000" 
-                                    style="padding: 4px 8px; background: #34495e; color: #fff; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em; margin-left: 5px;">1K</button>
+                                    style="padding: 4px 8px; background: var(--button-bg); color: #fff; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em; margin-left: 5px;">1K</button>
                                 <button onclick="document.getElementById('settings-maxrows').value=5000" 
                                     style="padding: 4px 8px; background: #34495e; color: #fff; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em; margin-left: 5px;">5K</button>
                                 <button onclick="document.getElementById('settings-maxrows').value=0" 
@@ -2883,7 +3048,7 @@ $(
                             Maximum characters per cell before truncation. Hover over truncated cells to see full content.
                         </p>
                         <input type="number" id="settings-maxchars" value="$MaxChars" min="50" step="50" 
-                            style="width: 100%; padding: 10px; background: #1a1a1a; border: 1px solid #555; color: #fff; border-radius: 4px; font-size: 1em;">
+                            style="width: 100%; padding: 10px; background: var(--input-bg); border: 1px solid var(--input-border); color: var(--text-primary); border-radius: 4px; font-size: 1em;">
                         <div style="display: flex; justify-content: space-between; margin-top: 8px;">
                             <p style="color: #7f8c8d; font-size: 0.85em; margin: 0;">
                                 Current: <span id="current-maxchars" style="color: #3498db; font-weight: bold;">$MaxChars</span> characters
@@ -2948,7 +3113,7 @@ $(
         var loadedData = {};
         var sortState = {};
         var systemSortState = {};
-        var currentTab = 'summary';
+        var currentTab = 'overview';
 
         function showTab(tabName) {
             var tabs = document.querySelectorAll('.tab-content');
@@ -3991,14 +4156,34 @@ $(
                     Write-Host "  [-] Enumerating custom log providers..." -ForegroundColor DarkGray
                     $allLogs = Get-WinEvent -ListLog * -ErrorAction SilentlyContinue
                     if ($allLogs) {
+                        # Get all logs in Applications and Services Logs that are NOT Microsoft or built-in Windows logs
+                        # This captures custom application log providers regardless of their nested folder structure
                         $customLogs = $allLogs | Where-Object { 
+                            # Check if it's in Applications and Services Logs
                             $_.LogName -like "Applications and Services Logs/*" -and 
-                            $_.LogName -notlike "*Microsoft*" -and
-                            $_.RecordCount -gt 0
+                            # Exclude Microsoft logs
+                            $_.LogName -notlike "*Microsoft*" -and 
+                            $_.LogName -notlike "*Windows*" -and
+                            # Exclude known built-in logs
+                            $_.LogName -notlike "*Hardware Events*" -and
+                            $_.LogName -notlike "*Internet Explorer*" -and
+                            $_.LogName -notlike "*Key Management Service*" -and
+                            # Only include logs with records
+                            $_.RecordCount -gt 0 -and
+                            # Make sure the log is enabled and accessible
+                            $_.IsEnabled -eq $true
                         } | Select-Object -ExpandProperty LogName
                         
                         if ($customLogs -and $customLogs.Count -gt 0) {
-                            Write-Host "  [-] Found $($customLogs.Count) custom log providers" -ForegroundColor DarkGray
+                            Write-Host "  [-] Found $($customLogs.Count) custom log providers (non-Microsoft/non-built-in)" -ForegroundColor DarkGray
+                            # Optionally log first few custom providers for verification
+                            if ($customLogs.Count -le 5) {
+                                $customLogs | ForEach-Object { Write-Host "      - $_" -ForegroundColor DarkGray }
+                            }
+                            else {
+                                $customLogs | Select-Object -First 3 | ForEach-Object { Write-Host "      - $_" -ForegroundColor DarkGray }
+                                Write-Host "      - ... and $($customLogs.Count - 3) more" -ForegroundColor DarkGray
+                            }
                         }
                     }
                 }
