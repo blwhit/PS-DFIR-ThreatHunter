@@ -1872,8 +1872,14 @@ function Hunt-ForensicDump {
         function Prepare-DataForJSON {
             param($Data, $Type, $MaxRows, $OmitFields)
 
-            if (-not $Data -or $Data.Count -eq 0) {
+            # Handle null or empty data
+            if ($null -eq $Data -or $Data.Count -eq 0) {
                 return '[]'
+            }
+            
+            # Ensure Data is always an array
+            if ($Data -isnot [array]) {
+                $Data = @($Data)
             }
 
             $dataToProcess = $Data
@@ -1884,13 +1890,25 @@ function Hunt-ForensicDump {
 
             # Collect all unique keys from sample of data
             $allKeysSet = [System.Collections.Generic.HashSet[string]]::new()
-            $sampleSize = [Math]::Min(50, $dataToProcess.Count)
+            
+            # Safely calculate sample size
+            $dataCount = if ($dataToProcess -is [array]) { $dataToProcess.Count } else { 1 }
+            $sampleSize = [Math]::Min(50, $dataCount)
 
             for ($i = 0; $i -lt $sampleSize; $i++) {
-                if ($dataToProcess[$i] -is [PSCustomObject]) {
-                    foreach ($prop in $dataToProcess[$i].PSObject.Properties) {
-                        [void]$allKeysSet.Add($prop.Name)
+                try {
+                    $currentItem = if ($dataToProcess -is [array]) { $dataToProcess[$i] } else { $dataToProcess }
+                    if ($currentItem -is [PSCustomObject]) {
+                        foreach ($prop in $currentItem.PSObject.Properties) {
+                            if (![string]::IsNullOrWhiteSpace($prop.Name)) {
+                                [void]$allKeysSet.Add($prop.Name)
+                            }
+                        }
                     }
+                }
+                catch {
+                    Write-Verbose "Error processing item at index $i - $($_.Exception.Message)"
+                    continue
                 }
             }
             $allKeys = @($allKeysSet)
@@ -1938,7 +1956,9 @@ function Hunt-ForensicDump {
             }
 
             # Build filtered data - CRITICAL: Use ArrayList.Add() instead of += operator
-            $filteredData = [System.Collections.ArrayList]::new($dataToProcess.Count)
+            # Ensure we have a valid capacity value
+            $capacity = if ($dataToProcess -and $dataToProcess.Count) { $dataToProcess.Count } else { 0 }
+            $filteredData = [System.Collections.ArrayList]::new($capacity)
             
             foreach ($item in $dataToProcess) {
                 $newObj = [ordered]@{}
@@ -2839,26 +2859,26 @@ function Hunt-ForensicDump {
                     <div class="sysinfo-item"><span class="sysinfo-label">WDAC:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.WDACStatus.Enabled) { '#2ecc71' } else { '#e74c3c' })">$(if ($ForensicData.SystemInfo.WDACStatus.Enabled) { 'Enabled' } else { 'Not Configured' })</span></div>
                 </div>
                 <div class="sysinfo-card">
-                    <h3>Event Log Configuration</h3>
-                    <div class="sysinfo-item"><span class="sysinfo-label">Security Log Max Size:</span><span class="sysinfo-value">$(
+                    <h3>Event Log Max Size</h3>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Security:</span><span class="sysinfo-value">$(
                         try {
                             $secLog = Get-WinEvent -ListLog Security -ErrorAction SilentlyContinue
                             if ($secLog) { "$([math]::Round($secLog.MaximumSizeInBytes / 1MB, 2)) MB" } else { "Unknown" }
                         } catch { "Unknown" }
                     )</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">System Log Max Size:</span><span class="sysinfo-value">$(
+                    <div class="sysinfo-item"><span class="sysinfo-label">System:</span><span class="sysinfo-value">$(
                         try {
                             $sysLog = Get-WinEvent -ListLog System -ErrorAction SilentlyContinue
                             if ($sysLog) { "$([math]::Round($sysLog.MaximumSizeInBytes / 1MB, 2)) MB" } else { "Unknown" }
                         } catch { "Unknown" }
                     )</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">Application Log Max Size:</span><span class="sysinfo-value">$(
+                    <div class="sysinfo-item"><span class="sysinfo-label">Application:</span><span class="sysinfo-value">$(
                         try {
                             $appLog = Get-WinEvent -ListLog Application -ErrorAction SilentlyContinue
                             if ($appLog) { "$([math]::Round($appLog.MaximumSizeInBytes / 1MB, 2)) MB" } else { "Unknown" }
                         } catch { "Unknown" }
                     )</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">PowerShell Log Max Size:</span><span class="sysinfo-value">$(
+                    <div class="sysinfo-item"><span class="sysinfo-label">PowerShell:</span><span class="sysinfo-value">$(
                         try {
                             $psLog = Get-WinEvent -ListLog "Microsoft-Windows-PowerShell/Operational" -ErrorAction SilentlyContinue
                             if ($psLog) { "$([math]::Round($psLog.MaximumSizeInBytes / 1MB, 2)) MB" } else { "Unknown" }
