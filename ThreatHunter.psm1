@@ -535,72 +535,6 @@ function Hunt-ForensicDump {
         }
     }
 
-    # Helper function: Detect RMM Tools
-    function Get-RMMTools {
-        try {
-            $rmmTools = @()
-            
-            $knownRMM = @{
-                'ScreenConnect'         = @('ScreenConnect*', '*ScreenConnect*')
-                'TeamViewer'            = @('TeamViewer*', '*TeamViewer*')
-                'AnyDesk'               = @('AnyDesk*', '*AnyDesk*')
-                'LogMeIn'               = @('LogMeIn*', '*LogMeIn*')
-                'Splashtop'             = @('Splashtop*', '*Splashtop*')
-                'RemotePC'              = @('RemotePC*', '*RemotePC*')
-                'Dameware'              = @('Dameware*', '*DameWare*')
-                'VNC'                   = @('*VNC*', 'TightVNC*', 'RealVNC*', 'UltraVNC*')
-                'Bomgar'                = @('Bomgar*', '*BeyondTrust*')
-                'GoToAssist'            = @('GoToAssist*', '*GoTo*')
-                'Zoho Assist'           = @('*Zoho*Assist*')
-                'Chrome Remote Desktop' = @('*Chrome Remote Desktop*')
-            }
-            
-            # Check installed software
-            $installed = Get-InstalledSoftware
-            
-            foreach ($tool in $knownRMM.Keys) {
-                foreach ($pattern in $knownRMM[$tool]) {
-                    $found = $installed | Where-Object { $_.DisplayName -like $pattern }
-                    if ($found) {
-                        foreach ($item in $found) {
-                            $rmmTools += [PSCustomObject]@{
-                                Tool      = $tool
-                                Name      = $item.DisplayName
-                                Version   = $item.DisplayVersion
-                                Publisher = $item.Publisher
-                            }
-                        }
-                    }
-                }
-            }
-            
-            # Check running processes
-            $processes = Get-Process -ErrorAction SilentlyContinue
-            $rmmProcesses = @('ScreenConnect', 'TeamViewer', 'AnyDesk', 'LogMeIn', 'Splashtop', 'vncviewer', 'tvnserver')
-            
-            foreach ($proc in $rmmProcesses) {
-                $found = $processes | Where-Object { $_.ProcessName -like "*$proc*" }
-                if ($found) {
-                    foreach ($p in $found) {
-                        if (-not ($rmmTools | Where-Object { $_.Name -like "*$($p.ProcessName)*" })) {
-                            $rmmTools += [PSCustomObject]@{
-                                Tool      = $proc
-                                Name      = $p.ProcessName
-                                Version   = "Running Process"
-                                Publisher = "Detected via Process"
-                            }
-                        }
-                    }
-                }
-            }
-            
-            return $rmmTools | Sort-Object Tool -Unique
-        }
-        catch {
-            return @()
-        }
-    }
-
     # Helper function: Get Default Browser
     function Get-DefaultBrowser {
         try {
@@ -627,48 +561,165 @@ function Hunt-ForensicDump {
         }
     }
 
-    # Helper function: Get Browser Extensions
-    function Get-BrowserExtensions {
+    # Helper function: Get Browser Extensions with Details
+    function Get-DetailedBrowserExtensions {
         try {
             $extensions = @()
+            $hostname = $env:COMPUTERNAME
             
-            # Chrome extensions
-            $chromeExtPath = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Extensions"
-            if (Test-Path $chromeExtPath) {
-                Get-ChildItem -Path $chromeExtPath -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-                    $extensions += [PSCustomObject]@{
-                        Browser     = "Chrome"
-                        ExtensionID = $_.Name
-                        Path        = $_.FullName
-                    }
+            function Resolve-Message {
+                param([string]$BasePath, [string]$msgKey)
+                $localePath = Join-Path $BasePath "_locales\en\messages.json"
+                if (Test-Path $localePath) {
+                    try {
+                        $rawMessages = Get-Content $localePath -Raw -ErrorAction Stop | ConvertFrom-Json
+                        if ($rawMessages.$msgKey -and $rawMessages.$msgKey.message) {
+                            return $rawMessages.$msgKey.message
+                        }
+                    } catch { }
                 }
+                return "__MSG_$msgKey__"
             }
             
-            # Firefox extensions
-            $ffProfilePath = "$env:APPDATA\Mozilla\Firefox\Profiles"
-            if (Test-Path $ffProfilePath) {
-                Get-ChildItem -Path $ffProfilePath -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-                    $extPath = Join-Path $_.FullName "extensions"
-                    if (Test-Path $extPath) {
-                        Get-ChildItem -Path $extPath -ErrorAction SilentlyContinue | ForEach-Object {
-                            $extensions += [PSCustomObject]@{
-                                Browser     = "Firefox"
-                                ExtensionID = $_.Name
-                                Path        = $_.FullName
-                            }
+            if (-not (Test-Path 'C:\Users')) {
+                return @()
+            }
+            
+            $UserProfiles = Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -notin @('All Users', 'Default', 'Default User', 'Public') -and -not $_.Name.StartsWith('$')
+            }
+            
+            foreach ($userProfile in $UserProfiles) {
+                $Username = $userProfile.Name
+                $UserLocalAppData = Join-Path $userProfile.FullName "AppData\Local"
+                $UserRoamingAppData = Join-Path $userProfile.FullName "AppData\Roaming"
+                
+                if (-not (Test-Path $UserLocalAppData) -and -not (Test-Path $UserRoamingAppData)) {
+                    continue
+                }
+                
+                $BrowserProfiles = @(
+                    @{ Name = "Chrome"; Path = "$UserLocalAppData\Google\Chrome\User Data" },
+                    @{ Name = "Edge"; Path = "$UserLocalAppData\Microsoft\Edge\User Data" },
+                    @{ Name = "Brave"; Path = "$UserLocalAppData\BraveSoftware\Brave-Browser\User Data" },
+                    @{ Name = "Vivaldi"; Path = "$UserLocalAppData\Vivaldi\User Data" },
+                    @{ Name = "Opera"; Path = "$UserRoamingAppData\Opera Software\Opera Stable" },
+                    @{ Name = "Firefox"; Path = "$UserRoamingAppData\Mozilla\Firefox\Profiles" }
+                )
+                
+                foreach ($browser in $BrowserProfiles) {
+                    $browserName = $browser.Name
+                    $basePath = $browser.Path
+                    
+                    if (-Not (Test-Path $basePath)) {
+                        continue
+                    }
+                    
+                    $profiles = if ($browserName -eq "Firefox") {
+                        Get-ChildItem -Path $basePath -Directory -ErrorAction SilentlyContinue | Where-Object { 
+                            $_.Name -like "*.default*" -or $_.Name -like "*-default" 
+                        }
+                    } else {
+                        Get-ChildItem -Path $basePath -Directory -ErrorAction SilentlyContinue | Where-Object {
+                            $_.Name -eq 'Default' -or $_.Name -like 'Profile *'
                         }
                     }
-                }
-            }
-            
-            # Edge extensions
-            $edgeExtPath = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Extensions"
-            if (Test-Path $edgeExtPath) {
-                Get-ChildItem -Path $edgeExtPath -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-                    $extensions += [PSCustomObject]@{
-                        Browser     = "Edge"
-                        ExtensionID = $_.Name
-                        Path        = $_.FullName
+                    
+                    foreach ($profile in $profiles) {
+                        if ($browserName -eq "Firefox") {
+                            $extensionsPath = Join-Path $profile.FullName "extensions"
+                            if (-Not (Test-Path $extensionsPath)) { continue }
+                            
+                            $xpiFiles = Get-ChildItem $extensionsPath -Filter *.xpi -File -ErrorAction SilentlyContinue
+                            foreach ($xpi in $xpiFiles) {
+                                $tempDir = Join-Path $env:TEMP ([System.IO.Path]::GetRandomFileName())
+                                $zipPath = Join-Path $env:TEMP ([System.IO.Path]::GetRandomFileName() + ".zip")
+                                
+                                try {
+                                    Copy-Item -Path $xpi.FullName -Destination $zipPath -Force -ErrorAction Stop
+                                    Expand-Archive -LiteralPath $zipPath -DestinationPath $tempDir -Force -ErrorAction Stop
+                                    
+                                    $manifestPath = Join-Path $tempDir "manifest.json"
+                                    if (Test-Path $manifestPath) {
+                                        $manifest = Get-Content $manifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
+                                        
+                                        $name = if ($manifest.name -like "__MSG_*__") {
+                                            $msgKey = $manifest.name -replace "^__MSG_(.+?)__$", '$1'
+                                            Resolve-Message -BasePath $tempDir -msgKey $msgKey
+                                        } else { $manifest.name }
+                                        
+                                        $desc = if ($manifest.description -like "__MSG_*__") {
+                                            $msgKey = $manifest.description -replace "^__MSG_(.+?)__$", '$1'
+                                            Resolve-Message -BasePath $tempDir -msgKey $msgKey
+                                        } else { $manifest.description }
+                                        
+                                        $extensionId = if ($manifest.applications -and $manifest.applications.gecko -and $manifest.applications.gecko.id) {
+                                            $manifest.applications.gecko.id
+                                        } elseif ($manifest.browser_specific_settings -and $manifest.browser_specific_settings.gecko -and $manifest.browser_specific_settings.gecko.id) {
+                                            $manifest.browser_specific_settings.gecko.id
+                                        } else {
+                                            [System.IO.Path]::GetFileNameWithoutExtension($xpi.Name)
+                                        }
+                                        
+                                        $extensions += [PSCustomObject]@{
+                                            Hostname    = $hostname
+                                            User        = $Username
+                                            Browser     = $browserName
+                                            Profile     = $profile.Name
+                                            ID          = $extensionId
+                                            Name        = $name
+                                            Version     = $manifest.version
+                                            Description = $desc
+                                        }
+                                    }
+                                } catch { } finally {
+                                    if (Test-Path $zipPath) { Remove-Item $zipPath -Force -ErrorAction SilentlyContinue }
+                                    if (Test-Path $tempDir) { Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
+                                }
+                            }
+                        } else {
+                            $extensionsPath = Join-Path $profile.FullName "Extensions"
+                            if (-Not (Test-Path $extensionsPath)) { continue }
+                            
+                            $extensionDirs = Get-ChildItem -Path $extensionsPath -Directory -ErrorAction SilentlyContinue
+                            foreach ($ext in $extensionDirs) {
+                                $extId = $ext.Name
+                                $versions = Get-ChildItem -Path $ext.FullName -Directory -ErrorAction SilentlyContinue | 
+                                           Sort-Object { [version]($_.Name -replace '_.*$', '') } -Descending
+                                
+                                if ($versions.Count -eq 0) { continue }
+                                
+                                $latest = $versions[0]
+                                $manifestPath = Join-Path $latest.FullName "manifest.json"
+                                
+                                if (Test-Path $manifestPath) {
+                                    try {
+                                        $manifest = Get-Content $manifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
+                                        
+                                        $name = if ($manifest.name -like "__MSG_*__") {
+                                            $msgKey = $manifest.name -replace "^__MSG_(.+?)__$", '$1'
+                                            Resolve-Message -BasePath $latest.FullName -msgKey $msgKey
+                                        } else { $manifest.name }
+                                        
+                                        $desc = if ($manifest.description -like "__MSG_*__") {
+                                            $msgKey = $manifest.description -replace "^__MSG_(.+?)__$", '$1'
+                                            Resolve-Message -BasePath $latest.FullName -msgKey $msgKey
+                                        } else { $manifest.description }
+                                        
+                                        $extensions += [PSCustomObject]@{
+                                            Hostname    = $hostname
+                                            User        = $Username
+                                            Browser     = $browserName
+                                            Profile     = $profile.Name
+                                            ID          = $extId
+                                            Name        = $name
+                                            Version     = $manifest.version
+                                            Description = $desc
+                                        }
+                                    } catch { }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -679,89 +730,151 @@ function Hunt-ForensicDump {
             return @()
         }
     }
-
     # Helper function: Get Logged In Users
     function Get-LoggedInUsers {
         try {
             $users = @()
             
-            # Try quser command
-            $quser = quser 2>$null
-            if ($quser) {
-                $quser | Select-Object -Skip 1 | ForEach-Object {
-                    if ($_ -match '^\s*(\S+)\s+(\S+)?\s+(\d+)\s+(\S+)\s+(.+)$') {
-                        $users += [PSCustomObject]@{
-                            Username    = $matches[1].Trim()
-                            SessionName = if ($matches[2]) { $matches[2].Trim() } else { "Console" }
-                            ID          = $matches[3].Trim()
-                            State       = $matches[4].Trim()
-                            IdleTime    = $matches[5].Trim()
+            # Try quser command with better parsing
+            try {
+                $quserOutput = quser 2>&1
+                if ($LASTEXITCODE -eq 0 -and $quserOutput) {
+                    $lines = $quserOutput | Select-Object -Skip 1
+                    foreach ($line in $lines) {
+                        # Handle both disconnected and active sessions
+                        # Format: USERNAME SESSIONNAME ID STATE IDLE TIME LOGON TIME
+                        # The > character indicates current session
+                        $cleanLine = $line -replace '^>', ''
+                        
+                        # Split by whitespace, handling variable spacing
+                        $parts = $cleanLine -split '\s+' | Where-Object { $_ -ne '' }
+                        
+                        if ($parts.Count -ge 4) {
+                            $username = $parts[0]
+                            
+                            # Determine if sessionname is present (console, rdp-tcp#X, etc)
+                            $hasSessionName = $parts[1] -match '^(console|rdp-tcp|services)' -or $parts[1] -match '^\d+$'
+                            
+                            if ($hasSessionName) {
+                                if ($parts[1] -match '^\d+$') {
+                                    # No session name, parts[1] is ID
+                                    $sessionName = "Console"
+                                    $id = $parts[1]
+                                    $state = $parts[2]
+                                    $idleTime = if ($parts.Count -gt 3) { $parts[3..($parts.Count-1)] -join ' ' } else { "." }
+                                } else {
+                                    # Has session name
+                                    $sessionName = $parts[1]
+                                    $id = $parts[2]
+                                    $state = $parts[3]
+                                    $idleTime = if ($parts.Count -gt 4) { $parts[4..($parts.Count-1)] -join ' ' } else { "." }
+                                }
+                            } else {
+                                # Disconnected session format
+                                $sessionName = "Disconnected"
+                                $id = $parts[1]
+                                $state = $parts[2]
+                                $idleTime = if ($parts.Count -gt 3) { $parts[3..($parts.Count-1)] -join ' ' } else { "." }
+                            }
+                            
+                            $users += [PSCustomObject]@{
+                                Username    = $username
+                                SessionName = $sessionName
+                                ID          = $id
+                                State       = $state
+                                IdleTime    = $idleTime
+                            }
                         }
                     }
                 }
             }
+            catch {
+                Write-Verbose "quser command failed: $($_.Exception.Message)"
+            }
             
-            # Fallback to Win32_LoggedOnUser
+            # Fallback: Get interactive console sessions from Win32_LogonSession
             if ($users.Count -eq 0) {
-                $loggedOn = Get-CimInstance -ClassName Win32_LoggedOnUser -ErrorAction SilentlyContinue
-                if ($loggedOn) {
-                    $loggedOn | ForEach-Object {
-                        $users += [PSCustomObject]@{
-                            Username  = $_.Antecedent.Name
-                            Domain    = $_.Antecedent.Domain
-                            LogonType = "CIM"
+                try {
+                    $logonSessions = Get-CimInstance -ClassName Win32_LogonSession -Filter "LogonType=2 OR LogonType=10" -ErrorAction SilentlyContinue
+                    foreach ($session in $logonSessions) {
+                        $logonUser = Get-CimInstance -ClassName Win32_LoggedOnUser -ErrorAction SilentlyContinue | 
+                                     Where-Object { $_.Dependent.LogonId -eq $session.LogonId } | 
+                                     Select-Object -First 1
+                        
+                        if ($logonUser) {
+                            $username = "$($logonUser.Antecedent.Domain)\$($logonUser.Antecedent.Name)"
+                            $logonType = switch ($session.LogonType) {
+                                2 { "Interactive" }
+                                10 { "RemoteInteractive" }
+                                default { "Other" }
+                            }
+                            
+                            $users += [PSCustomObject]@{
+                                Username    = $username
+                                SessionName = $logonType
+                                ID          = $session.LogonId
+                                State       = "Active"
+                                IdleTime    = "Unknown"
+                            }
                         }
                     }
                 }
+                catch {
+                    Write-Verbose "Win32_LogonSession fallback failed: $($_.Exception.Message)"
+                }
             }
             
-            return $users
+            return $users | Sort-Object Username -Unique
         }
         catch {
+            Write-Verbose "Get-LoggedInUsers failed: $($_.Exception.Message)"
             return @()
         }
     }
 
-    # Helper function: Get User Account Creation Dates
-    function Get-UserCreationDates {
+    # Helper function: Get All User Accounts
+    function Get-AllUserAccounts {
         try {
             $users = @()
+            $processedSIDs = @{}
             
             # Get local users with creation dates
-            # Get-LocalUser requires PS 5.1+, check if available
             if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
                 $localUsers = Get-LocalUser -ErrorAction SilentlyContinue
-            }
-            else {
-                # Fallback for PowerShell 5.0
-                Write-Verbose "Get-LocalUser not available (requires PS 5.1+), using WMI fallback"
-                $localUsers = @()
-            }
-            
-            if ($localUsers) {
-                foreach ($user in $localUsers) {
-                    $users += [PSCustomObject]@{
-                        Username  = $user.Name
-                        Created   = $user.Created
-                        LastLogon = $user.LastLogon
-                        Enabled   = $user.Enabled
-                        Type      = "Local"
-                        SID       = $user.SID
+                if ($localUsers) {
+                    foreach ($user in $localUsers) {
+                        $users += [PSCustomObject]@{
+                            Username    = $user.Name
+                            Created     = $user.Created
+                            LastLogon   = $user.LastLogon
+                            Enabled     = $user.Enabled
+                            Type        = "Local"
+                            SID         = $user.SID.Value
+                            ProfilePath = ""
+                            Description = $user.Description
+                        }
+                        $processedSIDs[$user.SID.Value] = $true
                     }
                 }
             }
             
-            # Get user profiles (includes domain users)
+            # Get user profiles (includes domain users and profile info)
             $profiles = Get-CimInstance -ClassName Win32_UserProfile -ErrorAction SilentlyContinue
             if ($profiles) {
                 foreach ($profile in $profiles) {
                     try {
                         $sid = $profile.SID
-                        $objSID = New-Object System.Security.Principal.SecurityIdentifier($sid)
-                        $username = $objSID.Translate([System.Security.Principal.NTAccount]).Value
-                        
-                        # Check if already added as local user
-                        if (-not ($users | Where-Object { $_.SID -eq $sid })) {
+                        if ($processedSIDs.ContainsKey($sid)) {
+                            # Update existing entry with profile path
+                            $existingUser = $users | Where-Object { $_.SID -eq $sid }
+                            if ($existingUser) {
+                                $existingUser.ProfilePath = $profile.LocalPath
+                            }
+                        } else {
+                            # New user from profile
+                            $objSID = New-Object System.Security.Principal.SecurityIdentifier($sid)
+                            $username = try { $objSID.Translate([System.Security.Principal.NTAccount]).Value } catch { $sid }
+                            
                             $users += [PSCustomObject]@{
                                 Username    = $username
                                 Created     = $profile.LastUseTime
@@ -770,11 +883,42 @@ function Hunt-ForensicDump {
                                 Type        = if ($username -match '\\') { "Domain" } else { "Profile" }
                                 SID         = $sid
                                 ProfilePath = $profile.LocalPath
+                                Description = ""
                             }
+                            $processedSIDs[$sid] = $true
                         }
                     }
                     catch {
                         continue
+                    }
+                }
+            }
+            
+            # Check C:\Users for any missed profiles (hail mary)
+            if (Test-Path "C:\Users") {
+                $userFolders = Get-ChildItem "C:\Users" -Directory -ErrorAction SilentlyContinue | Where-Object {
+                    $_.Name -notin @('All Users', 'Default', 'Default User', 'Public') -and -not $_.Name.StartsWith('$')
+                }
+                
+                foreach ($folder in $userFolders) {
+                    $folderPath = $folder.FullName
+                    $folderName = $folder.Name
+                    
+                    # Check if we already have this user by profile path
+                    $existing = $users | Where-Object { $_.ProfilePath -eq $folderPath }
+                    
+                    if (-not $existing) {
+                        # Found a profile folder we didn't catch earlier
+                        $users += [PSCustomObject]@{
+                            Username    = $folderName
+                            Created     = $folder.CreationTime
+                            LastLogon   = $folder.LastWriteTime
+                            Enabled     = $true
+                            Type        = "Folder"
+                            SID         = "Unknown"
+                            ProfilePath = $folderPath
+                            Description = "Detected from profile folder"
+                        }
                     }
                 }
             }
@@ -901,8 +1045,8 @@ function Hunt-ForensicDump {
             $sysInfo.LocalAdmins = Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue
             $sysInfo.UserProfiles = Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue
             
-            Write-Host "  [-] Getting user creation dates..." -ForegroundColor DarkGray
-            $sysInfo.UserCreationDates = Get-UserCreationDates
+            Write-Host "  [-] Getting all user accounts..." -ForegroundColor DarkGray
+            $sysInfo.AllUserAccounts = Get-AllUserAccounts
             
             Write-Host "  [-] Getting currently logged in users..." -ForegroundColor DarkGray
             $sysInfo.CurrentlyLoggedIn = Get-LoggedInUsers
@@ -916,7 +1060,7 @@ function Hunt-ForensicDump {
         
             Write-Host "  [-] Enumerating processes..." -ForegroundColor DarkGray
             $sysInfo.Processes = Get-Process -IncludeUserName -ErrorAction SilentlyContinue | 
-            Select-Object Id, ProcessName, Path, Company, Product, Description, UserName, @{N = 'CPUSeconds'; E = { [math]::Round($_.CPU, 2) } }, @{N = 'MemoryMB'; E = { [math]::Round($_.WS / 1MB, 2) } }, StartTime
+            Select-Object Id, ProcessName, Path, Company, Product, Description, UserName, CPU, WS, StartTime
         
             Write-Host "  [-] Getting system timing info..." -ForegroundColor DarkGray
             $sysInfo.BootTime = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
@@ -1022,15 +1166,7 @@ function Hunt-ForensicDump {
             catch {
                 $sysInfo.InstalledSoftware = @()
             }
-            
-            Write-Host "  [-] Detecting RMM tools..." -ForegroundColor DarkGray
-            try {
-                $sysInfo.RMMTools = Get-RMMTools
-            }
-            catch {
-                $sysInfo.RMMTools = @()
-            }
-            
+                        
             Write-Host "  [-] Getting default browser..." -ForegroundColor DarkGray
             try {
                 $sysInfo.DefaultBrowser = Get-DefaultBrowser
@@ -1041,7 +1177,7 @@ function Hunt-ForensicDump {
             
             Write-Host "  [-] Getting browser extensions..." -ForegroundColor DarkGray
             try {
-                $sysInfo.BrowserExtensions = Get-BrowserExtensions
+                $sysInfo.BrowserExtensions = Get-DetailedBrowserExtensions
             }
             catch {
                 $sysInfo.BrowserExtensions = @()
@@ -1060,14 +1196,11 @@ function Hunt-ForensicDump {
                 if ($sysInfo.DNSCache) {
                     $sysInfo.DNSCache | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_DNSCache.csv") -NoTypeInformation
                 }
-                if ($sysInfo.UserCreationDates) {
-                    $sysInfo.UserCreationDates | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_UserCreationDates.csv") -NoTypeInformation
+                if ($sysInfo.AllUserAccounts) {
+                    $sysInfo.AllUserAccounts | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_AllUserAccounts.csv") -NoTypeInformation
                 }
                 if ($sysInfo.InstalledSoftware) {
                     $sysInfo.InstalledSoftware | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_InstalledSoftware.csv") -NoTypeInformation
-                }
-                if ($sysInfo.RMMTools) {
-                    $sysInfo.RMMTools | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_RMMTools.csv") -NoTypeInformation
                 }
                 if ($sysInfo.BrowserExtensions) {
                     $sysInfo.BrowserExtensions | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_BrowserExtensions.csv") -NoTypeInformation
@@ -1095,7 +1228,6 @@ function Hunt-ForensicDump {
     
         return $sysInfo
     }
-
     function ConvertTo-DateTime {
         param($InputValue)
     
@@ -1624,8 +1756,8 @@ function Hunt-ForensicDump {
         <tbody>
 "@
             foreach ($proc in $ForensicData.SystemInfo.Processes) {
-                $memMB = if ($proc.WS) { [math]::Round($proc.WS / 1MB, 2) } else { "N/A" }
-                $cpu = if ($proc.CPU) { [math]::Round($proc.CPU, 2) } else { "N/A" }
+                $memMB = if ($proc.WS -and $proc.WS -gt 0) { [math]::Round($proc.WS / 1MB, 2) } else { 0 }
+                $cpu = if ($proc.CPU -and $proc.CPU -gt 0) { [math]::Round($proc.CPU, 2) } else { 0 }
                 $path = if ($proc.Path) { [System.Web.HttpUtility]::HtmlEncode($proc.Path) } else { "N/A" }
                 $company = if ($proc.Company) { [System.Web.HttpUtility]::HtmlEncode($proc.Company) } else { "N/A" }
                 $user = if ($proc.UserName) { [System.Web.HttpUtility]::HtmlEncode($proc.UserName) } else { "N/A" }
@@ -2170,7 +2302,6 @@ function Hunt-ForensicDump {
     <div class="tab-container">
         <div class="tabs">
             <button class="tab-button active" onclick="showTab('summary')">Summary</button>
-            <button class="tab-button" onclick="showTab('export')">Export Info</button>
             <button class="tab-button" onclick="showTab('sysinfo')">System Info</button>
             <button class="tab-button" onclick="showTab('persistence')">Persistence ($($stats.Persistence))</button>
             <button class="tab-button" onclick="showTab('registry')">Registry ($($stats.Registry))</button>
@@ -2180,24 +2311,14 @@ function Hunt-ForensicDump {
             <button class="tab-button" onclick="showTab('tasks')">Tasks ($($stats.Tasks))</button>
             <button class="tab-button" onclick="showTab('files')">Files ($($stats.Files))</button>
             <button class="tab-button" onclick="showTab('csv')">CSV Downloads</button>
+            <button class="tab-button" onclick="showTab('export')">Export Info</button>
             <button class="tab-button" onclick="showTab('settings')">Settings</button>
         </div>
     </div>
     
     <div class="container">
         <div id="summary-tab" class="tab-content active">
-            <h2 style="color: #3498db; margin-bottom: 20px;">Summary Statistics</h2>
-            <div class="stat-grid">
-                <div class="stat-card"><div class="stat-number">$($stats.Persistence)</div><div class="stat-label">Persistence</div></div>
-                <div class="stat-card"><div class="stat-number">$($stats.Files)</div><div class="stat-label">Files</div></div>
-                <div class="stat-card"><div class="stat-number">$($stats.Registry)</div><div class="stat-label">Registry</div></div>
-                <div class="stat-card"><div class="stat-number">$($stats.Browser)</div><div class="stat-label">Browser</div></div>
-                <div class="stat-card"><div class="stat-number">$($stats.Logs)</div><div class="stat-label">Logs</div></div>
-                <div class="stat-card"><div class="stat-number">$($stats.Services)</div><div class="stat-label">Services</div></div>
-                <div class="stat-card"><div class="stat-number">$($stats.Tasks)</div><div class="stat-label">Tasks</div></div>
-            </div>
-            
-            <h3 style="color: #3498db; margin: 30px 0 20px 0;">System Overview</h3>
+            <h2 style="color: #3498db; margin-bottom: 20px;">System Overview</h2>
             <div class="sysinfo-grid">
                 <div class="sysinfo-card">
                     <h3>Basic Information</h3>
@@ -2226,7 +2347,33 @@ function Hunt-ForensicDump {
                     <div class="sysinfo-item"><span class="sysinfo-label">VBS Status:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.VBSStatus.VBSEnabled) { '#2ecc71' } else { '#e74c3c' })">$(if ($ForensicData.SystemInfo.VBSStatus.VBSEnabled) { 'Enabled' } else { 'Disabled' })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">WDAC:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.WDACStatus.Enabled) { '#2ecc71' } else { '#e74c3c' })">$(if ($ForensicData.SystemInfo.WDACStatus.Enabled) { 'Enabled' } else { 'Not Configured' })</span></div>
                 </div>
-                
+                <div class="sysinfo-card">
+                    <h3>Event Log Configuration</h3>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Security Log Max Size:</span><span class="sysinfo-value">$(
+                        try {
+                            $secLog = Get-WinEvent -ListLog Security -ErrorAction SilentlyContinue
+                            if ($secLog) { "$([math]::Round($secLog.MaximumSizeInBytes / 1MB, 2)) MB" } else { "Unknown" }
+                        } catch { "Unknown" }
+                    )</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">System Log Max Size:</span><span class="sysinfo-value">$(
+                        try {
+                            $sysLog = Get-WinEvent -ListLog System -ErrorAction SilentlyContinue
+                            if ($sysLog) { "$([math]::Round($sysLog.MaximumSizeInBytes / 1MB, 2)) MB" } else { "Unknown" }
+                        } catch { "Unknown" }
+                    )</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Application Log Max Size:</span><span class="sysinfo-value">$(
+                        try {
+                            $appLog = Get-WinEvent -ListLog Application -ErrorAction SilentlyContinue
+                            if ($appLog) { "$([math]::Round($appLog.MaximumSizeInBytes / 1MB, 2)) MB" } else { "Unknown" }
+                        } catch { "Unknown" }
+                    )</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">PowerShell Log Max Size:</span><span class="sysinfo-value">$(
+                        try {
+                            $psLog = Get-WinEvent -ListLog "Microsoft-Windows-PowerShell/Operational" -ErrorAction SilentlyContinue
+                            if ($psLog) { "$([math]::Round($psLog.MaximumSizeInBytes / 1MB, 2)) MB" } else { "Unknown" }
+                        } catch { "Unknown" }
+                    )</span></div>
+                </div>
                 <div class="sysinfo-card">
                     <h3>Virtualization & Hardware</h3>
                     <div class="sysinfo-item"><span class="sysinfo-label">Virtual Machine:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.VMDetection.IsVirtualMachine) { '#f39c12' } else { '#2ecc71' })">$(if ($ForensicData.SystemInfo.VMDetection.IsVirtualMachine) { "Yes ($($ForensicData.SystemInfo.VMDetection.Type))" } else { 'No (Physical)' })</span></div>
@@ -2239,16 +2386,23 @@ function Hunt-ForensicDump {
                     <div class="sysinfo-item"><span class="sysinfo-label">Internet Status:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.InternetConnectivity.Status -eq 'Online') { '#2ecc71' } else { '#e74c3c' })">$($ForensicData.SystemInfo.InternetConnectivity.Status)</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Can Ping 1.1.1.1:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.InternetConnectivity.CanPingCloudflare) { 'Yes' } else { 'No' })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">DNS Resolution:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.InternetConnectivity.CanResolveDNS) { 'Working' } else { 'Failed' })</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">DNS Servers:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.DNSServers) { ($ForensicData.SystemInfo.DNSServers | Where-Object { $_.ServerAddresses } | Select-Object -First 1 -ExpandProperty ServerAddresses | Select-Object -First 2) -join ', ' } else { 'N/A' })</span></div>
-                </div>
-                
-                <div class="sysinfo-card">
-                    <h3>Remote Access Tools</h3>
-                    <div class="sysinfo-item"><span class="sysinfo-label">RMM Tools Detected:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.RMMTools -and $ForensicData.SystemInfo.RMMTools.Count -gt 0) { '#f39c12' } else { '#2ecc71' })">$(if ($ForensicData.SystemInfo.RMMTools -and $ForensicData.SystemInfo.RMMTools.Count -gt 0) { "$($ForensicData.SystemInfo.RMMTools.Count) tool(s) found" } else { 'None detected' })</span></div>
-                    $(if ($ForensicData.SystemInfo.RMMTools -and $ForensicData.SystemInfo.RMMTools.Count -gt 0) {
-                        $rmmList = ($ForensicData.SystemInfo.RMMTools | Select-Object -First 3 | ForEach-Object { $_.Tool }) -join ', '
-                        "<div class='sysinfo-item'><span class='sysinfo-label'>Tools:</span><span class='sysinfo-value' style='color: #f39c12;'>$rmmList</span></div>"
-                    })
+                    <div class="sysinfo-item"><span class="sysinfo-label">DNS Servers:</span><span class="sysinfo-value">$(
+                        if ($ForensicData.SystemInfo.DNSServers) { 
+                            $dnsAddresses = @()
+                            foreach ($dnsServer in $ForensicData.SystemInfo.DNSServers) {
+                                if ($dnsServer.ServerAddresses -and $dnsServer.ServerAddresses.Count -gt 0) {
+                                    $dnsAddresses += $dnsServer.ServerAddresses
+                                }
+                            }
+                            if ($dnsAddresses.Count -gt 0) {
+                                ($dnsAddresses | Select-Object -First 3 -Unique) -join ', '
+                            } else {
+                                'N/A'
+                            }
+                        } else { 
+                            'N/A' 
+                        }
+                    )</span></div>
                 </div>
             </div>
         </div>
@@ -2377,45 +2531,42 @@ function Hunt-ForensicDump {
                 </div>
                 $shadowHtml
             </div>
-            
-            <div class="section-card">
-                <h3>Local Users ($($ForensicData.SystemInfo.LocalUsers.Count) users)</h3>
-                $usersHtml
-            </div>
-            
+                     
             <div class="section-card">
                 <h3>Network Adapters ($($ForensicData.SystemInfo.NetworkAdapters.Count) adapters)</h3>
                 $adaptersHtml
             </div>
             <div class="section-card">
-                <h3>User Accounts & Creation Dates ($($ForensicData.SystemInfo.UserCreationDates.Count) accounts)</h3>
+                <h3>User Accounts ($($ForensicData.SystemInfo.AllUserAccounts.Count) accounts)</h3>
                 <div class="table-wrapper">
-                    <table id="users-creation-table">
+                    <table id="users-accounts-table">
                         <thead>
                             <tr>
-                                <th onclick="sortSystemTable('users-creation-table', 0)" style="position: relative;">Username<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('users-creation-table', 1)" style="position: relative;">Type<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('users-creation-table', 2)" style="position: relative;">Created<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('users-creation-table', 3)" style="position: relative;">Last Logon<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('users-creation-table', 4)" style="position: relative;">Enabled<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('users-creation-table', 5)" style="position: relative;">SID<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('users-accounts-table', 0)" style="position: relative;">Username<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('users-accounts-table', 1)" style="position: relative;">Type<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('users-accounts-table', 2)" style="position: relative;">Created<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('users-accounts-table', 3)" style="position: relative;">Last Logon<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('users-accounts-table', 4)" style="position: relative;">Enabled<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('users-accounts-table', 5)" style="position: relative;">Profile Path<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('users-accounts-table', 6)" style="position: relative;">Description<div class="resizer"></div></th>
                             </tr>
                         </thead>
                         <tbody>
 $(
-    if ($ForensicData.SystemInfo.UserCreationDates -and $ForensicData.SystemInfo.UserCreationDates.Count -gt 0) {
+    if ($ForensicData.SystemInfo.AllUserAccounts -and $ForensicData.SystemInfo.AllUserAccounts.Count -gt 0) {
         $userHtml = ""
-        foreach ($user in $ForensicData.SystemInfo.UserCreationDates) {
+        foreach ($user in $ForensicData.SystemInfo.AllUserAccounts) {
             $username = [System.Web.HttpUtility]::HtmlEncode($user.Username)
             $created = if ($user.Created) { $user.Created.ToString("yyyy-MM-dd HH:mm:ss") } else { "Unknown" }
             $lastLogon = if ($user.LastLogon) { $user.LastLogon.ToString("yyyy-MM-dd HH:mm:ss") } else { "Never" }
             $enabled = if ($null -ne $user.Enabled) { $user.Enabled.ToString() } else { "N/A" }
-            $sid = if ($user.SID) { [System.Web.HttpUtility]::HtmlEncode($user.SID) } else { "N/A" }
-            $userHtml += "                            <tr><td>$username</td><td>$($user.Type)</td><td>$created</td><td>$lastLogon</td><td>$enabled</td><td style='font-size: 0.8em;'>$sid</td></tr>`n"
+            $profilePath = if ($user.ProfilePath) { [System.Web.HttpUtility]::HtmlEncode($user.ProfilePath) } else { "N/A" }
+            $desc = if ($user.Description) { [System.Web.HttpUtility]::HtmlEncode($user.Description) } else { "" }
+            $userHtml += "                            <tr><td>$username</td><td>$($user.Type)</td><td>$created</td><td>$lastLogon</td><td>$enabled</td><td style='font-size: 0.8em;'>$profilePath</td><td>$desc</td></tr>`n"
         }
         $userHtml
     } else {
-        "                            <tr><td colspan='6' style='text-align: center; color: #95a5a6;'>No user account data available</td></tr>"
+        "                            <tr><td colspan='7' style='text-align: center; color: #95a5a6;'>No user account data available</td></tr>"
     }
 )
                         </tbody>
@@ -2426,29 +2577,28 @@ $(
             <div class="section-card">
                 <h3>Currently Logged In Users</h3>
                 <div class="table-wrapper">
-                    <table id="logged-in-users-table">
+                    <table id="loggedin-table">
                         <thead>
                             <tr>
-                                <th onclick="sortSystemTable('logged-in-users-table', 0)" style="position: relative;">Username<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('logged-in-users-table', 1)" style="position: relative;">Session<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('logged-in-users-table', 2)" style="position: relative;">State<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('logged-in-users-table', 3)" style="position: relative;">Idle Time<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('loggedin-table', 0)" style="position: relative;">Username<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('loggedin-table', 1)" style="position: relative;">Session Name<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('loggedin-table', 2)" style="position: relative;">Session ID<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('loggedin-table', 3)" style="position: relative;">State<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('loggedin-table', 4)" style="position: relative;">Idle Time<div class="resizer"></div></th>
                             </tr>
                         </thead>
                         <tbody>
 $(
     if ($ForensicData.SystemInfo.CurrentlyLoggedIn -and $ForensicData.SystemInfo.CurrentlyLoggedIn.Count -gt 0) {
-        $loggedInHtml = ""
-        foreach ($user in $ForensicData.SystemInfo.CurrentlyLoggedIn) {
-            $username = [System.Web.HttpUtility]::HtmlEncode($user.Username)
-            $session = if ($user.SessionName) { $user.SessionName } else { "N/A" }
-            $state = if ($user.State) { $user.State } else { "N/A" }
-            $idle = if ($user.IdleTime) { $user.IdleTime } else { "N/A" }
-            $loggedInHtml += "                            <tr><td>$username</td><td>$session</td><td>$state</td><td>$idle</td></tr>`n"
+        $loggedHtml = ""
+        foreach ($loggedUser in $ForensicData.SystemInfo.CurrentlyLoggedIn) {
+            $username = [System.Web.HttpUtility]::HtmlEncode($loggedUser.Username)
+            $sessionName = [System.Web.HttpUtility]::HtmlEncode($loggedUser.SessionName)
+            $loggedHtml += "                            <tr><td>$username</td><td>$sessionName</td><td>$($loggedUser.ID)</td><td>$($loggedUser.State)</td><td>$($loggedUser.IdleTime)</td></tr>`n"
         }
-        $loggedInHtml
+        $loggedHtml
     } else {
-        "                            <tr><td colspan='4' style='text-align: center; color: #95a5a6;'>No logged in users detected</td></tr>"
+        "                            <tr><td colspan='5' style='text-align: center; color: #95a5a6;'>No users currently logged in</td></tr>"
     }
 )
                         </tbody>
@@ -2490,35 +2640,46 @@ $(
             
             <div class="section-card">
                 <h3>Browser Extensions ($($ForensicData.SystemInfo.BrowserExtensions.Count) extensions)</h3>
+                <div class="table-controls">
+                    <input type="text" id="extensions-search" placeholder="Search extensions..." onkeyup="filterSystemTable('extensions-table')">
+                </div>
                 <div class="table-wrapper">
                     <table id="extensions-table">
                         <thead>
                             <tr>
-                                <th onclick="sortSystemTable('extensions-table', 0)" style="position: relative;">Browser<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('extensions-table', 1)" style="position: relative;">Extension ID<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('extensions-table', 2)" style="position: relative;">Path<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('extensions-table', 0)" style="position: relative;">User<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('extensions-table', 1)" style="position: relative;">Browser<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('extensions-table', 2)" style="position: relative;">Profile<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('extensions-table', 3)" style="position: relative;">Name<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('extensions-table', 4)" style="position: relative;">Version<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('extensions-table', 5)" style="position: relative;">Extension ID<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('extensions-table', 6)" style="position: relative;">Description<div class="resizer"></div></th>
                             </tr>
                         </thead>
                         <tbody>
 $(
     if ($ForensicData.SystemInfo.BrowserExtensions -and $ForensicData.SystemInfo.BrowserExtensions.Count -gt 0) {
         $extHtml = ""
-        foreach ($ext in $ForensicData.SystemInfo.BrowserExtensions | Select-Object -First 100) {
+        foreach ($ext in $ForensicData.SystemInfo.BrowserExtensions | Select-Object -First 200) {
+            $user = [System.Web.HttpUtility]::HtmlEncode($ext.User)
             $browser = [System.Web.HttpUtility]::HtmlEncode($ext.Browser)
-            $extId = [System.Web.HttpUtility]::HtmlEncode($ext.ExtensionID)
-            $path = [System.Web.HttpUtility]::HtmlEncode($ext.Path)
-            $extHtml += "                            <tr><td>$browser</td><td style='font-family: Consolas, monospace; font-size: 0.8em;'>$extId</td><td style='font-size: 0.8em; max-width: 300px; overflow: hidden; text-overflow: ellipsis;' title='$path'>$path</td></tr>`n"
+            $profile = [System.Web.HttpUtility]::HtmlEncode($ext.Profile)
+            $name = [System.Web.HttpUtility]::HtmlEncode($ext.Name)
+            $version = [System.Web.HttpUtility]::HtmlEncode($ext.Version)
+            $extId = [System.Web.HttpUtility]::HtmlEncode($ext.ID)
+            $desc = if ($ext.Description) { [System.Web.HttpUtility]::HtmlEncode($ext.Description) } else { "" }
+            $extHtml += "                            <tr><td>$user</td><td>$browser</td><td style='font-size: 0.85em;'>$profile</td><td><strong>$name</strong></td><td style='text-align: center;'>$version</td><td style='font-family: Consolas, monospace; font-size: 0.75em; max-width: 200px; overflow: hidden; text-overflow: ellipsis;' title='$extId'>$extId</td><td style='font-size: 0.85em; max-width: 300px; overflow: hidden; text-overflow: ellipsis;' title='$desc'>$desc</td></tr>`n"
         }
         $extHtml
     } else {
-        "                            <tr><td colspan='3' style='text-align: center; color: #95a5a6;'>No browser extensions found</td></tr>"
+        "                            <tr><td colspan='7' style='text-align: center; color: #95a5a6;'>No browser extensions found</td></tr>"
     }
 )
                         </tbody>
                     </table>
                 </div>
-                $(if ($ForensicData.SystemInfo.BrowserExtensions -and $ForensicData.SystemInfo.BrowserExtensions.Count -gt 100) {
-                    "<p style='color: #f39c12; margin-top: 10px;'>Showing first 100 of $($ForensicData.SystemInfo.BrowserExtensions.Count) extensions. See CSV for complete data.</p>"
+                $(if ($ForensicData.SystemInfo.BrowserExtensions -and $ForensicData.SystemInfo.BrowserExtensions.Count -gt 200) {
+                    "<p style='color: #f39c12; margin-top: 10px;'>Showing first 200 of $($ForensicData.SystemInfo.BrowserExtensions.Count) extensions. See CSV for complete data.</p>"
                 })
             </div>
             
@@ -2581,7 +2742,7 @@ $(
             </div>
             
             <div class="section-card">
-                <h3>Installed Software (Top 50)</h3>
+                <h3>Installed Software ($($ForensicData.SystemInfo.InstalledSoftware.Count) programs)</h3>
                 <div class="table-controls">
                     <input type="text" id="software-search" placeholder="Search software..." onkeyup="filterSystemTable('software-table')">
                 </div>
@@ -2599,7 +2760,7 @@ $(
 $(
     if ($ForensicData.SystemInfo.InstalledSoftware -and $ForensicData.SystemInfo.InstalledSoftware.Count -gt 0) {
         $softwareHtml = ""
-        foreach ($software in ($ForensicData.SystemInfo.InstalledSoftware | Select-Object -First 50)) {
+        foreach ($software in $ForensicData.SystemInfo.InstalledSoftware) {
             $name = [System.Web.HttpUtility]::HtmlEncode($software.DisplayName)
             $version = if ($software.DisplayVersion) { [System.Web.HttpUtility]::HtmlEncode($software.DisplayVersion) } else { "N/A" }
             $publisher = if ($software.Publisher) { [System.Web.HttpUtility]::HtmlEncode($software.Publisher) } else { "N/A" }
@@ -2614,53 +2775,8 @@ $(
                         </tbody>
                     </table>
                 </div>
-                $(if ($ForensicData.SystemInfo.InstalledSoftware -and $ForensicData.SystemInfo.InstalledSoftware.Count -gt 50) {
-                    "<p style='color: #f39c12; margin-top: 10px;'>Showing first 50 of $($ForensicData.SystemInfo.InstalledSoftware.Count) programs. See CSV for complete data.</p>"
-                })
             </div>
             
-            <div class="section-card">
-                <h3>Remote Management Tools Detected</h3>
-$(
-    if ($ForensicData.SystemInfo.RMMTools -and $ForensicData.SystemInfo.RMMTools.Count -gt 0) {
-        $rmmHtml = @"
-                <div style="background: rgba(243, 156, 18, 0.1); padding: 15px; border-radius: 4px; border-left: 4px solid #f39c12; margin-bottom: 15px;">
-                    <strong style="color: #f39c12;">⚠ Warning:</strong> Remote management tools detected on this system. Review for legitimacy.
-                </div>
-                <div class="table-wrapper">
-                    <table id="rmm-table">
-                        <thead>
-                            <tr>
-                                <th onclick="sortSystemTable('rmm-table', 0)" style="position: relative;">Tool Type<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('rmm-table', 1)" style="position: relative;">Name<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('rmm-table', 2)" style="position: relative;">Version<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('rmm-table', 3)" style="position: relative;">Publisher<div class="resizer"></div></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-"@
-        foreach ($tool in $ForensicData.SystemInfo.RMMTools) {
-            $toolType = [System.Web.HttpUtility]::HtmlEncode($tool.Tool)
-            $name = [System.Web.HttpUtility]::HtmlEncode($tool.Name)
-            $version = if ($tool.Version) { [System.Web.HttpUtility]::HtmlEncode($tool.Version) } else { "N/A" }
-            $publisher = if ($tool.Publisher) { [System.Web.HttpUtility]::HtmlEncode($tool.Publisher) } else { "N/A" }
-            $rmmHtml += "                            <tr><td style='color: #f39c12; font-weight: bold;'>$toolType</td><td>$name</td><td>$version</td><td>$publisher</td></tr>`n"
-        }
-        $rmmHtml += @"
-                        </tbody>
-                    </table>
-                </div>
-"@
-        $rmmHtml
-    } else {
-        @"
-                <div style="background: rgba(46, 204, 113, 0.1); padding: 15px; border-radius: 4px; border-left: 4px solid #2ecc71;">
-                    <strong style="color: #2ecc71;">✓ No remote management tools detected</strong>
-                </div>
-"@
-    }
-)
-            </div>
         </div>
         
         <div id="persistence-tab" class="tab-content">
@@ -3823,9 +3939,72 @@ $(
                 Write-Host "  [-] Running in Aggressive mode (all logs)..." -ForegroundColor DarkGray
             }
             else {
-                # Auto mode: limit to core logs
-                Write-Host "  [-] Running in Auto mode (core logs only)..." -ForegroundColor DarkGray
-                $logParams['LogNames'] = @("PowerShell", "Microsoft-Windows-PowerShell/Operational", "System", "Security", "Application")
+                # Auto mode: core logs + custom logs + specific Microsoft logs
+                Write-Host "  [-] Running in Auto mode (core + custom logs)..." -ForegroundColor DarkGray
+                
+                $coreLogNames = @(
+                    "PowerShell",
+                    "Microsoft-Windows-PowerShell/Operational",
+                    "System",
+                    "Security",
+                    "Application"
+                )
+                
+                # Add specific Microsoft Windows logs
+                $specificMicrosoftLogs = @(
+                    "Microsoft-Windows-SMBClient/Connectivity",
+                    "Microsoft-Windows-SMBClient/Operational",
+                    "Microsoft-Windows-SMBClient/Security",
+                    "Microsoft-Windows-SMBDirect/Admin",
+                    "Microsoft-Windows-SMBServer/Connectivity",
+                    "Microsoft-Windows-SMBServer/Operational",
+                    "Microsoft-Windows-SMBServer/Security",
+                    "Microsoft-Windows-SMBWitnessClient/Admin",
+                    "Microsoft-Windows-SMBWitnessClient/Informational",
+                    "Microsoft-Windows-SmartScreen/Debug",
+                    "Microsoft-Windows-TaskScheduler/Maintenance",
+                    "Microsoft-Windows-TaskScheduler/Operational",
+                    "Microsoft-Windows-TerminalServices-LocalSessionManager/Admin",
+                    "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational",
+                    "Microsoft-Windows-Windows Defender/Operational",
+                    "Microsoft-Windows-Windows Defender/WHC",
+                    "Microsoft-Windows-WMI-Activity/Operational",
+                    "Microsoft-Windows-Security-Kerberos/Operational",
+                    "Microsoft-Windows-RemoteApp and Desktop Connections/Admin",
+                    "Microsoft-Windows-RemoteApp and Desktop Connections/Operational",
+                    "Microsoft-Windows-PowerShell-DesiredStateConfiguration-FileDownloadManager/Operational",
+                    "Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Admin",
+                    "Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational",
+                    "Microsoft-Windows-TerminalServices-RemoteConnectionManager/Admin",
+                    "Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational"
+                )
+                
+                # Get custom (non-Microsoft) logs from Applications and Services Logs
+                $customLogs = @()
+                try {
+                    Write-Host "  [-] Enumerating custom log providers..." -ForegroundColor DarkGray
+                    $allLogs = Get-WinEvent -ListLog * -ErrorAction SilentlyContinue
+                    if ($allLogs) {
+                        $customLogs = $allLogs | Where-Object { 
+                            $_.LogName -like "Applications and Services Logs/*" -and 
+                            $_.LogName -notlike "*Microsoft*" -and
+                            $_.RecordCount -gt 0
+                        } | Select-Object -ExpandProperty LogName
+                        
+                        if ($customLogs -and $customLogs.Count -gt 0) {
+                            Write-Host "  [-] Found $($customLogs.Count) custom log providers" -ForegroundColor DarkGray
+                        }
+                    }
+                }
+                catch {
+                    Write-Host "  [!] Warning: Could not enumerate custom logs - $($_.Exception.Message)" -ForegroundColor Yellow
+                    Write-Verbose "Custom log enumeration error: $($_.Exception.Message)"
+                }
+                
+                # Combine all log names
+                $logParams['LogNames'] = $coreLogNames + $specificMicrosoftLogs + $customLogs | Select-Object -Unique
+                
+                Write-Host "  [-] Monitoring $($logParams['LogNames'].Count) log providers" -ForegroundColor DarkGray
             }
             
             $forensicData.Logs = Hunt-Logs @logParams
