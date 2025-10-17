@@ -27,41 +27,7 @@
 # - add defensive powershell version check to each function init... add defensive input param validation/sanitization too
 # - add a native "-More" or "-Page" or "-Paging" switch to the Hunt-Logs and maybe Hunt-Files function (paging ability while keeping coloring)
 # - make sure Hunt-Persistence sets flags in all mode. still want that info
-
-# - add logo or link to github, etc. (footer, etc.)
-# - Add section for "Export Information", details about where files are located, hyperlinks to ForensicData folder, runtime of dump, etc...
-# - add defensive powershell version check
-# - Add a light/dark mode button in the top header of the forensic dump HTML report
-# - fix and update the 'Display Settings' Tab-- notice you cant go above exported $MaxRows value, etc
-# - The persistence objects dont have flags in the HTML report for some reason. The column doesnt exist even though its not omitted... might not be getting exported to CSV from Hunt-Persistence
-# - fix the ForensicDump scheduled task table display-- cleanup display for TriggerType string lists (empty commas, extra spaces, etc.)
-
-# Extra System checks/info/Summary/Machihne details:
-# ==========================
-# - AMSI providers
-# - Minifilter Drivers loaded
-# - WDAC policy
-# - VBS on or off?
-# - GPO information
-# - Browser Extensions
-# - current default browser
-# - saved RDP info? Saved profiles? Etc....
-# - possible to list when each account was created for the Local users? Can this sectino include user profiles? i.e. ALL users including domain users?
-# - Fix "CPU Time" in processes-- what does that represent?
-# - get the RunMRU key and display it-- are we doing this? Always empty
-# - bolster and improve the EDR/AV detection
-# - add 'RMM' detection if possible... determine any remote access tools on machine (Teamviewer, ScreenConnect, Etc.)
-# - include screenshot of desktop??
-# - Bitlocker status.. on or off?
-# - Secure Boot status
-# - VM detection
-# - Current internet status (can you ping google??) [Section ex: "Can Ping 1.1.1.1?: True"]
-# - current DNS server
-# - current NSLookup/Domain Controller
-# - currently logged in users (quser, etc...)
-# - information about cloud? Cloud connectivity? etc...
-# - "Installed Software", use reg key to enumerate installed programs
-
+# - take the extra space printing out of the Hunt-Browser execution for the forensic dump... printing an extra newline, not clean
 
 #   Final/Full Review & Pass-Through
 # -----------------------------
@@ -277,7 +243,7 @@ function Hunt-ForensicDump {
         [int]$MaxChars = 500,
 
         [Parameter(Mandatory = $false)]
-        [int]$MaxRows = 1500, 
+        [int]$MaxRows = 10000, 
 
         [Parameter(Mandatory = $false)]
         [switch]$AllFields,
@@ -301,6 +267,7 @@ function Hunt-ForensicDump {
             $amsiProviders = @()
             $amsiKey = "HKLM:\SOFTWARE\Microsoft\AMSI\Providers"
             
+            # Phase 1: Registry-based AMSI provider detection
             if (Test-Path $amsiKey) {
                 $providers = Get-ChildItem -Path $amsiKey -ErrorAction SilentlyContinue
                 foreach ($provider in $providers) {
@@ -345,12 +312,13 @@ function Hunt-ForensicDump {
                         }
                         
                         $amsiProviders += [PSCustomObject]@{
-                            GUID           = $providerGuid
-                            Name           = $providerName
-                            DLLPath        = $dllPath
-                            DLLExists      = $dllExists
-                            DLLSizeKB      = $dllSize
-                            ThreadingModel = $threadingModel
+                            GUID            = $providerGuid
+                            Name            = $providerName
+                            DLLPath         = $dllPath
+                            DLLExists       = $dllExists
+                            DLLSizeKB       = $dllSize
+                            ThreadingModel  = $threadingModel
+                            DetectionMethod = "Registry"
                         }
                     }
                     catch {
@@ -360,20 +328,35 @@ function Hunt-ForensicDump {
                 }
             }
             
-            # Also check for loaded AMSI DLLs in running processes
+            # Phase 2: Process-based AMSI provider detection (loaded modules)
             try {
-                $loadedAMSI = @()
+                $loadedAMSI = @{}
                 $processes = Get-Process -ErrorAction SilentlyContinue
+                
                 foreach ($proc in $processes) {
                     try {
-                        $modules = $proc.Modules | Where-Object { $_.ModuleName -like "*amsi*" -or $_.ModuleName -like "*guard*" }
+                        # Look for AMSI-related modules (including vendor-specific like TmAMSI, MsMpEng, etc.)
+                        $modules = $proc.Modules | Where-Object { 
+                            $_.ModuleName -like "*amsi*" -or 
+                            $_.ModuleName -like "*guard*" -or
+                            $_.ModuleName -like "MsMpEng*" -or
+                            $_.ModuleName -like "Tm*AMSI*" -or
+                            $_.ModuleName -like "*AMSIProvider*"
+                        }
+                        
                         foreach ($mod in $modules) {
-                            $loadedAMSI += [PSCustomObject]@{
-                                ProcessName = $proc.Name
-                                ProcessId   = $proc.Id
-                                ModuleName  = $mod.ModuleName
-                                ModulePath  = $mod.FileName
+                            $modKey = $mod.FileName
+                            
+                            # Track unique modules and which processes they're loaded in
+                            if (-not $loadedAMSI.ContainsKey($modKey)) {
+                                $loadedAMSI[$modKey] = @{
+                                    ModuleName = $mod.ModuleName
+                                    ModulePath = $mod.FileName
+                                    Processes  = @()
+                                }
                             }
+                            
+                            $loadedAMSI[$modKey].Processes += "$($proc.Name) (PID: $($proc.Id))"
                         }
                     }
                     catch {
@@ -382,14 +365,79 @@ function Hunt-ForensicDump {
                     }
                 }
                 
-                # Add loaded AMSI info to provider list if found
-                if ($loadedAMSI.Count -gt 0) {
-                    $uniqueLoaded = $loadedAMSI | Select-Object ModuleName, ModulePath -Unique
-                    Write-Verbose "Found $($uniqueLoaded.Count) unique AMSI DLLs loaded in processes"
+                # Add loaded modules to provider list
+                foreach ($modKey in $loadedAMSI.Keys) {
+                    $modInfo = $loadedAMSI[$modKey]
+                    
+                    # Check if already in registry-based list
+                    $existingProvider = $amsiProviders | Where-Object { 
+                        $_.DLLPath -eq $modInfo.ModulePath 
+                    } | Select-Object -First 1
+                    
+                    if ($existingProvider) {
+                        # Update existing provider with process info
+                        $existingProvider | Add-Member -NotePropertyName 'LoadedInProcesses' -NotePropertyValue ($modInfo.Processes -join '; ') -Force
+                        $existingProvider.DetectionMethod = "Registry+Process"
+                    }
+                    else {
+                        # Add as new provider (not in registry but loaded)
+                        $dllExists = Test-Path $modInfo.ModulePath -ErrorAction SilentlyContinue
+                        $dllSize = 0
+                        if ($dllExists) {
+                            $dllFile = Get-Item $modInfo.ModulePath -ErrorAction SilentlyContinue
+                            if ($dllFile) {
+                                $dllSize = [math]::Round($dllFile.Length / 1KB, 2)
+                            }
+                        }
+                        
+                        $amsiProviders += [PSCustomObject]@{
+                            GUID              = "N/A"
+                            Name              = "Loaded Module: $($modInfo.ModuleName)"
+                            DLLPath           = $modInfo.ModulePath
+                            DLLExists         = $dllExists
+                            DLLSizeKB         = $dllSize
+                            ThreadingModel    = "N/A"
+                            DetectionMethod   = "Process"
+                            LoadedInProcesses = ($modInfo.Processes -join '; ')
+                        }
+                    }
                 }
+                
+                Write-Verbose "Found $($loadedAMSI.Count) unique AMSI modules loaded in processes"
             }
             catch {
                 Write-Verbose "Could not enumerate loaded AMSI modules: $($_.Exception.Message)"
+            }
+            
+            # Phase 3: Check Windows Defender AMSI integration
+            try {
+                $defenderAmsi = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows Defender\Features" -Name "MpEngine" -ErrorAction SilentlyContinue
+                if ($defenderAmsi) {
+                    # Check if amsi.dll is in Windows Defender directory
+                    $defenderPath = "$env:ProgramFiles\Windows Defender"
+                    $defenderAmsiPath = Join-Path $defenderPath "MpOav.dll"
+                    
+                    if (Test-Path $defenderAmsiPath) {
+                        $existing = $amsiProviders | Where-Object { $_.DLLPath -eq $defenderAmsiPath }
+                        if (-not $existing) {
+                            $dllFile = Get-Item $defenderAmsiPath -ErrorAction SilentlyContinue
+                            $dllSize = if ($dllFile) { [math]::Round($dllFile.Length / 1KB, 2) } else { 0 }
+                            
+                            $amsiProviders += [PSCustomObject]@{
+                                GUID            = "N/A"
+                                Name            = "Windows Defender AMSI"
+                                DLLPath         = $defenderAmsiPath
+                                DLLExists       = $true
+                                DLLSizeKB       = $dllSize
+                                ThreadingModel  = "N/A"
+                                DetectionMethod = "Defender Integration"
+                            }
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Could not check Windows Defender AMSI integration: $($_.Exception.Message)"
             }
             
             return $amsiProviders
@@ -537,6 +585,118 @@ function Hunt-ForensicDump {
         }
         catch {
             return [PSCustomObject]@{ IsVirtualMachine = $false; Type = "Unknown" }
+        }
+    }
+
+    # Helper function: Parse systeminfo command output
+    function Get-SystemInfoCommand {
+        try {
+            $systemInfoData = @{}
+            
+            Write-Verbose "Running systeminfo command..."
+            $systemInfoOutput = systeminfo.exe 2>$null
+            
+            if ($LASTEXITCODE -ne 0 -or -not $systemInfoOutput) {
+                Write-Verbose "systeminfo command failed or returned no data"
+                return $systemInfoData
+            }
+            
+            foreach ($line in $systemInfoOutput) {
+                # Parse key-value pairs (format: "Key:      Value")
+                if ($line -match '^([^:]+):\s+(.+)$') {
+                    $key = $matches[1].Trim()
+                    $value = $matches[2].Trim()
+                    
+                    # Skip empty values
+                    if ([string]::IsNullOrWhiteSpace($value) -or $value -eq 'N/A') {
+                        continue
+                    }
+                    
+                    # Map important fields
+                    switch ($key) {
+                        'Host Name' { $systemInfoData.Hostname = $value }
+                        'OS Name' { $systemInfoData.OSName = $value }
+                        'OS Version' { $systemInfoData.OSVersion = $value }
+                        'OS Manufacturer' { $systemInfoData.OSManufacturer = $value }
+                        'OS Configuration' { $systemInfoData.OSConfiguration = $value }
+                        'OS Build Type' { $systemInfoData.OSBuildType = $value }
+                        'Registered Owner' { $systemInfoData.RegisteredOwner = $value }
+                        'Registered Organization' { $systemInfoData.RegisteredOrganization = $value }
+                        'Product ID' { $systemInfoData.ProductID = $value }
+                        'Original Install Date' { $systemInfoData.InstallDate = $value }
+                        'System Boot Time' { $systemInfoData.BootTime = $value }
+                        'System Manufacturer' { $systemInfoData.SystemManufacturer = $value }
+                        'System Model' { $systemInfoData.SystemModel = $value }
+                        'System Type' { $systemInfoData.SystemType = $value }
+                        'Processor(s)' { 
+                            # This line tells us how many processors, next lines have details
+                            $systemInfoData.ProcessorCount = $value 
+                        }
+                        'BIOS Version' { $systemInfoData.BIOSVersion = $value }
+                        'Windows Directory' { $systemInfoData.WindowsDirectory = $value }
+                        'System Directory' { $systemInfoData.SystemDirectory = $value }
+                        'Boot Device' { $systemInfoData.BootDevice = $value }
+                        'System Locale' { $systemInfoData.SystemLocale = $value }
+                        'Input Locale' { $systemInfoData.InputLocale = $value }
+                        'Time Zone' { $systemInfoData.TimeZone = $value }
+                        'Total Physical Memory' { $systemInfoData.TotalPhysicalMemory = $value }
+                        'Available Physical Memory' { $systemInfoData.AvailablePhysicalMemory = $value }
+                        'Virtual Memory: Max Size' { $systemInfoData.VirtualMemoryMax = $value }
+                        'Virtual Memory: Available' { $systemInfoData.VirtualMemoryAvailable = $value }
+                        'Virtual Memory: In Use' { $systemInfoData.VirtualMemoryInUse = $value }
+                        'Page File Location(s)' { $systemInfoData.PageFileLocation = $value }
+                        'Domain' { $systemInfoData.Domain = $value }
+                        'Logon Server' { $systemInfoData.LogonServer = $value }
+                        'Hyper-V Requirements' { $systemInfoData.HyperVRequirements = $value }
+                    }
+                }
+                # Collect processor details (they appear after "Processor(s):" line)
+                elseif ($line -match '^\s+\[(\d+)\]:\s+(.+)$') {
+                    $procIndex = $matches[1]
+                    $procDetails = $matches[2].Trim()
+                    
+                    if (-not $systemInfoData.ContainsKey('ProcessorDetails')) {
+                        $systemInfoData.ProcessorDetails = @()
+                    }
+                    $systemInfoData.ProcessorDetails += $procDetails
+                }
+            }
+            
+            # Parse hotfixes separately as they're in a list format
+            $hotfixSection = $false
+            $hotfixes = @()
+            foreach ($line in $systemInfoOutput) {
+                if ($line -match 'Hotfix\(s\):') {
+                    $hotfixSection = $true
+                    # Check if count is on same line
+                    if ($line -match 'Hotfix\(s\):\s+(\d+)\s+Hotfix\(s\)\s+Installed') {
+                        $systemInfoData.HotfixCount = $matches[1]
+                    }
+                    continue
+                }
+                
+                if ($hotfixSection) {
+                    # Hotfix entries look like: "               [01]: KB5007186"
+                    if ($line -match '^\s+\[\d+\]:\s+(KB\d+)') {
+                        $hotfixes += $matches[1]
+                    }
+                    # Stop at next section
+                    elseif ($line -match '^[A-Za-z]') {
+                        $hotfixSection = $false
+                    }
+                }
+            }
+            
+            if ($hotfixes.Count -gt 0) {
+                $systemInfoData.Hotfixes = $hotfixes
+                $systemInfoData.HotfixCount = $hotfixes.Count
+            }
+            
+            return $systemInfoData
+        }
+        catch {
+            Write-Verbose "systeminfo parsing error: $($_.Exception.Message)"
+            return @{}
         }
     }
 
@@ -1155,6 +1315,9 @@ function Hunt-ForensicDump {
             Write-Host "  [-] Gathering basic system info..." -ForegroundColor DarkGray
             $sysInfo.ComputerInfo = Get-ComputerInfo -ErrorAction SilentlyContinue
             $sysInfo.OSInfo = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+
+            Write-Host "  [-] Running systeminfo command..." -ForegroundColor DarkGray
+            $sysInfo.SystemInfoCmd = Get-SystemInfoCommand
         
             Write-Host "  [-] Checking domain status..." -ForegroundColor DarkGray
             try {
@@ -1181,13 +1344,60 @@ function Hunt-ForensicDump {
             try {
                 $runMRU = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU" -ErrorAction SilentlyContinue
                 if ($runMRU) {
-                    $sysInfo.RunMRU = $runMRU.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" -and $_.Name -ne "MRUList" } | Select-Object Name, Value
+                    # Get the MRUList order (e.g., "acb" means a is most recent, then c, then b)
+                    $mruOrder = $runMRU.MRUList
+                    $runMRUList = @()
+                
+                    # Get all command entries (single letters a-z)
+                    $commandEntries = $runMRU.PSObject.Properties | Where-Object { 
+                        $_.Name -match '^[a-z]$' -and ![string]::IsNullOrWhiteSpace($_.Value)
+                    }
+                
+                    if ($commandEntries -and $commandEntries.Count -gt 0) {
+                        # If we have an MRU order, sort by it; otherwise use alphabetical
+                        if (![string]::IsNullOrWhiteSpace($mruOrder)) {
+                            # Sort by MRU order (most recent first)
+                            $orderedEntries = @()
+                            foreach ($char in $mruOrder.ToCharArray()) {
+                                $entry = $commandEntries | Where-Object { $_.Name -eq $char.ToString() } | Select-Object -First 1
+                                if ($entry) {
+                                    $orderedEntries += $entry
+                                }
+                            }
+                            # Add any entries not in MRU list
+                            foreach ($entry in $commandEntries) {
+                                if ($entry.Name -notin $mruOrder.ToCharArray()) {
+                                    $orderedEntries += $entry
+                                }
+                            }
+                            $commandEntries = $orderedEntries
+                        }
+                    
+                        # Process each command entry
+                        $index = 1
+                        foreach ($entry in $commandEntries) {
+                            # Remove the \1 terminator if present
+                            $command = $entry.Value -replace '\\1$', ''
+                        
+                            if (![string]::IsNullOrWhiteSpace($command)) {
+                                $runMRUList += [PSCustomObject]@{
+                                    Order   = $index
+                                    Key     = $entry.Name
+                                    Command = $command
+                                }
+                                $index++
+                            }
+                        }
+                    }
+                
+                    $sysInfo.RunMRU = $runMRUList
                 }
                 else {
                     $sysInfo.RunMRU = @()
                 }
             }
             catch {
+                Write-Verbose "Run MRU collection error: $($_.Exception.Message)"
                 $sysInfo.RunMRU = @()
             }
         
@@ -1218,6 +1428,79 @@ function Hunt-ForensicDump {
             $sysInfo.IPConfiguration = Get-NetIPConfiguration -ErrorAction SilentlyContinue
             $sysInfo.DNSServers = Get-DnsClientServerAddress -ErrorAction SilentlyContinue
             $sysInfo.FirewallRules = Get-NetFirewallRule -Enabled True -ErrorAction SilentlyContinue | Select-Object -First 100
+
+            Write-Host "  [-] Detecting domain controller and DNS configuration..." -ForegroundColor DarkGray
+            try {
+                # Get primary DNS server
+                $primaryDNS = @()
+                if ($sysInfo.DNSServers) {
+                    foreach ($dnsConfig in $sysInfo.DNSServers) {
+                        if ($dnsConfig.ServerAddresses -and $dnsConfig.ServerAddresses.Count -gt 0) {
+                            $primaryDNS += $dnsConfig.ServerAddresses[0]
+                        }
+                    }
+                }
+                $sysInfo.PrimaryDNSServer = if ($primaryDNS.Count -gt 0) { $primaryDNS[0] } else { "N/A" }
+            
+                # Try to get domain controller info if domain-joined
+                $dcInfo = $null
+                $logonServer = "N/A"
+            
+                if ($sysInfo.IsDomainJoined) {
+                    # Method 1: Use environment variable
+                    $logonServer = $env:LOGONSERVER -replace '\\\\', ''
+                
+                    # Method 2: Try nltest to get DC info
+                    try {
+                        $nltestOutput = nltest /dsgetdc:$($sysInfo.Domain) 2>$null
+                        if ($LASTEXITCODE -eq 0 -and $nltestOutput) {
+                            foreach ($line in $nltestOutput) {
+                                if ($line -match 'DC:\s*(.+)') {
+                                    $dcName = $matches[1].Trim()
+                                    if (![string]::IsNullOrWhiteSpace($dcName)) {
+                                        $logonServer = $dcName -replace '\\\\', ''
+                                    }
+                                }
+                                elseif ($line -match 'DC Address:\s*(.+)') {
+                                    $dcAddress = $matches[1].Trim()
+                                    if ($dcAddress -match '\d+\.\d+\.\d+\.\d+') {
+                                        $dcIP = $matches[0]
+                                        if (-not $dcInfo) { $dcInfo = @{} }
+                                        $dcInfo.IPAddress = $dcIP
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch {
+                        Write-Verbose "nltest command failed: $($_.Exception.Message)"
+                    }
+                
+                    # Method 3: Try to resolve logon server
+                    if ($logonServer -ne "N/A") {
+                        try {
+                            $dcResolved = Resolve-DnsName -Name $logonServer -ErrorAction SilentlyContinue
+                            if ($dcResolved) {
+                                if (-not $dcInfo) { $dcInfo = @{} }
+                                $dcInfo.Name = $logonServer
+                                $dcInfo.IPAddress = ($dcResolved | Where-Object { $_.Type -eq 'A' } | Select-Object -First 1).IPAddress
+                            }
+                        }
+                        catch {
+                            Write-Verbose "Could not resolve DC: $($_.Exception.Message)"
+                        }
+                    }
+                }
+            
+                $sysInfo.LogonServer = $logonServer
+                $sysInfo.DomainController = if ($dcInfo) { $dcInfo } else { @{ Name = "N/A"; IPAddress = "N/A" } }
+            }
+            catch {
+                Write-Verbose "Domain controller detection error: $($_.Exception.Message)"
+                $sysInfo.LogonServer = "N/A"
+                $sysInfo.PrimaryDNSServer = "N/A"
+                $sysInfo.DomainController = @{ Name = "N/A"; IPAddress = "N/A" }
+            }
         
             Write-Host "  [-] Enumerating processes..." -ForegroundColor DarkGray
             $sysInfo.Processes = Get-Process -IncludeUserName -ErrorAction SilentlyContinue | 
@@ -1593,8 +1876,6 @@ function Hunt-ForensicDump {
                 return '[]'
             }
 
-            #Write-Host "  [-] Processing $Type data: $($Data.Count) records..." -ForegroundColor DarkGray
-
             $dataToProcess = $Data
             if ($MaxRows -gt 0 -and $Data.Count -gt $MaxRows) {
                 Write-Host "  [-] Limiting to first $MaxRows records..." -ForegroundColor DarkGray
@@ -1619,16 +1900,33 @@ function Hunt-ForensicDump {
                 $allKeys = $allKeys | Where-Object { $_ -notin $OmitFields }
             }
 
+            # Define critical fields that should always be included if they exist (regardless of having values)
+            $criticalFields = @{
+                'persistence' = @('Flag', 'Severity', 'Risk', 'Category')
+                'files'       = @('Flag', 'Risk')
+                'services'    = @('Status', 'StartType', 'State')
+                'tasks'       = @('State', 'Enabled')
+                'logs'        = @('Level', 'LevelDisplayName')
+            }
+    
+            $typeCriticalFields = if ($criticalFields.ContainsKey($Type)) { $criticalFields[$Type] } else { @() }
+
             # Determine which keys have meaningful values
             $keysToKeep = [System.Collections.ArrayList]::new()
             foreach ($key in $allKeys) {
+                # Always include critical fields if they exist in the data
+                if ($typeCriticalFields -contains $key) {
+                    [void]$keysToKeep.Add($key)
+                    continue
+                }
+        
                 $hasValue = $false
                 $sampleLimit = [Math]::Min(50, $dataToProcess.Count)
-                
+        
                 for ($i = 0; $i -lt $sampleLimit; $i++) {
                     $currentItem = $dataToProcess[$i]
                     $value = $currentItem.$key
-                    
+            
                     if ($null -ne $value -and $value -ne '' -and $value -ne 0) {
                         $hasValue = $true
                         break
@@ -2504,9 +2802,31 @@ function Hunt-ForensicDump {
                     <div class="sysinfo-item"><span class="sysinfo-label">OS:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.OSInfo) { "$($ForensicData.SystemInfo.OSInfo.Caption) $($ForensicData.SystemInfo.OSInfo.Version)" } else { 'N/A' })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Architecture:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.OSInfo) { $ForensicData.SystemInfo.OSInfo.OSArchitecture } else { 'N/A' })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Build:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.OSInfo) { $ForensicData.SystemInfo.OSInfo.BuildNumber } else { 'N/A' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Install Date:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.InstallDate) { $ForensicData.SystemInfo.SystemInfoCmd.InstallDate } else { 'N/A' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">System Locale:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.SystemLocale) { $ForensicData.SystemInfo.SystemInfoCmd.SystemLocale } else { 'N/A' })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Boot Time:</span><span class="sysinfo-value">$($ForensicData.SystemInfo.BootTime)</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Uptime:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.Uptime) { "$($ForensicData.SystemInfo.Uptime.Days)d $($ForensicData.SystemInfo.Uptime.Hours)h $($ForensicData.SystemInfo.Uptime.Minutes)m" } else { 'N/A' })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Time Zone:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.TimeZone) { $ForensicData.SystemInfo.TimeZone.DisplayName } else { 'N/A' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Hotfixes Installed:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.HotfixCount) { $ForensicData.SystemInfo.SystemInfoCmd.HotfixCount } else { 'N/A' })</span></div>
+                </div>
+                
+                <div class="sysinfo-card">
+                    <h3>Hardware</h3>
+                    <div class="sysinfo-item"><span class="sysinfo-label">System Manufacturer:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.SystemManufacturer) { $ForensicData.SystemInfo.SystemInfoCmd.SystemManufacturer } else { 'N/A' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">System Model:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.SystemModel) { $ForensicData.SystemInfo.SystemInfoCmd.SystemModel } else { 'N/A' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">System Type:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.SystemType) { $ForensicData.SystemInfo.SystemInfoCmd.SystemType } else { 'N/A' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Processor:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.ProcessorDetails -and $ForensicData.SystemInfo.SystemInfoCmd.ProcessorDetails.Count -gt 0) { $ForensicData.SystemInfo.SystemInfoCmd.ProcessorDetails[0] } else { 'N/A' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">BIOS Version:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.BIOSVersion) { $ForensicData.SystemInfo.SystemInfoCmd.BIOSVersion } else { 'N/A' })</span></div>
+                </div>
+                
+                <div class="sysinfo-card">
+                    <h3>Memory</h3>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Total Physical Memory:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.TotalPhysicalMemory) { $ForensicData.SystemInfo.SystemInfoCmd.TotalPhysicalMemory } else { 'N/A' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Available Physical Memory:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.AvailablePhysicalMemory) { $ForensicData.SystemInfo.SystemInfoCmd.AvailablePhysicalMemory } else { 'N/A' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Virtual Memory Max:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.VirtualMemoryMax) { $ForensicData.SystemInfo.SystemInfoCmd.VirtualMemoryMax } else { 'N/A' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Virtual Memory Available:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.VirtualMemoryAvailable) { $ForensicData.SystemInfo.SystemInfoCmd.VirtualMemoryAvailable } else { 'N/A' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Virtual Memory In Use:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.VirtualMemoryInUse) { $ForensicData.SystemInfo.SystemInfoCmd.VirtualMemoryInUse } else { 'N/A' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Page File Location:</span><span class="sysinfo-value" style="font-size: 0.85em;">$(if ($ForensicData.SystemInfo.SystemInfoCmd.PageFileLocation) { $ForensicData.SystemInfo.SystemInfoCmd.PageFileLocation } else { 'N/A' })</span></div>
                 </div>
                 
                 <div class="sysinfo-card">
@@ -2557,6 +2877,9 @@ function Hunt-ForensicDump {
                     <div class="sysinfo-item"><span class="sysinfo-label">Internet Status:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.InternetConnectivity.Status -eq 'Online') { '#2ecc71' } else { '#e74c3c' })">$($ForensicData.SystemInfo.InternetConnectivity.Status)</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Can Ping 1.1.1.1:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.InternetConnectivity.CanPingCloudflare) { 'Yes' } else { 'No' })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">DNS Resolution:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.InternetConnectivity.CanResolveDNS) { 'Working' } else { 'Failed' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Primary DNS Server:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.PrimaryDNSServer) { $ForensicData.SystemInfo.PrimaryDNSServer } else { 'N/A' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Logon Server:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.LogonServer) { $ForensicData.SystemInfo.LogonServer } else { 'N/A' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Domain Controller:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.DomainController -and $ForensicData.SystemInfo.DomainController.Name -ne 'N/A') { "$($ForensicData.SystemInfo.DomainController.Name) ($($ForensicData.SystemInfo.DomainController.IPAddress))" } else { 'N/A' })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">DNS Servers:</span><span class="sysinfo-value">$(
                         if ($ForensicData.SystemInfo.DNSServers) { 
                             $dnsAddresses = @()
@@ -2779,16 +3102,18 @@ $(
                     <table id="runmru-table">
                         <thead>
                             <tr>
-                                <th onclick="sortSystemTable('runmru-table', 0)" style="position: relative;">Order<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('runmru-table', 1)" style="position: relative;">Command<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('runmru-table', 0)" style="position: relative; width: 80px;">Order<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('runmru-table', 1)" style="position: relative; width: 80px;">Key<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('runmru-table', 2)" style="position: relative;">Command<div class="resizer"></div></th>
                             </tr>
                         </thead>
                         <tbody>
 "@
         foreach ($item in $ForensicData.SystemInfo.RunMRU) {
-            $name = [System.Web.HttpUtility]::HtmlEncode($item.Name)
-            $value = [System.Web.HttpUtility]::HtmlEncode($item.Value)
-            $runMRUHtml += "                            <tr><td>$name</td><td style='font-family: Consolas, monospace;'>$value</td></tr>`n"
+            $order = $item.Order
+            $key = [System.Web.HttpUtility]::HtmlEncode($item.Key)
+            $command = [System.Web.HttpUtility]::HtmlEncode($item.Command)
+            $runMRUHtml += "                            <tr><td>$order</td><td>$key</td><td style='font-family: Consolas, monospace;'>$command</td></tr>`n"
         }
         $runMRUHtml += @"
                         </tbody>
@@ -3869,28 +4194,54 @@ $(
             
             $persistenceResults = Hunt-Persistence @persistenceParams
             
-            # Verify and add Flag field if missing
+            # Verify and normalize Flag field - ensure consistency
             if ($persistenceResults -and $persistenceResults.Count -gt 0) {
-                $flagMissing = $false
+                $flagCount = 0
+                $flagAdded = 0
+                
                 foreach ($item in $persistenceResults) {
-                    if (-not $item.PSObject.Properties['Flag']) {
-                        $flagMissing = $true
-                        # Add default Flag based on other properties
+                    # Check if Flag property exists
+                    $flagProp = $item.PSObject.Properties['Flag']
+                    
+                    if ($null -eq $flagProp) {
+                        # No Flag property at all - add default based on other properties
                         $defaultFlag = 'Info'
-                        if ($item.PSObject.Properties['Severity']) {
+                        if ($item.PSObject.Properties['Severity'] -and ![string]::IsNullOrWhiteSpace($item.Severity)) {
                             $defaultFlag = $item.Severity
                         }
-                        elseif ($item.PSObject.Properties['Risk']) {
+                        elseif ($item.PSObject.Properties['Risk'] -and ![string]::IsNullOrWhiteSpace($item.Risk)) {
                             $defaultFlag = $item.Risk
                         }
+                        elseif ($item.PSObject.Properties['Category'] -and $item.Category -match 'suspicious|malicious|critical') {
+                            $defaultFlag = 'High'
+                        }
+                        
                         $item | Add-Member -NotePropertyName 'Flag' -NotePropertyValue $defaultFlag -Force
+                        $flagAdded++
+                    }
+                    elseif ([string]::IsNullOrWhiteSpace($flagProp.Value)) {
+                        # Flag exists but is empty - populate it
+                        $defaultFlag = 'Info'
+                        if ($item.PSObject.Properties['Severity'] -and ![string]::IsNullOrWhiteSpace($item.Severity)) {
+                            $defaultFlag = $item.Severity
+                        }
+                        elseif ($item.PSObject.Properties['Risk'] -and ![string]::IsNullOrWhiteSpace($item.Risk)) {
+                            $defaultFlag = $item.Risk
+                        }
+                        
+                        $item.Flag = $defaultFlag
+                        $flagAdded++
+                    }
+                    else {
+                        $flagCount++
                     }
                 }
-                if ($flagMissing) {
-                    Write-Host "  [!] Added missing Flag field to persistence data" -ForegroundColor Yellow
+                
+                if ($flagAdded -gt 0) {
+                    Write-Host "  [!] Added/normalized Flag field for $flagAdded persistence items" -ForegroundColor Yellow
                 }
-                else {
-                    Write-Host "  [-] Flag field verified in persistence data" -ForegroundColor DarkGray
+                if ($flagCount -gt 0) {
+                    Write-Host "  [-] Verified Flag field in $flagCount persistence items" -ForegroundColor DarkGray
                 }
             }
             
@@ -4356,6 +4707,8 @@ $(
     
     Write-Host ""
 }
+
+
 
 
 Function Hunt-Persistence {
