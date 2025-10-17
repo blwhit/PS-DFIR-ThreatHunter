@@ -28,6 +28,7 @@
 # - add a native "-More" or "-Page" or "-Paging" switch to the Hunt-Logs (and maybe Hunt-Files) function (paging ability while keeping coloring)
 # - take the extra space printing out of the Hunt-Browser execution for the forensic dump... printing an extra newline, not clean
 # - Fix the forensic dump "Settings" page.. doesnt change colors, out of date/misleading. Cant go over preset limit numbers, etc.
+# - Fix the forensic dump system info checks for the overview page. They are all showing N/A... review the logic
 
 
 #   Final/Full Review & Pass-Through
@@ -339,8 +340,6 @@ function Hunt-ForensicDump {
                         # Look for AMSI-related modules (including vendor-specific like TmAMSI, MsMpEng, etc.)
                         $modules = $proc.Modules | Where-Object { 
                             $_.ModuleName -like "*amsi*" -or 
-                            $_.ModuleName -like "*guard*" -or
-                            $_.ModuleName -like "MsMpEng*" -or
                             $_.ModuleName -like "Tm*AMSI*" -or
                             $_.ModuleName -like "*AMSIProvider*"
                         }
@@ -610,7 +609,7 @@ function Hunt-ForensicDump {
             Write-Verbose "systeminfo returned $($systemInfoOutput.Count) lines of output"
             
             foreach ($line in $systemInfoOutput) {
-                # Parse key-value pairs (format: "Key:      Value")
+                # Parse key-value pairs (format: "Key: Value")
                 if ($line -match '^([^:]+):\s+(.+)$') {
                     $key = $matches[1].Trim()
                     $value = $matches[2].Trim()
@@ -806,7 +805,8 @@ function Hunt-ForensicDump {
             # Debug: List all captured keys
             if ($systemInfoData.Count -gt 0) {
                 Write-Verbose "Captured keys: $($systemInfoData.Keys -join ', ')"
-            } else {
+            }
+            else {
                 Write-Warning "systeminfo parsing captured NO data - this will result in 'N/A' values in the report"
             }
             
@@ -1441,7 +1441,8 @@ function Hunt-ForensicDump {
             # Diagnostic: Check if SystemInfoCmd was populated
             if ($sysInfo.SystemInfoCmd -and $sysInfo.SystemInfoCmd.Count -gt 0) {
                 Write-Host "  [+] Captured $($sysInfo.SystemInfoCmd.Count) systeminfo data points" -ForegroundColor Green
-            } else {
+            }
+            else {
                 Write-Host "  [!] WARNING: systeminfo command returned no data - run with -Verbose to diagnose" -ForegroundColor Yellow
             }
         
