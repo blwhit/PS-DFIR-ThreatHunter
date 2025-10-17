@@ -20,19 +20,23 @@
 # -------------------
 # - Make Wiki
 # - Spend genuine time building and tuning the IOC and string lists
-# - fix the ForensicDump scheduled task table display-- cleanup display for TriggerType string lists (empty commas, extra spaces, etc.)
-# - The persistence objects dont have flags in the HTML report for some reason. The column doesnt exist even though its not omitted... might not be getting exported to CSV from Hunt-Persistence
+
 # - !!!  add caching functionality to subfunctions (add -DontCache switch, use in ForensicDump to avoid extra PS session vars)... cache cmdlet search results in PS variable for quicker subsequent searching 
 # - ADD switch to Hunt-Browser to get the browser extensions loaded on the machine for all browsers
-# - add logo or link to github, etc. (footer, etc.)
-# - fix and update the 'Display Settings' Tab-- notice you cant go above exported $MaxRows value, etc
-# - Add tab for "Export Information", details about where files are located, hyperlinks to ForensicData folder, runtime of dump, etc...
-# - Add a light/dark mode button in the top header
 # - will packaging as PS2EXE make it work on older windows computers? research
-# - add defensive powershell version check to each function init
+# - add defensive powershell version check to each function init... add defensive input param validation/sanitization too
+# - add a native "-More" or "-Page" or "-Paging" switch to the Hunt-Logs and maybe Hunt-Files function (paging ability while keeping coloring)
+# - make sure Hunt-Persistence sets flags in all mode. still want that info
 
+# - add logo or link to github, etc. (footer, etc.)
+# - Add section for "Export Information", details about where files are located, hyperlinks to ForensicData folder, runtime of dump, etc...
+# - add defensive powershell version check
+# - Add a light/dark mode button in the top header of the forensic dump HTML report
+# - fix and update the 'Display Settings' Tab-- notice you cant go above exported $MaxRows value, etc
+# - The persistence objects dont have flags in the HTML report for some reason. The column doesnt exist even though its not omitted... might not be getting exported to CSV from Hunt-Persistence
+# - fix the ForensicDump scheduled task table display-- cleanup display for TriggerType string lists (empty commas, extra spaces, etc.)
 
-# Extra System checks/info:
+# Extra System checks/info/Summary/Machihne details:
 # ==========================
 # - AMSI providers
 # - Minifilter Drivers loaded
@@ -279,16 +283,508 @@ function Hunt-ForensicDump {
         [switch]$AllFields,
         
         [Parameter(Mandatory = $false)]
-        [string]$Timezone = "",
-        
-        [Parameter(Mandatory = $false)]
         [switch]$LoadBrowserTool,
         
         [Parameter(Mandatory = $false)]
         [string]$LoadToolPath = ""
     )
 
+    # PowerShell version check
+    if ($PSVersionTable.PSVersion.Major -lt 5) {
+        Write-Error "This function requires PowerShell 5.0 or higher. Current version: $($PSVersionTable.PSVersion)"
+        return
+    }
 
+    # Helper function: Get AMSI Providers
+    function Get-AMSIProviders {
+        try {
+            $amsiProviders = @()
+            $amsiKey = "HKLM:\SOFTWARE\Microsoft\AMSI\Providers"
+            
+            if (Test-Path $amsiKey) {
+                $providers = Get-ChildItem -Path $amsiKey -ErrorAction SilentlyContinue
+                foreach ($provider in $providers) {
+                    try {
+                        $providerGuid = $provider.PSChildName
+                        $clsidPath = "HKLM:\SOFTWARE\Classes\CLSID\$providerGuid"
+                        $providerName = "Unknown"
+                        
+                        if (Test-Path $clsidPath) {
+                            $clsidKey = Get-ItemProperty -Path $clsidPath -ErrorAction SilentlyContinue
+                            if ($clsidKey -and $clsidKey.PSObject.Properties['(default)']) {
+                                $providerName = $clsidKey.'(default)'
+                            }
+                        }
+                        
+                        $amsiProviders += [PSCustomObject]@{
+                            GUID = $providerGuid
+                            Name = $providerName
+                        }
+                    }
+                    catch {
+                        continue
+                    }
+                }
+            }
+            return $amsiProviders
+        }
+        catch {
+            return @()
+        }
+    }
+
+    # Helper function: Get Minifilter Drivers
+    function Get-MinifilterDrivers {
+        try {
+            $drivers = @()
+            $fltmc = fltmc filters 2>$null
+            
+            if ($fltmc) {
+                $fltmc | Select-Object -Skip 3 | ForEach-Object {
+                    if ($_ -match '^(\S+)\s+(\d+)\s+(\d+)') {
+                        $drivers += [PSCustomObject]@{
+                            FilterName = $matches[1].Trim()
+                            Instances  = $matches[2].Trim()
+                            Altitude   = $matches[3].Trim()
+                        }
+                    }
+                }
+            }
+            return $drivers
+        }
+        catch {
+            return @()
+        }
+    }
+
+    # Helper function: Get WDAC Policy Status
+    function Get-WDACStatus {
+        try {
+            $wdacStatus = [PSCustomObject]@{
+                Enabled  = $false
+                Policies = @()
+            }
+            
+            # Check for Code Integrity policies
+            $ciPolicies = Get-CimInstance -Namespace root\Microsoft\Windows\CI -ClassName PS_CIPolicyInfo -ErrorAction SilentlyContinue
+            
+            if ($ciPolicies) {
+                $wdacStatus.Enabled = $true
+                $wdacStatus.Policies = $ciPolicies | Select-Object PolicyID, FriendlyName, IsActive
+            }
+            
+            return $wdacStatus
+        }
+        catch {
+            return [PSCustomObject]@{ Enabled = $false; Policies = @() }
+        }
+    }
+
+    # Helper function: Get VBS Status
+    function Get-VBSStatus {
+        try {
+            $vbsStatus = [PSCustomObject]@{
+                VBSEnabled = $false
+                VBSRunning = $false
+                Details    = "Unknown"
+            }
+            
+            $devGuard = Get-CimInstance -ClassName Win32_DeviceGuard -Namespace root\Microsoft\Windows\DeviceGuard -ErrorAction SilentlyContinue
+            
+            if ($devGuard) {
+                $vbsStatus.VBSEnabled = $devGuard.VirtualizationBasedSecurityStatus -eq 2
+                $vbsStatus.VBSRunning = $devGuard.VirtualizationBasedSecurityStatus -eq 2
+                $vbsStatus.Details = "Status: $($devGuard.VirtualizationBasedSecurityStatus)"
+            }
+            
+            return $vbsStatus
+        }
+        catch {
+            return [PSCustomObject]@{ VBSEnabled = $false; VBSRunning = $false; Details = "Error" }
+        }
+    }
+
+    # Helper function: Get Bitlocker Status
+    function Get-BitlockerStatus {
+        try {
+            $volumes = Get-BitLockerVolume -ErrorAction SilentlyContinue
+            if ($volumes) {
+                return $volumes | Select-Object MountPoint, ProtectionStatus, EncryptionPercentage, VolumeStatus
+            }
+            return @()
+        }
+        catch {
+            return @()
+        }
+    }
+
+    # Helper function: Get Secure Boot Status
+    function Get-SecureBootStatus {
+        try {
+            $secureBootEnabled = Confirm-SecureBootUEFI -ErrorAction SilentlyContinue
+            return [PSCustomObject]@{
+                Enabled = $secureBootEnabled
+                Status  = if ($secureBootEnabled) { "Enabled" } else { "Disabled" }
+            }
+        }
+        catch {
+            return [PSCustomObject]@{ Enabled = $false; Status = "Unknown or Not Supported" }
+        }
+    }
+
+    # Helper function: Detect VM
+    function Test-IsVirtualMachine {
+        try {
+            $isVM = $false
+            $vmType = "Physical"
+            
+            $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
+            if ($computerSystem) {
+                $manufacturer = $computerSystem.Manufacturer.ToLower()
+                $model = $computerSystem.Model.ToLower()
+                
+                if ($manufacturer -match 'vmware' -or $model -match 'vmware') {
+                    $isVM = $true; $vmType = "VMware"
+                }
+                elseif ($manufacturer -match 'microsoft' -and $model -match 'virtual') {
+                    $isVM = $true; $vmType = "Hyper-V"
+                }
+                elseif ($manufacturer -match 'xen' -or $model -match 'xen') {
+                    $isVM = $true; $vmType = "Xen"
+                }
+                elseif ($manufacturer -match 'innotek' -or $manufacturer -match 'virtualbox') {
+                    $isVM = $true; $vmType = "VirtualBox"
+                }
+                elseif ($manufacturer -match 'qemu' -or $model -match 'qemu') {
+                    $isVM = $true; $vmType = "QEMU"
+                }
+                elseif ($manufacturer -match 'parallels') {
+                    $isVM = $true; $vmType = "Parallels"
+                }
+            }
+            
+            return [PSCustomObject]@{
+                IsVirtualMachine = $isVM
+                Type             = $vmType
+            }
+        }
+        catch {
+            return [PSCustomObject]@{ IsVirtualMachine = $false; Type = "Unknown" }
+        }
+    }
+
+    # Helper function: Test Internet Connectivity
+    function Test-InternetConnectivity {
+        try {
+            $connectivity = [PSCustomObject]@{
+                CanPingCloudflare = $false
+                CanPingGoogle     = $false
+                CanResolveDNS     = $false
+                Status            = "Offline"
+            }
+            
+            # Test ping to 1.1.1.1
+            $ping1 = Test-Connection -ComputerName "1.1.1.1" -Count 1 -Quiet -ErrorAction SilentlyContinue
+            $connectivity.CanPingCloudflare = $ping1
+            
+            # Test ping to 8.8.8.8
+            $ping2 = Test-Connection -ComputerName "8.8.8.8" -Count 1 -Quiet -ErrorAction SilentlyContinue
+            $connectivity.CanPingGoogle = $ping2
+            
+            # Test DNS resolution
+            $dns = Resolve-DnsName -Name "google.com" -ErrorAction SilentlyContinue
+            $connectivity.CanResolveDNS = $null -ne $dns
+            
+            if ($connectivity.CanPingCloudflare -or $connectivity.CanPingGoogle) {
+                $connectivity.Status = "Online"
+            }
+            
+            return $connectivity
+        }
+        catch {
+            return [PSCustomObject]@{
+                CanPingCloudflare = $false
+                CanPingGoogle     = $false
+                CanResolveDNS     = $false
+                Status            = "Unknown"
+            }
+        }
+    }
+
+    # Helper function: Get Installed Software
+    function Get-InstalledSoftware {
+        try {
+            $software = @()
+            
+            $regPaths = @(
+                "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+                "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+            )
+            
+            foreach ($path in $regPaths) {
+                Get-ItemProperty -Path $path -ErrorAction SilentlyContinue | 
+                Where-Object { $_.DisplayName } | 
+                Select-Object DisplayName, DisplayVersion, Publisher, InstallDate | 
+                ForEach-Object { $software += $_ }
+            }
+            
+            return $software | Sort-Object DisplayName -Unique
+        }
+        catch {
+            return @()
+        }
+    }
+
+    # Helper function: Detect RMM Tools
+    function Get-RMMTools {
+        try {
+            $rmmTools = @()
+            
+            $knownRMM = @{
+                'ScreenConnect'         = @('ScreenConnect*', '*ScreenConnect*')
+                'TeamViewer'            = @('TeamViewer*', '*TeamViewer*')
+                'AnyDesk'               = @('AnyDesk*', '*AnyDesk*')
+                'LogMeIn'               = @('LogMeIn*', '*LogMeIn*')
+                'Splashtop'             = @('Splashtop*', '*Splashtop*')
+                'RemotePC'              = @('RemotePC*', '*RemotePC*')
+                'Dameware'              = @('Dameware*', '*DameWare*')
+                'VNC'                   = @('*VNC*', 'TightVNC*', 'RealVNC*', 'UltraVNC*')
+                'Bomgar'                = @('Bomgar*', '*BeyondTrust*')
+                'GoToAssist'            = @('GoToAssist*', '*GoTo*')
+                'Zoho Assist'           = @('*Zoho*Assist*')
+                'Chrome Remote Desktop' = @('*Chrome Remote Desktop*')
+            }
+            
+            # Check installed software
+            $installed = Get-InstalledSoftware
+            
+            foreach ($tool in $knownRMM.Keys) {
+                foreach ($pattern in $knownRMM[$tool]) {
+                    $found = $installed | Where-Object { $_.DisplayName -like $pattern }
+                    if ($found) {
+                        foreach ($item in $found) {
+                            $rmmTools += [PSCustomObject]@{
+                                Tool      = $tool
+                                Name      = $item.DisplayName
+                                Version   = $item.DisplayVersion
+                                Publisher = $item.Publisher
+                            }
+                        }
+                    }
+                }
+            }
+            
+            # Check running processes
+            $processes = Get-Process -ErrorAction SilentlyContinue
+            $rmmProcesses = @('ScreenConnect', 'TeamViewer', 'AnyDesk', 'LogMeIn', 'Splashtop', 'vncviewer', 'tvnserver')
+            
+            foreach ($proc in $rmmProcesses) {
+                $found = $processes | Where-Object { $_.ProcessName -like "*$proc*" }
+                if ($found) {
+                    foreach ($p in $found) {
+                        if (-not ($rmmTools | Where-Object { $_.Name -like "*$($p.ProcessName)*" })) {
+                            $rmmTools += [PSCustomObject]@{
+                                Tool      = $proc
+                                Name      = $p.ProcessName
+                                Version   = "Running Process"
+                                Publisher = "Detected via Process"
+                            }
+                        }
+                    }
+                }
+            }
+            
+            return $rmmTools | Sort-Object Tool -Unique
+        }
+        catch {
+            return @()
+        }
+    }
+
+    # Helper function: Get Default Browser
+    function Get-DefaultBrowser {
+        try {
+            $defaultBrowser = "Unknown"
+            
+            $userChoice = Get-ItemProperty -Path "HKCU:\SOFTWARE\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice" -ErrorAction SilentlyContinue
+            
+            if ($userChoice -and $userChoice.ProgId) {
+                $progId = $userChoice.ProgId
+                
+                if ($progId -match 'Chrome') { $defaultBrowser = "Google Chrome" }
+                elseif ($progId -match 'Firefox') { $defaultBrowser = "Mozilla Firefox" }
+                elseif ($progId -match 'Edge') { $defaultBrowser = "Microsoft Edge" }
+                elseif ($progId -match 'IE') { $defaultBrowser = "Internet Explorer" }
+                elseif ($progId -match 'Opera') { $defaultBrowser = "Opera" }
+                elseif ($progId -match 'Brave') { $defaultBrowser = "Brave" }
+                else { $defaultBrowser = $progId }
+            }
+            
+            return $defaultBrowser
+        }
+        catch {
+            return "Unknown"
+        }
+    }
+
+    # Helper function: Get Browser Extensions
+    function Get-BrowserExtensions {
+        try {
+            $extensions = @()
+            
+            # Chrome extensions
+            $chromeExtPath = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Extensions"
+            if (Test-Path $chromeExtPath) {
+                Get-ChildItem -Path $chromeExtPath -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                    $extensions += [PSCustomObject]@{
+                        Browser     = "Chrome"
+                        ExtensionID = $_.Name
+                        Path        = $_.FullName
+                    }
+                }
+            }
+            
+            # Firefox extensions
+            $ffProfilePath = "$env:APPDATA\Mozilla\Firefox\Profiles"
+            if (Test-Path $ffProfilePath) {
+                Get-ChildItem -Path $ffProfilePath -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                    $extPath = Join-Path $_.FullName "extensions"
+                    if (Test-Path $extPath) {
+                        Get-ChildItem -Path $extPath -ErrorAction SilentlyContinue | ForEach-Object {
+                            $extensions += [PSCustomObject]@{
+                                Browser     = "Firefox"
+                                ExtensionID = $_.Name
+                                Path        = $_.FullName
+                            }
+                        }
+                    }
+                }
+            }
+            
+            # Edge extensions
+            $edgeExtPath = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Extensions"
+            if (Test-Path $edgeExtPath) {
+                Get-ChildItem -Path $edgeExtPath -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                    $extensions += [PSCustomObject]@{
+                        Browser     = "Edge"
+                        ExtensionID = $_.Name
+                        Path        = $_.FullName
+                    }
+                }
+            }
+            
+            return $extensions
+        }
+        catch {
+            return @()
+        }
+    }
+
+    # Helper function: Get Logged In Users
+    function Get-LoggedInUsers {
+        try {
+            $users = @()
+            
+            # Try quser command
+            $quser = quser 2>$null
+            if ($quser) {
+                $quser | Select-Object -Skip 1 | ForEach-Object {
+                    if ($_ -match '^\s*(\S+)\s+(\S+)?\s+(\d+)\s+(\S+)\s+(.+)$') {
+                        $users += [PSCustomObject]@{
+                            Username    = $matches[1].Trim()
+                            SessionName = if ($matches[2]) { $matches[2].Trim() } else { "Console" }
+                            ID          = $matches[3].Trim()
+                            State       = $matches[4].Trim()
+                            IdleTime    = $matches[5].Trim()
+                        }
+                    }
+                }
+            }
+            
+            # Fallback to Win32_LoggedOnUser
+            if ($users.Count -eq 0) {
+                $loggedOn = Get-CimInstance -ClassName Win32_LoggedOnUser -ErrorAction SilentlyContinue
+                if ($loggedOn) {
+                    $loggedOn | ForEach-Object {
+                        $users += [PSCustomObject]@{
+                            Username  = $_.Antecedent.Name
+                            Domain    = $_.Antecedent.Domain
+                            LogonType = "CIM"
+                        }
+                    }
+                }
+            }
+            
+            return $users
+        }
+        catch {
+            return @()
+        }
+    }
+
+    # Helper function: Get User Account Creation Dates
+    function Get-UserCreationDates {
+        try {
+            $users = @()
+            
+            # Get local users with creation dates
+            # Get-LocalUser requires PS 5.1+, check if available
+            if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
+                $localUsers = Get-LocalUser -ErrorAction SilentlyContinue
+            }
+            else {
+                # Fallback for PowerShell 5.0
+                Write-Verbose "Get-LocalUser not available (requires PS 5.1+), using WMI fallback"
+                $localUsers = @()
+            }
+            
+            if ($localUsers) {
+                foreach ($user in $localUsers) {
+                    $users += [PSCustomObject]@{
+                        Username  = $user.Name
+                        Created   = $user.Created
+                        LastLogon = $user.LastLogon
+                        Enabled   = $user.Enabled
+                        Type      = "Local"
+                        SID       = $user.SID
+                    }
+                }
+            }
+            
+            # Get user profiles (includes domain users)
+            $profiles = Get-CimInstance -ClassName Win32_UserProfile -ErrorAction SilentlyContinue
+            if ($profiles) {
+                foreach ($profile in $profiles) {
+                    try {
+                        $sid = $profile.SID
+                        $objSID = New-Object System.Security.Principal.SecurityIdentifier($sid)
+                        $username = $objSID.Translate([System.Security.Principal.NTAccount]).Value
+                        
+                        # Check if already added as local user
+                        if (-not ($users | Where-Object { $_.SID -eq $sid })) {
+                            $users += [PSCustomObject]@{
+                                Username    = $username
+                                Created     = $profile.LastUseTime
+                                LastLogon   = $profile.LastUseTime
+                                Enabled     = $true
+                                Type        = if ($username -match '\\') { "Domain" } else { "Profile" }
+                                SID         = $sid
+                                ProfilePath = $profile.LocalPath
+                            }
+                        }
+                    }
+                    catch {
+                        continue
+                    }
+                }
+            }
+            
+            return $users | Sort-Object Created
+        }
+        catch {
+            return @()
+        }
+    }
     function Update-ProgressWithEstimate {
         param(
             [string]$Activity,
@@ -380,7 +876,10 @@ function Hunt-ForensicDump {
             try {
                 $runMRU = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU" -ErrorAction SilentlyContinue
                 if ($runMRU) {
-                    $sysInfo.RunMRU = $runMRU.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } | Select-Object Name, Value
+                    $sysInfo.RunMRU = $runMRU.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" -and $_.Name -ne "MRUList" } | Select-Object Name, Value
+                }
+                else {
+                    $sysInfo.RunMRU = @()
                 }
             }
             catch {
@@ -401,6 +900,12 @@ function Hunt-ForensicDump {
             $sysInfo.LocalGroups = Get-LocalGroup -ErrorAction SilentlyContinue
             $sysInfo.LocalAdmins = Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue
             $sysInfo.UserProfiles = Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue
+            
+            Write-Host "  [-] Getting user creation dates..." -ForegroundColor DarkGray
+            $sysInfo.UserCreationDates = Get-UserCreationDates
+            
+            Write-Host "  [-] Getting currently logged in users..." -ForegroundColor DarkGray
+            $sysInfo.CurrentlyLoggedIn = Get-LoggedInUsers
         
             Write-Host "  [-] Getting network connections..." -ForegroundColor DarkGray
             $sysInfo.NetworkConnections = Get-NetTCPConnection -State Established, Listen -ErrorAction SilentlyContinue
@@ -411,7 +916,7 @@ function Hunt-ForensicDump {
         
             Write-Host "  [-] Enumerating processes..." -ForegroundColor DarkGray
             $sysInfo.Processes = Get-Process -IncludeUserName -ErrorAction SilentlyContinue | 
-            Select-Object Id, ProcessName, Path, Company, Product, Description, UserName, CPU, WS, StartTime
+            Select-Object Id, ProcessName, Path, Company, Product, Description, UserName, @{N = 'CPUSeconds'; E = { [math]::Round($_.CPU, 2) } }, @{N = 'MemoryMB'; E = { [math]::Round($_.WS / 1MB, 2) } }, StartTime
         
             Write-Host "  [-] Getting system timing info..." -ForegroundColor DarkGray
             $sysInfo.BootTime = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
@@ -438,10 +943,108 @@ function Hunt-ForensicDump {
             try {
                 $sysInfo.AntiVirus = Get-CimInstance -Namespace root\SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction SilentlyContinue
                 $sysInfo.DefenderStatus = Get-MpComputerStatus -ErrorAction SilentlyContinue
+                $sysInfo.DefenderPreferences = Get-MpPreference -ErrorAction SilentlyContinue
             }
             catch {
                 $sysInfo.AntiVirus = @()
                 $sysInfo.DefenderStatus = $null
+                $sysInfo.DefenderPreferences = $null
+            }
+            
+            Write-Host "  [-] Checking AMSI providers..." -ForegroundColor DarkGray
+            try {
+                $sysInfo.AMSIProviders = Get-AMSIProviders
+            }
+            catch {
+                $sysInfo.AMSIProviders = @()
+            }
+            
+            Write-Host "  [-] Checking minifilter drivers..." -ForegroundColor DarkGray
+            try {
+                $sysInfo.MinifilterDrivers = Get-MinifilterDrivers
+            }
+            catch {
+                $sysInfo.MinifilterDrivers = @()
+            }
+            
+            Write-Host "  [-] Checking WDAC policy..." -ForegroundColor DarkGray
+            try {
+                $sysInfo.WDACStatus = Get-WDACStatus
+            }
+            catch {
+                $sysInfo.WDACStatus = [PSCustomObject]@{ Enabled = $false; Policies = @() }
+            }
+            
+            Write-Host "  [-] Checking VBS status..." -ForegroundColor DarkGray
+            try {
+                $sysInfo.VBSStatus = Get-VBSStatus
+            }
+            catch {
+                $sysInfo.VBSStatus = [PSCustomObject]@{ VBSEnabled = $false; VBSRunning = $false; Details = "Error" }
+            }
+            
+            Write-Host "  [-] Checking Bitlocker status..." -ForegroundColor DarkGray
+            try {
+                $sysInfo.BitlockerStatus = Get-BitlockerStatus
+            }
+            catch {
+                $sysInfo.BitlockerStatus = @()
+            }
+            
+            Write-Host "  [-] Checking Secure Boot..." -ForegroundColor DarkGray
+            try {
+                $sysInfo.SecureBoot = Get-SecureBootStatus
+            }
+            catch {
+                $sysInfo.SecureBoot = [PSCustomObject]@{ Enabled = $false; Status = "Unknown" }
+            }
+            
+            Write-Host "  [-] Detecting virtualization..." -ForegroundColor DarkGray
+            try {
+                $sysInfo.VMDetection = Test-IsVirtualMachine
+            }
+            catch {
+                $sysInfo.VMDetection = [PSCustomObject]@{ IsVirtualMachine = $false; Type = "Unknown" }
+            }
+            
+            Write-Host "  [-] Testing internet connectivity..." -ForegroundColor DarkGray
+            try {
+                $sysInfo.InternetConnectivity = Test-InternetConnectivity
+            }
+            catch {
+                $sysInfo.InternetConnectivity = [PSCustomObject]@{ CanPingCloudflare = $false; CanPingGoogle = $false; CanResolveDNS = $false; Status = "Unknown" }
+            }
+            
+            Write-Host "  [-] Getting installed software..." -ForegroundColor DarkGray
+            try {
+                $sysInfo.InstalledSoftware = Get-InstalledSoftware
+            }
+            catch {
+                $sysInfo.InstalledSoftware = @()
+            }
+            
+            Write-Host "  [-] Detecting RMM tools..." -ForegroundColor DarkGray
+            try {
+                $sysInfo.RMMTools = Get-RMMTools
+            }
+            catch {
+                $sysInfo.RMMTools = @()
+            }
+            
+            Write-Host "  [-] Getting default browser..." -ForegroundColor DarkGray
+            try {
+                $sysInfo.DefaultBrowser = Get-DefaultBrowser
+            }
+            catch {
+                $sysInfo.DefaultBrowser = "Unknown"
+            }
+            
+            Write-Host "  [-] Getting browser extensions..." -ForegroundColor DarkGray
+            try {
+                $sysInfo.BrowserExtensions = Get-BrowserExtensions
+            }
+            catch {
+                $sysInfo.BrowserExtensions = @()
             }
 
             if ($OutputDir) {
@@ -457,16 +1060,31 @@ function Hunt-ForensicDump {
                 if ($sysInfo.DNSCache) {
                     $sysInfo.DNSCache | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_DNSCache.csv") -NoTypeInformation
                 }
+                if ($sysInfo.UserCreationDates) {
+                    $sysInfo.UserCreationDates | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_UserCreationDates.csv") -NoTypeInformation
+                }
+                if ($sysInfo.InstalledSoftware) {
+                    $sysInfo.InstalledSoftware | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_InstalledSoftware.csv") -NoTypeInformation
+                }
+                if ($sysInfo.RMMTools) {
+                    $sysInfo.RMMTools | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_RMMTools.csv") -NoTypeInformation
+                }
+                if ($sysInfo.BrowserExtensions) {
+                    $sysInfo.BrowserExtensions | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_BrowserExtensions.csv") -NoTypeInformation
+                }
             
                 $summary = [PSCustomObject]@{
-                    Hostname       = $env:COMPUTERNAME
-                    Domain         = $sysInfo.Domain
-                    IsDomainJoined = $sysInfo.IsDomainJoined        
-                    OS             = "$($sysInfo.OSInfo.Caption) $($sysInfo.OSInfo.Version)"
-                    Architecture   = $sysInfo.OSInfo.OSArchitecture
-                    BootTime       = $sysInfo.BootTime
-                    CollectionTime = Get-Date
-                    TimeZone       = $sysInfo.TimeZone.DisplayName
+                    Hostname         = $env:COMPUTERNAME
+                    Domain           = $sysInfo.Domain
+                    IsDomainJoined   = $sysInfo.IsDomainJoined        
+                    OS               = "$($sysInfo.OSInfo.Caption) $($sysInfo.OSInfo.Version)"
+                    Architecture     = $sysInfo.OSInfo.OSArchitecture
+                    BootTime         = $sysInfo.BootTime
+                    CollectionTime   = Get-Date
+                    TimeZone         = $sysInfo.TimeZone.DisplayName
+                    DefaultBrowser   = $sysInfo.DefaultBrowser
+                    IsVirtualMachine = $sysInfo.VMDetection.IsVirtualMachine
+                    VMType           = $sysInfo.VMDetection.Type
                 }
                 $summary | Export-Csv -Path (Join-Path $OutputDir "SystemInfo_Summary.csv") -NoTypeInformation
             }
@@ -599,6 +1217,14 @@ function Hunt-ForensicDump {
             [int]$MaxRows = 0,
             [switch]$AllFields
         )
+
+        # Load System.Web assembly for HtmlEncode
+        try {
+            Add-Type -AssemblyName System.Web -ErrorAction Stop
+        }
+        catch {
+            Write-Warning "Failed to load System.Web assembly. HTML encoding may not work properly."
+        }
 
         $hostname = $env:COMPUTERNAME
         $reportDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -1089,8 +1715,14 @@ function Hunt-ForensicDump {
         }
 
         $shadowHtml = ""
-        $vssStatusColor = if ($ForensicData.SystemInfo.VSSServiceStatus -eq 'Running') { '#2ecc71' } else { '#e74c3c' }
-        $shadowCountColor = if ($ForensicData.SystemInfo.ShadowCopyCount -gt 0) { '#2ecc71' } else { '#e74c3c' }
+        $vssStatusColor = '#e74c3c'
+        if ($ForensicData.SystemInfo -and $ForensicData.SystemInfo.VSSServiceStatus -eq 'Running') {
+            $vssStatusColor = '#2ecc71'
+        }
+        $shadowCountColor = '#e74c3c'
+        if ($ForensicData.SystemInfo -and $ForensicData.SystemInfo.ShadowCopyCount -gt 0) {
+            $shadowCountColor = '#2ecc71'
+        }
     
         if ($ForensicData.SystemInfo.ShadowCopies -and $ForensicData.SystemInfo.ShadowCopies.Count -gt 0) {
             $shadowHtml = @"
@@ -1191,91 +1823,223 @@ function Hunt-ForensicDump {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Forensic Report - $hostname</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Arial, sans-serif; background: #1a1a1a; color: #e0e0e0; }
-        .header { background: linear-gradient(135deg, #2c3e50, #34495e); padding: 30px; text-align: center; }
-        .header h1 { color: #ecf0f1; font-size: 2.5em; margin-bottom: 10px; }
-        .header .info { color: #bdc3c7; font-size: 0.9em; }
+        :root {
+            --bg-primary: #1a1a1a;
+            --bg-secondary: #2c2c2c;
+            --bg-tertiary: #333;
+            --bg-header: linear-gradient(135deg, #2c3e50, #34495e);
+            --bg-card: linear-gradient(135deg, #34495e, #2c3e50);
+            --text-primary: #e0e0e0;
+            --text-secondary: #bdc3c7;
+            --text-muted: #95a5a6;
+            --text-dark: #7f8c8d;
+            --border-color: #444;
+            --border-accent: #34495e;
+            --accent-blue: #3498db;
+            --accent-blue-hover: #2980b9;
+            --accent-green: #2ecc71;
+            --accent-red: #e74c3c;
+            --accent-yellow: #f39c12;
+            --hover-bg: #3a3a3a;
+            --table-header: #34495e;
+            --table-header-hover: #415b76;
+        }
         
-        .tab-container { background: #2c2c2c; border-bottom: 2px solid #34495e; }
+        [data-theme="light"] {
+            --bg-primary: #f5f5f5;
+            --bg-secondary: #ffffff;
+            --bg-tertiary: #f0f0f0;
+            --bg-header: linear-gradient(135deg, #4a90e2, #357abd);
+            --bg-card: linear-gradient(135deg, #5a9fd4, #4a90e2);
+            --text-primary: #2c3e50;
+            --text-secondary: #34495e;
+            --text-muted: #7f8c8d;
+            --text-dark: #95a5a6;
+            --border-color: #ddd;
+            --border-accent: #4a90e2;
+            --accent-blue: #2980b9;
+            --accent-blue-hover: #3498db;
+            --accent-green: #27ae60;
+            --accent-red: #c0392b;
+            --accent-yellow: #e67e22;
+            --hover-bg: #e8e8e8;
+            --table-header: #4a90e2;
+            --table-header-hover: #5a9fd4;
+        }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Arial, sans-serif; 
+            background: var(--bg-primary); 
+            color: var(--text-primary);
+            transition: background-color 0.3s, color 0.3s;
+        }
+        .header { 
+            background: var(--bg-header); 
+            padding: 30px; 
+            text-align: center;
+            position: relative;
+        }
+        .header h1 { color: #ecf0f1; font-size: 2.5em; margin-bottom: 10px; }
+        .header .info { color: var(--text-secondary); font-size: 0.9em; }
+        
+        .theme-toggle {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            padding: 10px 20px;
+            border-radius: 20px;
+            cursor: pointer;
+            color: white;
+            font-weight: bold;
+            transition: background 0.3s;
+            font-size: 14px;
+            backdrop-filter: blur(10px);
+        }
+        .theme-toggle:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+        
+        .footer {
+            background: var(--bg-secondary);
+            padding: 30px;
+            text-align: center;
+            border-top: 2px solid var(--border-accent);
+            margin-top: 40px;
+        }
+        .footer a {
+            color: var(--accent-blue);
+            text-decoration: none;
+            font-weight: bold;
+            margin: 0 10px;
+        }
+        .footer a:hover {
+            color: var(--accent-blue-hover);
+            text-decoration: underline;
+        }
+        .footer .footer-info {
+            color: var(--text-muted);
+            margin-top: 10px;
+            font-size: 0.9em;
+        }
+        
+        .tab-container { background: var(--bg-secondary); border-bottom: 2px solid var(--border-accent); }
         .tabs { display: flex; flex-wrap: wrap; padding: 0 20px; overflow-x: auto; }
         .tab-button { 
             padding: 15px 25px; 
             background: transparent; 
             border: none; 
-            color: #95a5a6; 
+            color: var(--text-muted); 
             cursor: pointer; 
             border-bottom: 3px solid transparent;
             transition: all 0.3s;
             white-space: nowrap;
             font-size: 14px;
         }
-        .tab-button:hover { color: #ecf0f1; background: #333; }
-        .tab-button.active { color: #3498db; border-bottom-color: #3498db; }
+        .tab-button:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+        .tab-button.active { color: var(--accent-blue); border-bottom-color: var(--accent-blue); }
         
         .container { max-width: 98%; margin: 20px auto; }
         .tab-content { display: none; padding: 20px; }
         .tab-content.active { display: block; }
         
         .sysinfo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin: 20px 0; }
-        .sysinfo-card { background: #2c2c2c; padding: 20px; border-radius: 8px; border-left: 4px solid #3498db; }
-        .sysinfo-card h3 { color: #3498db; margin-bottom: 15px; }
+        .sysinfo-card { background: var(--bg-secondary); padding: 20px; border-radius: 8px; border-left: 4px solid var(--accent-blue); }
+        .sysinfo-card h3 { color: var(--accent-blue); margin-bottom: 15px; }
         .sysinfo-item { margin: 8px 0; }
-        .sysinfo-label { color: #95a5a6; display: inline-block; width: 150px; }
-        .sysinfo-value { color: #ecf0f1; }
+        .sysinfo-label { color: var(--text-muted); display: inline-block; width: 150px; }
+        .sysinfo-value { color: var(--text-primary); }
         
         .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 20px 0; }
-        .stat-card { background: linear-gradient(135deg, #34495e, #2c3e50); padding: 20px; border-radius: 8px; text-align: center; }
-        .stat-number { font-size: 2.5em; color: #3498db; font-weight: bold; }
-        .stat-label { color: #bdc3c7; margin-top: 5px; }
+        .stat-card { background: var(--bg-card); padding: 20px; border-radius: 8px; text-align: center; }
+        .stat-number { font-size: 2.5em; color: var(--accent-blue); font-weight: bold; }
+        .stat-label { color: var(--text-secondary); margin-top: 5px; }
         
         .section-card { 
-            background: #2c2c2c; 
+            background: var(--bg-secondary); 
             padding: 20px; 
             border-radius: 8px; 
             margin-bottom: 20px;
-            border-left: 4px solid #3498db;
+            border-left: 4px solid var(--accent-blue);
         }
         .section-card h3 { 
-            color: #3498db; 
+            color: var(--accent-blue); 
             margin-bottom: 15px; 
             font-size: 1.2em;
+        }
+        
+        .export-info-card {
+            background: var(--bg-secondary);
+            padding: 25px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border-left: 4px solid var(--accent-green);
+        }
+        .export-info-card h3 {
+            color: var(--accent-green);
+            margin-bottom: 15px;
+        }
+        .export-info-item {
+            margin: 10px 0;
+            padding: 10px;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+        }
+        .export-info-label {
+            color: var(--text-muted);
+            font-weight: bold;
+            display: inline-block;
+            width: 180px;
+        }
+        .export-info-value {
+            color: var(--text-primary);
+        }
+        .export-link {
+            color: var(--accent-blue);
+            text-decoration: none;
+            font-weight: bold;
+        }
+        .export-link:hover {
+            color: var(--accent-blue-hover);
+            text-decoration: underline;
         }
         
         .log-provider-selector {
             margin: 15px 0;
             padding: 10px;
-            background: #1a1a1a;
+            background: var(--bg-primary);
             border-radius: 4px;
         }
         .log-provider-selector label {
-            color: #95a5a6;
+            color: var(--text-muted);
             margin-right: 10px;
             font-weight: bold;
         }
         .log-provider-selector select {
             padding: 8px 15px;
-            background: #333;
-            color: #fff;
-            border: 1px solid #555;
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
             border-radius: 4px;
             font-size: 14px;
             cursor: pointer;
         }
         .log-provider-selector select:hover {
-            background: #444;
+            background: var(--hover-bg);
         }
         
-        .loading { text-align: center; padding: 20px; color: #3498db; }
-        .error { color: #e74c3c; padding: 10px; }
-        .warning { background: #f39c12; color: #000; padding: 10px; border-radius: 4px; margin: 10px 0; }
+        .loading { text-align: center; padding: 20px; color: var(--accent-blue); }
+        .error { color: var(--accent-red); padding: 10px; }
+        .warning { background: var(--accent-yellow); color: #000; padding: 10px; border-radius: 4px; margin: 10px 0; }
         .table-controls { margin: 10px 0; }
         .table-controls input { 
             padding: 8px; 
             margin-right: 10px; 
-            background: #333; 
-            border: 1px solid #555; 
-            color: #fff; 
+            background: var(--bg-tertiary); 
+            border: 1px solid var(--border-color); 
+            color: var(--text-primary); 
             border-radius: 4px; 
             min-width: 200px;
         }
@@ -1283,14 +2047,14 @@ function Hunt-ForensicDump {
         table { 
             width: 100%; 
             border-collapse: collapse; 
-            background: #333; 
+            background: var(--bg-tertiary); 
             margin: 10px 0; 
             font-size: 0.85em; 
             table-layout: auto;
         }
 
         th { 
-            background: #34495e; 
+            background: var(--table-header); 
             color: #ecf0f1; 
             padding: 10px 8px; 
             text-align: left; 
@@ -1304,7 +2068,7 @@ function Hunt-ForensicDump {
             user-select: none;
             position: relative;
         }
-        th:hover { background: #415b76; }
+        th:hover { background: var(--table-header-hover); }
         th::after { content: ' \25B8'; font-size: 0.7em; opacity: 0.5; }
         
         .resizer {
@@ -1318,30 +2082,29 @@ function Hunt-ForensicDump {
             z-index: 2;
         }
         .resizer:hover {
-            background: #3498db;
+            background: var(--accent-blue);
         }
         
         td { 
             padding: 8px; 
-            border-bottom: 1px solid #444; 
-            color: #e0e0e0; 
+            border-bottom: 1px solid var(--border-color); 
+            color: var(--text-primary); 
             word-wrap: break-word; 
             overflow: hidden;
             text-overflow: ellipsis;
             max-width: 400px;
         }
         td.truncated { cursor: help; }
-        tr:hover { background: #3a3a3a; }
+        tr:hover { background: var(--hover-bg); }
         
         .table-wrapper { 
             max-height: 600px; 
             overflow-y: auto; 
             overflow-x: auto;
             position: relative;
-            border: 1px solid #444;
+            border: 1px solid var(--border-color);
         }
         
-        /* CRITICAL: Make table headers sticky */
         .table-wrapper table {
             border-collapse: separate;
             border-spacing: 0;
@@ -1357,11 +2120,10 @@ function Hunt-ForensicDump {
             position: sticky;
             top: 0;
             z-index: 10;
-            background: #34495e;
+            background: var(--table-header);
             box-shadow: 0 2px 2px -1px rgba(0, 0, 0, 0.4);
         }
         
-        /* System info tables also need sticky headers */
         .section-card .table-wrapper thead {
             position: sticky;
             top: 0;
@@ -1372,29 +2134,30 @@ function Hunt-ForensicDump {
             position: sticky;
             top: 0;
             z-index: 10;
-            background: #34495e;
+            background: var(--table-header);
             box-shadow: 0 2px 2px -1px rgba(0, 0, 0, 0.4);
         }
-        .csv-section {margin: 20px 0; background: #2c2c2c; padding: 20px; border-radius: 8px; }
+        .csv-section {margin: 20px 0; background: var(--bg-secondary); padding: 20px; border-radius: 8px; }
         .csv-link { 
             display: block; 
             padding: 12px 20px; 
             margin: 8px 0; 
-            background: #3498db; 
+            background: var(--accent-blue); 
             color: white; 
             text-decoration: none; 
             border-radius: 4px; 
             text-align: center;
             transition: background 0.3s;
         }
-        .csv-link:hover { background: #2980b9; }
-        .record-count { color: #95a5a6; font-size: 0.9em; margin: 10px 0; }
-        .vt-link { color: #3498db; text-decoration: none; font-weight: 500; }
-        .vt-link:hover { color: #5dade2; text-decoration: underline; }
+        .csv-link:hover { background: var(--accent-blue-hover); }
+        .record-count { color: var(--text-muted); font-size: 0.9em; margin: 10px 0; }
+        .vt-link { color: var(--accent-blue); text-decoration: none; font-weight: 500; }
+        .vt-link:hover { color: var(--accent-blue-hover); text-decoration: underline; }
     </style>
 </head>
 <body>
     <div class="header">
+        <button class="theme-toggle" onclick="toggleTheme()" id="theme-toggle-btn">Light/Dark Mode</button>
         <h1>Forensic Analysis Report</h1>
         <div class="info">
             <strong>Host:</strong> $hostname | 
@@ -1407,6 +2170,7 @@ function Hunt-ForensicDump {
     <div class="tab-container">
         <div class="tabs">
             <button class="tab-button active" onclick="showTab('summary')">Summary</button>
+            <button class="tab-button" onclick="showTab('export')">Export Info</button>
             <button class="tab-button" onclick="showTab('sysinfo')">System Info</button>
             <button class="tab-button" onclick="showTab('persistence')">Persistence ($($stats.Persistence))</button>
             <button class="tab-button" onclick="showTab('registry')">Registry ($($stats.Registry))</button>
@@ -1440,6 +2204,7 @@ function Hunt-ForensicDump {
                     <div class="sysinfo-item"><span class="sysinfo-label">Hostname:</span><span class="sysinfo-value">$hostname</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Domain:</span><span class="sysinfo-value">$($ForensicData.SystemInfo.Domain)</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Domain Joined:</span><span class="sysinfo-value">$($ForensicData.SystemInfo.IsDomainJoined)</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Default Browser:</span><span class="sysinfo-value">$($ForensicData.SystemInfo.DefaultBrowser)</span></div>
                 </div>
                 
                 <div class="sysinfo-card">
@@ -1454,8 +2219,121 @@ function Hunt-ForensicDump {
                 
                 <div class="sysinfo-card">
                     <h3>Security</h3>
-                    <div class="sysinfo-item"><span class="sysinfo-label">Defender Status:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.DefenderStatus) { if ($ForensicData.SystemInfo.DefenderStatus.RealTimeProtectionEnabled) { 'Enabled' } else { 'Disabled' } } else { 'N/A' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Defender Status:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.DefenderStatus -and $ForensicData.SystemInfo.DefenderStatus.RealTimeProtectionEnabled) { '#2ecc71' } else { '#e74c3c' })">$(if ($ForensicData.SystemInfo.DefenderStatus) { if ($ForensicData.SystemInfo.DefenderStatus.RealTimeProtectionEnabled) { 'Enabled' } else { 'Disabled' } } else { 'N/A' })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">AntiVirus:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.AntiVirus) { ($ForensicData.SystemInfo.AntiVirus | ForEach-Object { $_.displayName }) -join ', ' } else { 'None detected' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">AMSI Providers:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.AMSIProviders) { $ForensicData.SystemInfo.AMSIProviders.Count } else { 0 })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Secure Boot:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.SecureBoot.Enabled) { '#2ecc71' } else { '#e74c3c' })">$($ForensicData.SystemInfo.SecureBoot.Status)</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">VBS Status:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.VBSStatus.VBSEnabled) { '#2ecc71' } else { '#e74c3c' })">$(if ($ForensicData.SystemInfo.VBSStatus.VBSEnabled) { 'Enabled' } else { 'Disabled' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">WDAC:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.WDACStatus.Enabled) { '#2ecc71' } else { '#e74c3c' })">$(if ($ForensicData.SystemInfo.WDACStatus.Enabled) { 'Enabled' } else { 'Not Configured' })</span></div>
+                </div>
+                
+                <div class="sysinfo-card">
+                    <h3>Virtualization & Hardware</h3>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Virtual Machine:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.VMDetection.IsVirtualMachine) { '#f39c12' } else { '#2ecc71' })">$(if ($ForensicData.SystemInfo.VMDetection.IsVirtualMachine) { "Yes ($($ForensicData.SystemInfo.VMDetection.Type))" } else { 'No (Physical)' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Bitlocker:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.BitlockerStatus -and $ForensicData.SystemInfo.BitlockerStatus.Count -gt 0) { "$($ForensicData.SystemInfo.BitlockerStatus.Count) volume(s)" } else { 'Not Configured' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Minifilter Drivers:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.MinifilterDrivers) { $ForensicData.SystemInfo.MinifilterDrivers.Count } else { 0 })</span></div>
+                </div>
+                
+                <div class="sysinfo-card">
+                    <h3>Network & Internet</h3>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Internet Status:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.InternetConnectivity.Status -eq 'Online') { '#2ecc71' } else { '#e74c3c' })">$($ForensicData.SystemInfo.InternetConnectivity.Status)</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Can Ping 1.1.1.1:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.InternetConnectivity.CanPingCloudflare) { 'Yes' } else { 'No' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">DNS Resolution:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.InternetConnectivity.CanResolveDNS) { 'Working' } else { 'Failed' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">DNS Servers:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.DNSServers) { ($ForensicData.SystemInfo.DNSServers | Where-Object { $_.ServerAddresses } | Select-Object -First 1 -ExpandProperty ServerAddresses | Select-Object -First 2) -join ', ' } else { 'N/A' })</span></div>
+                </div>
+                
+                <div class="sysinfo-card">
+                    <h3>Remote Access Tools</h3>
+                    <div class="sysinfo-item"><span class="sysinfo-label">RMM Tools Detected:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.RMMTools -and $ForensicData.SystemInfo.RMMTools.Count -gt 0) { '#f39c12' } else { '#2ecc71' })">$(if ($ForensicData.SystemInfo.RMMTools -and $ForensicData.SystemInfo.RMMTools.Count -gt 0) { "$($ForensicData.SystemInfo.RMMTools.Count) tool(s) found" } else { 'None detected' })</span></div>
+                    $(if ($ForensicData.SystemInfo.RMMTools -and $ForensicData.SystemInfo.RMMTools.Count -gt 0) {
+                        $rmmList = ($ForensicData.SystemInfo.RMMTools | Select-Object -First 3 | ForEach-Object { $_.Tool }) -join ', '
+                        "<div class='sysinfo-item'><span class='sysinfo-label'>Tools:</span><span class='sysinfo-value' style='color: #f39c12;'>$rmmList</span></div>"
+                    })
+                </div>
+            </div>
+        </div>
+        
+        <div id="export-tab" class="tab-content">
+            <h2 style="color: #3498db; margin-bottom: 20px;">Export Information</h2>
+            
+            <div class="export-info-card">
+                <h3>Collection Details</h3>
+                <div class="export-info-item">
+                    <span class="export-info-label">Report Generated:</span>
+                    <span class="export-info-value">$reportDate</span>
+                </div>
+                <div class="export-info-item">
+                    <span class="export-info-label">Collection Period:</span>
+                    <span class="export-info-value">$StartDate to $EndDate</span>
+                </div>
+                <div class="export-info-item">
+                    <span class="export-info-label">Collection Mode:</span>
+                    <span class="export-info-value">$Mode</span>
+                </div>
+                <div class="export-info-item">
+                    <span class="export-info-label">Total Runtime:</span>
+                    <span class="export-info-value" id="runtime-display">Calculating...</span>
+                </div>
+                <div class="export-info-item">
+                    <span class="export-info-label">PowerShell Version:</span>
+                    <span class="export-info-value">$($PSVersionTable.PSVersion)</span>
+                </div>
+            </div>
+            
+            <div class="export-info-card">
+                <h3>Output Locations</h3>
+                <div class="export-info-item">
+                    <span class="export-info-label">Main Output Directory:</span>
+                    <span class="export-info-value">$OutputDir</span>
+                </div>
+                <div class="export-info-item">
+                    <span class="export-info-label">HTML Report:</span>
+                    <span class="export-info-value"><a href="ForensicReport.html" class="export-link">ForensicReport.html</a></span>
+                </div>
+                <div class="export-info-item">
+                    <span class="export-info-label">CSV Data Folder:</span>
+                    <span class="export-info-value"><a href="ForensicData_CSV/" class="export-link">ForensicData_CSV/</a></span>
+                </div>
+            </div>
+            
+            <div class="export-info-card">
+                <h3>Data Collection Summary</h3>
+                <div class="export-info-item">
+                    <span class="export-info-label">Persistence Items:</span>
+                    <span class="export-info-value">$($stats.Persistence) records</span>
+                </div>
+                <div class="export-info-item">
+                    <span class="export-info-label">Files Analyzed:</span>
+                    <span class="export-info-value">$($stats.Files) files</span>
+                </div>
+                <div class="export-info-item">
+                    <span class="export-info-label">Registry Entries:</span>
+                    <span class="export-info-value">$($stats.Registry) entries</span>
+                </div>
+                <div class="export-info-item">
+                    <span class="export-info-label">Browser History:</span>
+                    <span class="export-info-value">$($stats.Browser) records</span>
+                </div>
+                <div class="export-info-item">
+                    <span class="export-info-label">Event Logs:</span>
+                    <span class="export-info-value">$($stats.Logs) events</span>
+                </div>
+                <div class="export-info-item">
+                    <span class="export-info-label">Services:</span>
+                    <span class="export-info-value">$($stats.Services) services</span>
+                </div>
+                <div class="export-info-item">
+                    <span class="export-info-label">Scheduled Tasks:</span>
+                    <span class="export-info-value">$($stats.Tasks) tasks</span>
+                </div>
+            </div>
+            
+            <div class="export-info-card">
+                <h3>Quick Actions</h3>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px; margin-top: 15px;">
+                    <a href="ForensicData_CSV/" class="csv-link">Browse All CSV Files</a>
+                    <a href="#" onclick="showTab('csv'); return false;" class="csv-link">Download Individual CSVs</a>
+                    <a href="#" onclick="showTab('settings'); return false;" class="csv-link">Adjust Display Settings</a>
                 </div>
             </div>
         </div>
@@ -1508,6 +2386,280 @@ function Hunt-ForensicDump {
             <div class="section-card">
                 <h3>Network Adapters ($($ForensicData.SystemInfo.NetworkAdapters.Count) adapters)</h3>
                 $adaptersHtml
+            </div>
+            <div class="section-card">
+                <h3>User Accounts & Creation Dates ($($ForensicData.SystemInfo.UserCreationDates.Count) accounts)</h3>
+                <div class="table-wrapper">
+                    <table id="users-creation-table">
+                        <thead>
+                            <tr>
+                                <th onclick="sortSystemTable('users-creation-table', 0)" style="position: relative;">Username<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('users-creation-table', 1)" style="position: relative;">Type<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('users-creation-table', 2)" style="position: relative;">Created<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('users-creation-table', 3)" style="position: relative;">Last Logon<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('users-creation-table', 4)" style="position: relative;">Enabled<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('users-creation-table', 5)" style="position: relative;">SID<div class="resizer"></div></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+$(
+    if ($ForensicData.SystemInfo.UserCreationDates -and $ForensicData.SystemInfo.UserCreationDates.Count -gt 0) {
+        $userHtml = ""
+        foreach ($user in $ForensicData.SystemInfo.UserCreationDates) {
+            $username = [System.Web.HttpUtility]::HtmlEncode($user.Username)
+            $created = if ($user.Created) { $user.Created.ToString("yyyy-MM-dd HH:mm:ss") } else { "Unknown" }
+            $lastLogon = if ($user.LastLogon) { $user.LastLogon.ToString("yyyy-MM-dd HH:mm:ss") } else { "Never" }
+            $enabled = if ($null -ne $user.Enabled) { $user.Enabled.ToString() } else { "N/A" }
+            $sid = if ($user.SID) { [System.Web.HttpUtility]::HtmlEncode($user.SID) } else { "N/A" }
+            $userHtml += "                            <tr><td>$username</td><td>$($user.Type)</td><td>$created</td><td>$lastLogon</td><td>$enabled</td><td style='font-size: 0.8em;'>$sid</td></tr>`n"
+        }
+        $userHtml
+    } else {
+        "                            <tr><td colspan='6' style='text-align: center; color: #95a5a6;'>No user account data available</td></tr>"
+    }
+)
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div class="section-card">
+                <h3>Currently Logged In Users</h3>
+                <div class="table-wrapper">
+                    <table id="logged-in-users-table">
+                        <thead>
+                            <tr>
+                                <th onclick="sortSystemTable('logged-in-users-table', 0)" style="position: relative;">Username<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('logged-in-users-table', 1)" style="position: relative;">Session<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('logged-in-users-table', 2)" style="position: relative;">State<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('logged-in-users-table', 3)" style="position: relative;">Idle Time<div class="resizer"></div></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+$(
+    if ($ForensicData.SystemInfo.CurrentlyLoggedIn -and $ForensicData.SystemInfo.CurrentlyLoggedIn.Count -gt 0) {
+        $loggedInHtml = ""
+        foreach ($user in $ForensicData.SystemInfo.CurrentlyLoggedIn) {
+            $username = [System.Web.HttpUtility]::HtmlEncode($user.Username)
+            $session = if ($user.SessionName) { $user.SessionName } else { "N/A" }
+            $state = if ($user.State) { $user.State } else { "N/A" }
+            $idle = if ($user.IdleTime) { $user.IdleTime } else { "N/A" }
+            $loggedInHtml += "                            <tr><td>$username</td><td>$session</td><td>$state</td><td>$idle</td></tr>`n"
+        }
+        $loggedInHtml
+    } else {
+        "                            <tr><td colspan='4' style='text-align: center; color: #95a5a6;'>No logged in users detected</td></tr>"
+    }
+)
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div class="section-card">
+                <h3>Run MRU (Recent Run Commands)</h3>
+$(
+    if ($ForensicData.SystemInfo.RunMRU -and $ForensicData.SystemInfo.RunMRU.Count -gt 0) {
+        $runMRUHtml = @"
+                <div class="table-wrapper">
+                    <table id="runmru-table">
+                        <thead>
+                            <tr>
+                                <th onclick="sortSystemTable('runmru-table', 0)" style="position: relative;">Order<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('runmru-table', 1)" style="position: relative;">Command<div class="resizer"></div></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+"@
+        foreach ($item in $ForensicData.SystemInfo.RunMRU) {
+            $name = [System.Web.HttpUtility]::HtmlEncode($item.Name)
+            $value = [System.Web.HttpUtility]::HtmlEncode($item.Value)
+            $runMRUHtml += "                            <tr><td>$name</td><td style='font-family: Consolas, monospace;'>$value</td></tr>`n"
+        }
+        $runMRUHtml += @"
+                        </tbody>
+                    </table>
+                </div>
+"@
+        $runMRUHtml
+    } else {
+        "                <p style='color: #95a5a6;'>No Run MRU entries found.</p>"
+    }
+)
+            </div>
+            
+            <div class="section-card">
+                <h3>Browser Extensions ($($ForensicData.SystemInfo.BrowserExtensions.Count) extensions)</h3>
+                <div class="table-wrapper">
+                    <table id="extensions-table">
+                        <thead>
+                            <tr>
+                                <th onclick="sortSystemTable('extensions-table', 0)" style="position: relative;">Browser<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('extensions-table', 1)" style="position: relative;">Extension ID<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('extensions-table', 2)" style="position: relative;">Path<div class="resizer"></div></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+$(
+    if ($ForensicData.SystemInfo.BrowserExtensions -and $ForensicData.SystemInfo.BrowserExtensions.Count -gt 0) {
+        $extHtml = ""
+        foreach ($ext in $ForensicData.SystemInfo.BrowserExtensions | Select-Object -First 100) {
+            $browser = [System.Web.HttpUtility]::HtmlEncode($ext.Browser)
+            $extId = [System.Web.HttpUtility]::HtmlEncode($ext.ExtensionID)
+            $path = [System.Web.HttpUtility]::HtmlEncode($ext.Path)
+            $extHtml += "                            <tr><td>$browser</td><td style='font-family: Consolas, monospace; font-size: 0.8em;'>$extId</td><td style='font-size: 0.8em; max-width: 300px; overflow: hidden; text-overflow: ellipsis;' title='$path'>$path</td></tr>`n"
+        }
+        $extHtml
+    } else {
+        "                            <tr><td colspan='3' style='text-align: center; color: #95a5a6;'>No browser extensions found</td></tr>"
+    }
+)
+                        </tbody>
+                    </table>
+                </div>
+                $(if ($ForensicData.SystemInfo.BrowserExtensions -and $ForensicData.SystemInfo.BrowserExtensions.Count -gt 100) {
+                    "<p style='color: #f39c12; margin-top: 10px;'>Showing first 100 of $($ForensicData.SystemInfo.BrowserExtensions.Count) extensions. See CSV for complete data.</p>"
+                })
+            </div>
+            
+            <div class="section-card">
+                <h3>AMSI Providers ($($ForensicData.SystemInfo.AMSIProviders.Count) providers)</h3>
+                <div class="table-wrapper">
+                    <table id="amsi-table">
+                        <thead>
+                            <tr>
+                                <th onclick="sortSystemTable('amsi-table', 0)" style="position: relative;">Provider Name<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('amsi-table', 1)" style="position: relative;">GUID<div class="resizer"></div></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+$(
+    if ($ForensicData.SystemInfo.AMSIProviders -and $ForensicData.SystemInfo.AMSIProviders.Count -gt 0) {
+        $amsiHtml = ""
+        foreach ($provider in $ForensicData.SystemInfo.AMSIProviders) {
+            $name = [System.Web.HttpUtility]::HtmlEncode($provider.Name)
+            $guid = [System.Web.HttpUtility]::HtmlEncode($provider.GUID)
+            $amsiHtml += "                            <tr><td>$name</td><td style='font-family: Consolas, monospace; font-size: 0.85em;'>$guid</td></tr>`n"
+        }
+        $amsiHtml
+    } else {
+        "                            <tr><td colspan='2' style='text-align: center; color: #95a5a6;'>No AMSI providers detected</td></tr>"
+    }
+)
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div class="section-card">
+                <h3>Minifilter Drivers ($($ForensicData.SystemInfo.MinifilterDrivers.Count) drivers)</h3>
+                <div class="table-wrapper">
+                    <table id="minifilter-table">
+                        <thead>
+                            <tr>
+                                <th onclick="sortSystemTable('minifilter-table', 0)" style="position: relative;">Filter Name<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('minifilter-table', 1)" style="position: relative;">Instances<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('minifilter-table', 2)" style="position: relative;">Altitude<div class="resizer"></div></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+$(
+    if ($ForensicData.SystemInfo.MinifilterDrivers -and $ForensicData.SystemInfo.MinifilterDrivers.Count -gt 0) {
+        $minifilterHtml = ""
+        foreach ($driver in $ForensicData.SystemInfo.MinifilterDrivers) {
+            $name = [System.Web.HttpUtility]::HtmlEncode($driver.FilterName)
+            $minifilterHtml += "                            <tr><td>$name</td><td>$($driver.Instances)</td><td>$($driver.Altitude)</td></tr>`n"
+        }
+        $minifilterHtml
+    } else {
+        "                            <tr><td colspan='3' style='text-align: center; color: #95a5a6;'>No minifilter drivers detected</td></tr>"
+    }
+)
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div class="section-card">
+                <h3>Installed Software (Top 50)</h3>
+                <div class="table-controls">
+                    <input type="text" id="software-search" placeholder="Search software..." onkeyup="filterSystemTable('software-table')">
+                </div>
+                <div class="table-wrapper">
+                    <table id="software-table">
+                        <thead>
+                            <tr>
+                                <th onclick="sortSystemTable('software-table', 0)" style="position: relative;">Name<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('software-table', 1)" style="position: relative;">Version<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('software-table', 2)" style="position: relative;">Publisher<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('software-table', 3)" style="position: relative;">Install Date<div class="resizer"></div></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+$(
+    if ($ForensicData.SystemInfo.InstalledSoftware -and $ForensicData.SystemInfo.InstalledSoftware.Count -gt 0) {
+        $softwareHtml = ""
+        foreach ($software in ($ForensicData.SystemInfo.InstalledSoftware | Select-Object -First 50)) {
+            $name = [System.Web.HttpUtility]::HtmlEncode($software.DisplayName)
+            $version = if ($software.DisplayVersion) { [System.Web.HttpUtility]::HtmlEncode($software.DisplayVersion) } else { "N/A" }
+            $publisher = if ($software.Publisher) { [System.Web.HttpUtility]::HtmlEncode($software.Publisher) } else { "N/A" }
+            $installDate = if ($software.InstallDate) { $software.InstallDate } else { "Unknown" }
+            $softwareHtml += "                            <tr><td>$name</td><td>$version</td><td>$publisher</td><td>$installDate</td></tr>`n"
+        }
+        $softwareHtml
+    } else {
+        "                            <tr><td colspan='4' style='text-align: center; color: #95a5a6;'>No installed software found</td></tr>"
+    }
+)
+                        </tbody>
+                    </table>
+                </div>
+                $(if ($ForensicData.SystemInfo.InstalledSoftware -and $ForensicData.SystemInfo.InstalledSoftware.Count -gt 50) {
+                    "<p style='color: #f39c12; margin-top: 10px;'>Showing first 50 of $($ForensicData.SystemInfo.InstalledSoftware.Count) programs. See CSV for complete data.</p>"
+                })
+            </div>
+            
+            <div class="section-card">
+                <h3>Remote Management Tools Detected</h3>
+$(
+    if ($ForensicData.SystemInfo.RMMTools -and $ForensicData.SystemInfo.RMMTools.Count -gt 0) {
+        $rmmHtml = @"
+                <div style="background: rgba(243, 156, 18, 0.1); padding: 15px; border-radius: 4px; border-left: 4px solid #f39c12; margin-bottom: 15px;">
+                    <strong style="color: #f39c12;">⚠ Warning:</strong> Remote management tools detected on this system. Review for legitimacy.
+                </div>
+                <div class="table-wrapper">
+                    <table id="rmm-table">
+                        <thead>
+                            <tr>
+                                <th onclick="sortSystemTable('rmm-table', 0)" style="position: relative;">Tool Type<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('rmm-table', 1)" style="position: relative;">Name<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('rmm-table', 2)" style="position: relative;">Version<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('rmm-table', 3)" style="position: relative;">Publisher<div class="resizer"></div></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+"@
+        foreach ($tool in $ForensicData.SystemInfo.RMMTools) {
+            $toolType = [System.Web.HttpUtility]::HtmlEncode($tool.Tool)
+            $name = [System.Web.HttpUtility]::HtmlEncode($tool.Name)
+            $version = if ($tool.Version) { [System.Web.HttpUtility]::HtmlEncode($tool.Version) } else { "N/A" }
+            $publisher = if ($tool.Publisher) { [System.Web.HttpUtility]::HtmlEncode($tool.Publisher) } else { "N/A" }
+            $rmmHtml += "                            <tr><td style='color: #f39c12; font-weight: bold;'>$toolType</td><td>$name</td><td>$version</td><td>$publisher</td></tr>`n"
+        }
+        $rmmHtml += @"
+                        </tbody>
+                    </table>
+                </div>
+"@
+        $rmmHtml
+    } else {
+        @"
+                <div style="background: rgba(46, 204, 113, 0.1); padding: 15px; border-radius: 4px; border-left: 4px solid #2ecc71;">
+                    <strong style="color: #2ecc71;">✓ No remote management tools detected</strong>
+                </div>
+"@
+    }
+)
             </div>
         </div>
         
@@ -2168,7 +3320,7 @@ function Hunt-ForensicDump {
                 return;
             }
             
-            // Update global settings
+            // CRITICAL FIX: Update global settings BEFORE any processing
             MAX_ROWS = newMaxRows;
             MAX_CHARS = newMaxChars;
             
@@ -2176,18 +3328,14 @@ function Hunt-ForensicDump {
             document.getElementById('current-maxrows').textContent = newMaxRows === 0 ? 'Unlimited' : newMaxRows;
             document.getElementById('current-maxchars').textContent = newMaxChars;
             
-            // CRITICAL FIX: Force reload flag and clear sortState to reset tables
+            // Clear all cached/processed data to force fresh processing with new limits
             window.forceDataReload = true;
             sortState = {};
             systemSortState = {};
-            
-            // Clear all loaded data to force complete reload
-            var dataTypes = ['persistence', 'registry', 'logs', 'browser', 'services', 'tasks', 'files'];
-            
-            // Reset loadedData by re-processing from embedded data
             loadedData = {};
             
             // Show loading message on all data tabs
+            var dataTypes = ['persistence', 'registry', 'logs', 'browser', 'services', 'tasks', 'files'];
             for (var i = 0; i < dataTypes.length; i++) {
                 var content = document.getElementById(dataTypes[i] + '-content');
                 if (content) {
@@ -2217,7 +3365,51 @@ function Hunt-ForensicDump {
         window.onload = function() {
             console.log('Forensic report loaded successfully');
         };
+
+        // Theme toggle functionality
+        function toggleTheme() {
+            const html = document.documentElement;
+            const currentTheme = html.getAttribute('data-theme');
+            const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            
+            // Update button text
+            const btn = document.getElementById('theme-toggle-btn');
+            if (btn) {
+                btn.textContent = newTheme === 'light' ? 'Dark Mode' : 'Light Mode';
+            }
+        }
+        
+        // Load saved theme on page load
+        (function() {
+            const savedTheme = localStorage.getItem('theme') || 'dark';
+            document.documentElement.setAttribute('data-theme', savedTheme === 'light' ? 'light' : '');
+            
+            // Set initial button text
+            window.addEventListener('load', function() {
+                const btn = document.getElementById('theme-toggle-btn');
+                if (btn) {
+                    btn.textContent = savedTheme === 'light' ? 'Dark Mode' : 'Light Mode';
+                }
+            });
+        })();
     </script>
+<div class="footer">
+        <div>
+            <a href="https://github.com/blwhit/PS-DFIR-ThreatHunter" target="_blank">GitHub Repository</a>
+            <span style="color: var(--text-muted); margin: 0 10px;">|</span>
+            <a href="https://github.com/blwhit/PS-DFIR-ThreatHunter/wiki" target="_blank">Documentation</a>
+            <span style="color: var(--text-muted); margin: 0 10px;">|</span>
+            <a href="https://github.com/blwhit/PS-DFIR-ThreatHunter/issues" target="_blank">Report Issues</a>
+        </div>
+        <div class="footer-info">
+            Generated by Hunt-ForensicDump | PowerShell $($PSVersionTable.PSVersion) | $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+        </div>
+        <div class="footer-info" style="margin-top: 5px;">
+            Host: $hostname | Mode: $Mode | Collection: $parsedStartDate to $parsedEndDate
+        </div>
+    </div>
 </body>
 </html>
 "@
@@ -2294,10 +3486,42 @@ function Hunt-ForensicDump {
     try {
         $parsedStartDate = ConvertTo-DateTime -InputValue $StartDate
         $parsedEndDate = ConvertTo-DateTime -InputValue $EndDate
+        
+        # Validate date range
+        if ($parsedStartDate -gt $parsedEndDate) {
+            Write-Error "StartDate ($parsedStartDate) cannot be after EndDate ($parsedEndDate)"
+            return
+        }
     }
     catch {
         Write-Error "Invalid date format: $($_.Exception.Message)"
         return
+    }
+    
+    # Validate MaxRows upper limit to prevent browser crashes
+    if ($MaxRows -gt 50000) {
+        Write-Warning "MaxRows set to $MaxRows which may cause browser performance issues. Consider using a lower value."
+        Write-Warning "Proceeding with MaxRows = $MaxRows (use Settings tab in HTML report to adjust)"
+    }
+    
+    # Validate MaxChars
+    if ($MaxChars -lt 10) {
+        Write-Warning "MaxChars must be at least 10. Setting to 10."
+        $MaxChars = 10
+    }
+    
+    # Validate LoadToolPath usage
+    if (![string]::IsNullOrWhiteSpace($LoadToolPath) -and -not $LoadBrowserTool) {
+        Write-Warning "LoadToolPath specified but LoadBrowserTool switch not set. LoadToolPath will be ignored."
+        Write-Warning "Use -LoadBrowserTool to enable LoadTool mode."
+    }
+    
+    # Validate LoadToolPath exists if provided
+    if ($LoadBrowserTool -and ![string]::IsNullOrWhiteSpace($LoadToolPath)) {
+        if (-not (Test-Path $LoadToolPath)) {
+            Write-Error "LoadToolPath specified but file not found: $LoadToolPath"
+            return
+        }
     }
     
     Write-Host ""
@@ -2359,14 +3583,28 @@ function Hunt-ForensicDump {
             
             $persistenceResults = Hunt-Persistence @persistenceParams
             
-            # Verify Flag field exists
+            # Verify and add Flag field if missing
             if ($persistenceResults -and $persistenceResults.Count -gt 0) {
-                $sampleResult = $persistenceResults[0]
-                if ($sampleResult.PSObject.Properties['Flag']) {
-                    Write-Host "  [-] Flag field verified in persistence data" -ForegroundColor DarkGray
+                $flagMissing = $false
+                foreach ($item in $persistenceResults) {
+                    if (-not $item.PSObject.Properties['Flag']) {
+                        $flagMissing = $true
+                        # Add default Flag based on other properties
+                        $defaultFlag = 'Info'
+                        if ($item.PSObject.Properties['Severity']) {
+                            $defaultFlag = $item.Severity
+                        }
+                        elseif ($item.PSObject.Properties['Risk']) {
+                            $defaultFlag = $item.Risk
+                        }
+                        $item | Add-Member -NotePropertyName 'Flag' -NotePropertyValue $defaultFlag -Force
+                    }
+                }
+                if ($flagMissing) {
+                    Write-Host "  [!] Added missing Flag field to persistence data" -ForegroundColor Yellow
                 }
                 else {
-                    Write-Host "  [!] Warning: Flag field missing from persistence results" -ForegroundColor Yellow
+                    Write-Host "  [-] Flag field verified in persistence data" -ForegroundColor DarkGray
                 }
             }
             
@@ -2645,7 +3883,28 @@ function Hunt-ForensicDump {
                 IncludeDisabled = $true
             }
             
-            $forensicData.Tasks = Hunt-Tasks @taskParams
+            $taskResults = Hunt-Tasks @taskParams
+            
+            # Clean up TriggerType field for display
+            if ($taskResults -and $taskResults.Count -gt 0) {
+                foreach ($task in $taskResults) {
+                    if ($task.PSObject.Properties['TriggerType']) {
+                        $triggerValue = $task.TriggerType
+                        if ($triggerValue -is [array] -or $triggerValue -is [System.Collections.ArrayList]) {
+                            # Clean up array: remove empty/whitespace, join with semicolon
+                            $cleaned = $triggerValue | Where-Object { ![string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.ToString().Trim() }
+                            $task.TriggerType = ($cleaned -join '; ')
+                        }
+                        elseif ($triggerValue -and $triggerValue.ToString().Contains(',')) {
+                            # Clean up comma-separated string
+                            $parts = $triggerValue.ToString() -split ',' | Where-Object { ![string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() }
+                            $task.TriggerType = ($parts -join '; ')
+                        }
+                    }
+                }
+            }
+            
+            $forensicData.Tasks = $taskResults
         }
         catch {
             Write-Warning "Scheduled task analysis failed: $($_.Exception.Message)"
@@ -2670,6 +3929,13 @@ function Hunt-ForensicDump {
     # Generate HTML Report
     Update-ProgressWithEstimate -Activity "Forensic Dump" -StepTimes ([ref]$progressTimes) -Status "Generating HTML report..." -PercentComplete 90
     Write-Host "[+] Generating interactive HTML report..." -ForegroundColor Yellow
+
+    # ADDED: Warn about large datasets
+    $totalRecords = $stats.Persistence + $stats.Files + $stats.Registry + $stats.Browser + $stats.Logs + $stats.Services + $stats.Tasks
+    if ($totalRecords -gt 100000) {
+        Write-Warning "Large dataset detected ($totalRecords total records). HTML report may be very large."
+        Write-Warning "Generating report - this may take several minutes..."
+    }
     
     try {
         $htmlPath = Join-Path $OutputDir "ForensicReport.html"
@@ -2691,6 +3957,20 @@ function Hunt-ForensicDump {
     # Display completion summary
     $endTime = Get-Date
     $duration = $endTime - $script:StartTime
+    
+    # Update HTML report with actual runtime
+    try {
+        $htmlPath = Join-Path $OutputDir "ForensicReport.html"
+        if (Test-Path $htmlPath) {
+            $htmlContent = Get-Content -Path $htmlPath -Raw
+            $runtimeText = "$($duration.Hours)h $($duration.Minutes)m $($duration.Seconds)s"
+            $htmlContent = $htmlContent -replace '<span class="export-info-value" id="runtime-display">Calculating\.\.\.</span>', "<span class='export-info-value' id='runtime-display'>$runtimeText</span>"
+            $htmlContent | Set-Content -Path $htmlPath -Encoding UTF8
+        }
+    }
+    catch {
+        Write-Verbose "Could not update runtime in HTML report"
+    }
     
     Write-Host ""
     Write-Host "---------------------------`n[ FORENSIC DUMP COMPLETE ]`n---------------------------" -ForegroundColor Green
