@@ -576,7 +576,8 @@ function Hunt-ForensicDump {
                         if ($rawMessages.$msgKey -and $rawMessages.$msgKey.message) {
                             return $rawMessages.$msgKey.message
                         }
-                    } catch { }
+                    }
+                    catch { }
                 }
                 return "__MSG_$msgKey__"
             }
@@ -619,7 +620,8 @@ function Hunt-ForensicDump {
                         Get-ChildItem -Path $basePath -Directory -ErrorAction SilentlyContinue | Where-Object { 
                             $_.Name -like "*.default*" -or $_.Name -like "*-default" 
                         }
-                    } else {
+                    }
+                    else {
                         Get-ChildItem -Path $basePath -Directory -ErrorAction SilentlyContinue | Where-Object {
                             $_.Name -eq 'Default' -or $_.Name -like 'Profile *'
                         }
@@ -646,18 +648,22 @@ function Hunt-ForensicDump {
                                         $name = if ($manifest.name -like "__MSG_*__") {
                                             $msgKey = $manifest.name -replace "^__MSG_(.+?)__$", '$1'
                                             Resolve-Message -BasePath $tempDir -msgKey $msgKey
-                                        } else { $manifest.name }
+                                        }
+                                        else { $manifest.name }
                                         
                                         $desc = if ($manifest.description -like "__MSG_*__") {
                                             $msgKey = $manifest.description -replace "^__MSG_(.+?)__$", '$1'
                                             Resolve-Message -BasePath $tempDir -msgKey $msgKey
-                                        } else { $manifest.description }
+                                        }
+                                        else { $manifest.description }
                                         
                                         $extensionId = if ($manifest.applications -and $manifest.applications.gecko -and $manifest.applications.gecko.id) {
                                             $manifest.applications.gecko.id
-                                        } elseif ($manifest.browser_specific_settings -and $manifest.browser_specific_settings.gecko -and $manifest.browser_specific_settings.gecko.id) {
+                                        }
+                                        elseif ($manifest.browser_specific_settings -and $manifest.browser_specific_settings.gecko -and $manifest.browser_specific_settings.gecko.id) {
                                             $manifest.browser_specific_settings.gecko.id
-                                        } else {
+                                        }
+                                        else {
                                             [System.IO.Path]::GetFileNameWithoutExtension($xpi.Name)
                                         }
                                         
@@ -672,12 +678,14 @@ function Hunt-ForensicDump {
                                             Description = $desc
                                         }
                                     }
-                                } catch { } finally {
+                                }
+                                catch { } finally {
                                     if (Test-Path $zipPath) { Remove-Item $zipPath -Force -ErrorAction SilentlyContinue }
                                     if (Test-Path $tempDir) { Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
                                 }
                             }
-                        } else {
+                        }
+                        else {
                             $extensionsPath = Join-Path $profile.FullName "Extensions"
                             if (-Not (Test-Path $extensionsPath)) { continue }
                             
@@ -685,7 +693,7 @@ function Hunt-ForensicDump {
                             foreach ($ext in $extensionDirs) {
                                 $extId = $ext.Name
                                 $versions = Get-ChildItem -Path $ext.FullName -Directory -ErrorAction SilentlyContinue | 
-                                           Sort-Object { [version]($_.Name -replace '_.*$', '') } -Descending
+                                Sort-Object { [version]($_.Name -replace '_.*$', '') } -Descending
                                 
                                 if ($versions.Count -eq 0) { continue }
                                 
@@ -699,12 +707,14 @@ function Hunt-ForensicDump {
                                         $name = if ($manifest.name -like "__MSG_*__") {
                                             $msgKey = $manifest.name -replace "^__MSG_(.+?)__$", '$1'
                                             Resolve-Message -BasePath $latest.FullName -msgKey $msgKey
-                                        } else { $manifest.name }
+                                        }
+                                        else { $manifest.name }
                                         
                                         $desc = if ($manifest.description -like "__MSG_*__") {
                                             $msgKey = $manifest.description -replace "^__MSG_(.+?)__$", '$1'
                                             Resolve-Message -BasePath $latest.FullName -msgKey $msgKey
-                                        } else { $manifest.description }
+                                        }
+                                        else { $manifest.description }
                                         
                                         $extensions += [PSCustomObject]@{
                                             Hostname    = $hostname
@@ -716,7 +726,8 @@ function Hunt-ForensicDump {
                                             Version     = $manifest.version
                                             Description = $desc
                                         }
-                                    } catch { }
+                                    }
+                                    catch { }
                                 }
                             }
                         }
@@ -761,20 +772,22 @@ function Hunt-ForensicDump {
                                     $sessionName = "Console"
                                     $id = $parts[1]
                                     $state = $parts[2]
-                                    $idleTime = if ($parts.Count -gt 3) { $parts[3..($parts.Count-1)] -join ' ' } else { "." }
-                                } else {
+                                    $idleTime = if ($parts.Count -gt 3) { $parts[3..($parts.Count - 1)] -join ' ' } else { "." }
+                                }
+                                else {
                                     # Has session name
                                     $sessionName = $parts[1]
                                     $id = $parts[2]
                                     $state = $parts[3]
-                                    $idleTime = if ($parts.Count -gt 4) { $parts[4..($parts.Count-1)] -join ' ' } else { "." }
+                                    $idleTime = if ($parts.Count -gt 4) { $parts[4..($parts.Count - 1)] -join ' ' } else { "." }
                                 }
-                            } else {
+                            }
+                            else {
                                 # Disconnected session format
                                 $sessionName = "Disconnected"
                                 $id = $parts[1]
                                 $state = $parts[2]
-                                $idleTime = if ($parts.Count -gt 3) { $parts[3..($parts.Count-1)] -join ' ' } else { "." }
+                                $idleTime = if ($parts.Count -gt 3) { $parts[3..($parts.Count - 1)] -join ' ' } else { "." }
                             }
                             
                             $users += [PSCustomObject]@{
@@ -798,8 +811,8 @@ function Hunt-ForensicDump {
                     $logonSessions = Get-CimInstance -ClassName Win32_LogonSession -Filter "LogonType=2 OR LogonType=10" -ErrorAction SilentlyContinue
                     foreach ($session in $logonSessions) {
                         $logonUser = Get-CimInstance -ClassName Win32_LoggedOnUser -ErrorAction SilentlyContinue | 
-                                     Where-Object { $_.Dependent.LogonId -eq $session.LogonId } | 
-                                     Select-Object -First 1
+                        Where-Object { $_.Dependent.LogonId -eq $session.LogonId } | 
+                        Select-Object -First 1
                         
                         if ($logonUser) {
                             $username = "$($logonUser.Antecedent.Domain)\$($logonUser.Antecedent.Name)"
@@ -870,7 +883,8 @@ function Hunt-ForensicDump {
                             if ($existingUser) {
                                 $existingUser.ProfilePath = $profile.LocalPath
                             }
-                        } else {
+                        }
+                        else {
                             # New user from profile
                             $objSID = New-Object System.Security.Principal.SecurityIdentifier($sid)
                             $username = try { $objSID.Translate([System.Security.Principal.NTAccount]).Value } catch { $sid }
@@ -2481,15 +2495,6 @@ function Hunt-ForensicDump {
                     <span class="export-info-value">$($stats.Tasks) tasks</span>
                 </div>
             </div>
-            
-            <div class="export-info-card">
-                <h3>Quick Actions</h3>
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px; margin-top: 15px;">
-                    <a href="ForensicData_CSV/" class="csv-link">Browse All CSV Files</a>
-                    <a href="#" onclick="showTab('csv'); return false;" class="csv-link">Download Individual CSVs</a>
-                    <a href="#" onclick="showTab('settings'); return false;" class="csv-link">Adjust Display Settings</a>
-                </div>
-            </div>
         </div>
         
         <div id="sysinfo-tab" class="tab-content">
@@ -3520,10 +3525,10 @@ $(
             <a href="https://github.com/blwhit/PS-DFIR-ThreatHunter/issues" target="_blank">Report Issues</a>
         </div>
         <div class="footer-info">
-            Generated by Hunt-ForensicDump | PowerShell $($PSVersionTable.PSVersion) | $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+            Generated by Hunt-ForensicDump from ThreatHunter
         </div>
         <div class="footer-info" style="margin-top: 5px;">
-            Host: $hostname | Mode: $Mode | Collection: $parsedStartDate to $parsedEndDate
+            $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
         </div>
     </div>
 </body>
@@ -3929,6 +3934,7 @@ $(
             $logParams = @{
                 StartDate = $parsedStartDate
                 EndDate   = $parsedEndDate
+                SortOrder = "NewestFirst"
                 PassThru  = $true
                 Quiet     = $true
                 OutputCSV = Join-Path $csvDir "EventLogs.csv"
