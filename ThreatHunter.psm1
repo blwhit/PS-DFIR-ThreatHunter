@@ -27,8 +27,12 @@
 # - add defensive powershell version check to each function init... add defensive input param validation/sanitization too
 # - add a native "-More" or "-Page" or "-Paging" switch to the Hunt-Logs (and maybe Hunt-Files) function (paging ability while keeping coloring)
 # - take the extra space printing out of the Hunt-Browser execution for the forensic dump... printing an extra newline, not clean
-# - Fix the forensic dump "Settings" page.. doesnt change colors, out of date/misleading. Cant go over preset limit numbers, etc.
-# - Fix the forensic dump system info checks for the overview page. They are all showing N/A... review the logic
+
+
+
+
+# - cross reference and fix the flagging logic in ForensicDump... its using wierd criticality levels now... not proper or by design... fix logic to run and display all flags..
+# - research and add any more interesting Registry Key/Values to the reg colelction. Pretty thin now. Maybe reorder the tabs.
 
 
 #   Final/Full Review & Pass-Through
@@ -42,6 +46,8 @@
 # - Do a general review check for any critical errors
 # - Rename and standardize any variable names (loadtool vs loadbrowsertool, etc.)
 # - redo and update all Synopsis/Parameters/Notes/Examples sections
+# - check for multiple parameter combination edge cases that cause unexpected outputs/collision errors
+
 
 # ----------------------------------------------------------------
 # ----------------------------------------------------------------
@@ -174,10 +180,10 @@ function Hunt-ForensicDump {
     Array of modules to include in forensic dump. Options: 'All', 'Persistence', 'Files', 'Registry', 'Browser', 'Logs', 'Services', 'Tasks'. Default: @('All')
     
     .PARAMETER MaxChars
-    Maximum characters per cell before truncation in HTML report. Default: 200
+    Maximum characters per cell before truncation in HTML report. Default: 500
     
     .PARAMETER MaxRows
-    Maximum rows to display per table in HTML report. 0 = unlimited. Default: 0
+    Maximum rows to display per table in HTML report. 0 = unlimited. Default: 10000
     
     .PARAMETER AllFields
     Show all fields in HTML report (disable field omission for cleaner display).
@@ -614,14 +620,8 @@ function Hunt-ForensicDump {
                     $key = $matches[1].Trim()
                     $value = $matches[2].Trim()
                     
-                    # Skip ONLY if value is completely empty or EXACTLY "N/A" (not containing N/A)
-                    # Some values like OS Version contain "N/A" as part of the string: "10.0.26100 N/A Build 26100"
-                    if ([string]::IsNullOrWhiteSpace($value)) {
-                        Write-Verbose "Skipping empty value for key: $key"
-                        continue
-                    }
-                    if ($value -eq 'N/A') {
-                        Write-Verbose "Skipping N/A value for key: $key"
+                    # Skip if value is completely empty or exactly "N/A"
+                    if ([string]::IsNullOrWhiteSpace($value) -or $value -eq 'N/A') {
                         continue
                     }
                     
@@ -629,130 +629,96 @@ function Hunt-ForensicDump {
                     switch ($key) {
                         'Host Name' { 
                             $systemInfoData.Hostname = $value 
-                            Write-Verbose "Captured Host Name: $value"
                         }
                         'OS Name' { 
                             $systemInfoData.OSName = $value 
-                            Write-Verbose "Captured OS Name: $value"
                         }
                         'OS Version' { 
                             $systemInfoData.OSVersion = $value 
-                            Write-Verbose "Captured OS Version: $value"
                         }
                         'OS Manufacturer' { 
                             $systemInfoData.OSManufacturer = $value 
-                            Write-Verbose "Captured OS Manufacturer: $value"
                         }
                         'OS Configuration' { 
                             $systemInfoData.OSConfiguration = $value 
-                            Write-Verbose "Captured OS Configuration: $value"
                         }
                         'OS Build Type' { 
                             $systemInfoData.OSBuildType = $value 
-                            Write-Verbose "Captured OS Build Type: $value"
                         }
                         'Registered Owner' { 
                             $systemInfoData.RegisteredOwner = $value 
-                            Write-Verbose "Captured Registered Owner: $value"
                         }
                         'Registered Organization' { 
                             $systemInfoData.RegisteredOrganization = $value 
-                            Write-Verbose "Captured Registered Organization: $value"
                         }
                         'Product ID' { 
                             $systemInfoData.ProductID = $value 
-                            Write-Verbose "Captured Product ID: $value"
                         }
                         'Original Install Date' { 
                             $systemInfoData.InstallDate = $value 
-                            Write-Verbose "Captured Install Date: $value"
                         }
                         'System Boot Time' { 
                             $systemInfoData.BootTime = $value 
-                            Write-Verbose "Captured Boot Time: $value"
                         }
                         'System Manufacturer' { 
                             $systemInfoData.SystemManufacturer = $value 
-                            Write-Verbose "Captured System Manufacturer: $value"
                         }
                         'System Model' { 
                             $systemInfoData.SystemModel = $value 
-                            Write-Verbose "Captured System Model: $value"
                         }
                         'System Type' { 
                             $systemInfoData.SystemType = $value 
-                            Write-Verbose "Captured System Type: $value"
                         }
                         'Processor(s)' { 
                             $systemInfoData.ProcessorCount = $value 
-                            Write-Verbose "Captured Processor Count: $value"
                         }
                         'BIOS Version' { 
                             $systemInfoData.BIOSVersion = $value 
-                            Write-Verbose "Captured BIOS Version: $value"
                         }
                         'Windows Directory' { 
                             $systemInfoData.WindowsDirectory = $value 
-                            Write-Verbose "Captured Windows Directory: $value"
                         }
                         'System Directory' { 
                             $systemInfoData.SystemDirectory = $value 
-                            Write-Verbose "Captured System Directory: $value"
                         }
                         'Boot Device' { 
                             $systemInfoData.BootDevice = $value 
-                            Write-Verbose "Captured Boot Device: $value"
                         }
                         'System Locale' { 
                             $systemInfoData.SystemLocale = $value 
-                            Write-Verbose "Captured System Locale: $value"
                         }
                         'Input Locale' { 
                             $systemInfoData.InputLocale = $value 
-                            Write-Verbose "Captured Input Locale: $value"
                         }
                         'Time Zone' { 
                             $systemInfoData.TimeZone = $value 
-                            Write-Verbose "Captured Time Zone: $value"
                         }
                         'Total Physical Memory' { 
                             $systemInfoData.TotalPhysicalMemory = $value 
-                            Write-Verbose "Captured Total Physical Memory: $value"
                         }
                         'Available Physical Memory' { 
                             $systemInfoData.AvailablePhysicalMemory = $value 
-                            Write-Verbose "Captured Available Physical Memory: $value"
                         }
                         'Virtual Memory: Max Size' { 
                             $systemInfoData.VirtualMemoryMax = $value 
-                            Write-Verbose "Captured Virtual Memory Max: $value"
                         }
                         'Virtual Memory: Available' { 
                             $systemInfoData.VirtualMemoryAvailable = $value 
-                            Write-Verbose "Captured Virtual Memory Available: $value"
                         }
                         'Virtual Memory: In Use' { 
                             $systemInfoData.VirtualMemoryInUse = $value 
-                            Write-Verbose "Captured Virtual Memory In Use: $value"
                         }
                         'Page File Location(s)' { 
                             $systemInfoData.PageFileLocation = $value 
-                            Write-Verbose "Captured Page File Location: $value"
                         }
                         'Domain' { 
                             $systemInfoData.Domain = $value 
-                            Write-Verbose "Captured Domain: $value"
                         }
                         'Logon Server' { 
                             $systemInfoData.LogonServer = $value 
-                            Write-Verbose "Captured Logon Server: $value"
                         }
                         'Hyper-V Requirements' { 
                             $systemInfoData.HyperVRequirements = $value 
-                            Write-Verbose "Captured Hyper-V Requirements: $value"
-                        }
-                        default {
-                            Write-Verbose "Unhandled systeminfo key: $key = $value"
                         }
                     }
                 }
@@ -765,17 +731,15 @@ function Hunt-ForensicDump {
                         $systemInfoData.ProcessorDetails = @()
                     }
                     $systemInfoData.ProcessorDetails += $procDetails
-                    Write-Verbose "Captured Processor[$procIndex]: $procDetails"
                 }
             }
             
-            # Parse hotfixes separately as they're in a list format
+            # Parse hotfixes separately
             $hotfixSection = $false
             $hotfixes = @()
             foreach ($line in $systemInfoOutput) {
                 if ($line -match 'Hotfix\(s\):') {
                     $hotfixSection = $true
-                    # Check if count is on same line
                     if ($line -match 'Hotfix\(s\):\s+(\d+)\s+Hotfix\(s\)\s+Installed') {
                         $systemInfoData.HotfixCount = $matches[1]
                     }
@@ -783,11 +747,9 @@ function Hunt-ForensicDump {
                 }
                 
                 if ($hotfixSection) {
-                    # Hotfix entries look like: "               [01]: KB5007186"
                     if ($line -match '^\s+\[\d+\]:\s+(KB\d+)') {
                         $hotfixes += $matches[1]
                     }
-                    # Stop at next section
                     elseif ($line -match '^[A-Za-z]') {
                         $hotfixSection = $false
                     }
@@ -797,62 +759,101 @@ function Hunt-ForensicDump {
             if ($hotfixes.Count -gt 0) {
                 $systemInfoData.Hotfixes = $hotfixes
                 $systemInfoData.HotfixCount = $hotfixes.Count
-                Write-Verbose "Captured $($hotfixes.Count) hotfixes"
             }
             
             Write-Verbose "systeminfo parsing complete. Captured $($systemInfoData.Count) data points"
-            
-            # Debug: List all captured keys
-            if ($systemInfoData.Count -gt 0) {
-                Write-Verbose "Captured keys: $($systemInfoData.Keys -join ', ')"
-            }
-            else {
-                Write-Warning "systeminfo parsing captured NO data - this will result in 'N/A' values in the report"
-            }
             
             return $systemInfoData
         }
         catch {
             Write-Warning "systeminfo parsing error: $($_.Exception.Message)"
-            Write-Verbose "Stack trace: $($_.ScriptStackTrace)"
             return @{}
         }
     }
 
+    
     # Helper function: Test Internet Connectivity
     function Test-InternetConnectivity {
         try {
             $connectivity = [PSCustomObject]@{
-                CanPingCloudflare = $false
-                CanPingGoogle     = $false
-                CanResolveDNS     = $false
-                Status            = "Offline"
+                CanReachInternet = $false
+                DNSWorking       = $false
+                HTTPWorking      = $false
+                Status           = "Offline"
+                Details          = ""
             }
             
-            # Test ping to 1.1.1.1
-            $ping1 = Test-Connection -ComputerName "1.1.1.1" -Count 1 -Quiet -ErrorAction SilentlyContinue
-            $connectivity.CanPingCloudflare = $ping1
+            $testResults = @()
             
-            # Test ping to 8.8.8.8
-            $ping2 = Test-Connection -ComputerName "8.8.8.8" -Count 1 -Quiet -ErrorAction SilentlyContinue
-            $connectivity.CanPingGoogle = $ping2
+            # Test 1: DNS Resolution (most reliable indicator)
+            try {
+                $dnsTest = Resolve-DnsName -Name "www.google.com" -Type A -ErrorAction Stop
+                if ($dnsTest) {
+                    $connectivity.DNSWorking = $true
+                    $testResults += "DNS resolution working"
+                }
+            }
+            catch {
+                $testResults += "DNS resolution failed"
+            }
             
-            # Test DNS resolution
-            $dns = Resolve-DnsName -Name "google.com" -ErrorAction SilentlyContinue
-            $connectivity.CanResolveDNS = $null -ne $dns
+            # Test 2: HTTP connectivity (if DNS works)
+            if ($connectivity.DNSWorking) {
+                try {
+                    $httpTest = Invoke-WebRequest -Uri "http://www.msftconnecttest.com/connecttest.txt" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+                    if ($httpTest.StatusCode -eq 200) {
+                        $connectivity.HTTPWorking = $true
+                        $testResults += "HTTP connectivity confirmed"
+                    }
+                }
+                catch {
+                    $testResults += "HTTP test failed: $($_.Exception.Message)"
+                }
+            }
             
-            if ($connectivity.CanPingCloudflare -or $connectivity.CanPingGoogle) {
+            # Test 3: Fallback ICMP test (less reliable due to firewall blocks)
+            if (-not $connectivity.DNSWorking) {
+                try {
+                    $pingTest = Test-Connection -ComputerName "8.8.8.8" -Count 1 -Quiet -ErrorAction SilentlyContinue
+                    if ($pingTest) {
+                        $testResults += "ICMP ping successful (but DNS may be blocked)"
+                        $connectivity.CanReachInternet = $true
+                    }
+                }
+                catch {
+                    $testResults += "ICMP ping blocked or failed"
+                }
+            }
+            
+            # Determine overall status
+            if ($connectivity.DNSWorking -and $connectivity.HTTPWorking) {
                 $connectivity.Status = "Online"
+                $connectivity.CanReachInternet = $true
             }
+            elseif ($connectivity.DNSWorking) {
+                $connectivity.Status = "Limited"
+                $connectivity.CanReachInternet = $true
+                $testResults += "(DNS works but HTTP may be restricted)"
+            }
+            elseif ($connectivity.CanReachInternet) {
+                $connectivity.Status = "Limited"
+                $testResults += "(Network access but DNS issues)"
+            }
+            else {
+                $connectivity.Status = "Offline"
+            }
+            
+            $connectivity.Details = $testResults -join "; "
             
             return $connectivity
         }
         catch {
             return [PSCustomObject]@{
-                CanPingCloudflare = $false
-                CanPingGoogle     = $false
-                CanResolveDNS     = $false
-                Status            = "Unknown"
+                CanReachInternet = $false
+                DNSWorking       = $false
+                HTTPWorking      = $false
+                Status           = "Error"
+                Details          = "Connectivity test failed: $($_.Exception.Message)"
             }
         }
     }
@@ -907,12 +908,109 @@ function Hunt-ForensicDump {
         }
     }
 
+
+    # Helper function: Get Filesystem and Drive Information
+    function Get-FilesystemInfo {
+        try {
+            $fsInfo = @{
+                LogicalDrives = @()
+                NetworkDrives = @()
+                USBDrives     = @()
+                OpticalDrives = @()
+                NetworkShares = @()
+            }
+            
+            # Get all logical drives
+            try {
+                $drives = Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue
+                foreach ($drive in $drives) {
+                    try {
+                        # Get detailed info using WMI
+                        $wmiDrive = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='$($drive.Name):'" -ErrorAction SilentlyContinue
+                        
+                        if ($wmiDrive) {
+                            $driveObj = [PSCustomObject]@{
+                                DriveLetter  = $drive.Name
+                                Label        = if ($wmiDrive.VolumeName) { $wmiDrive.VolumeName } else { "(No label)" }
+                                DriveType    = switch ($wmiDrive.DriveType) {
+                                    2 { "Removable" }
+                                    3 { "Local Fixed" }
+                                    4 { "Network" }
+                                    5 { "CD-ROM" }
+                                    default { "Unknown" }
+                                }
+                                FileSystem   = $wmiDrive.FileSystem
+                                TotalSizeGB  = if ($wmiDrive.Size) { [math]::Round($wmiDrive.Size / 1GB, 2) } else { 0 }
+                                FreeSpaceGB  = if ($wmiDrive.FreeSpace) { [math]::Round($wmiDrive.FreeSpace / 1GB, 2) } else { 0 }
+                                UsedSpaceGB  = if ($wmiDrive.Size -and $wmiDrive.FreeSpace) { [math]::Round(($wmiDrive.Size - $wmiDrive.FreeSpace) / 1GB, 2) } else { 0 }
+                                PercentFree  = if ($wmiDrive.Size -and $wmiDrive.Size -gt 0) { [math]::Round(($wmiDrive.FreeSpace / $wmiDrive.Size) * 100, 1) } else { 0 }
+                                ProviderName = $wmiDrive.ProviderName
+                            }
+                            
+                            # Categorize by drive type
+                            switch ($wmiDrive.DriveType) {
+                                2 { $fsInfo.USBDrives += $driveObj }
+                                3 { $fsInfo.LogicalDrives += $driveObj }
+                                4 { $fsInfo.NetworkDrives += $driveObj }
+                                5 { $fsInfo.OpticalDrives += $driveObj }
+                                default { $fsInfo.LogicalDrives += $driveObj }
+                            }
+                        }
+                    }
+                    catch {
+                        Write-Verbose "Error processing drive $($drive.Name): $($_.Exception.Message)"
+                        continue
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Error enumerating drives: $($_.Exception.Message)"
+            }
+            
+            # Get network shares
+            try {
+                $shares = Get-SmbShare -ErrorAction SilentlyContinue
+                if ($shares) {
+                    foreach ($share in $shares) {
+                        $fsInfo.NetworkShares += [PSCustomObject]@{
+                            ShareName   = $share.Name
+                            Path        = $share.Path
+                            Description = $share.Description
+                            ShareType   = switch ($share.ShareType) {
+                                0 { "Disk Drive" }
+                                1 { "Print Queue" }
+                                2 { "Device" }
+                                3 { "IPC" }
+                                default { "Unknown" }
+                            }
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Error enumerating SMB shares: $($_.Exception.Message)"
+            }
+            
+            return $fsInfo
+        }
+        catch {
+            Write-Verbose "Filesystem enumeration failed: $($_.Exception.Message)"
+            return @{
+                LogicalDrives = @()
+                NetworkDrives = @()
+                USBDrives     = @()
+                OpticalDrives = @()
+                NetworkShares = @()
+            }
+        }
+    }
+
     # Helper function: Get Browser Extensions with Details
     function Get-DetailedBrowserExtensions {
         try {
             $extensions = @()
             $hostname = $env:COMPUTERNAME
-            
+                
             function Resolve-Message {
                 param([string]$BasePath, [string]$msgKey)
                 $localePath = Join-Path $BasePath "_locales\en\messages.json"
@@ -927,24 +1025,24 @@ function Hunt-ForensicDump {
                 }
                 return "__MSG_$msgKey__"
             }
-            
+                
             if (-not (Test-Path 'C:\Users')) {
                 return @()
             }
-            
+                
             $UserProfiles = Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue | Where-Object {
                 $_.Name -notin @('All Users', 'Default', 'Default User', 'Public') -and -not $_.Name.StartsWith('$')
             }
-            
+                
             foreach ($userProfile in $UserProfiles) {
                 $Username = $userProfile.Name
                 $UserLocalAppData = Join-Path $userProfile.FullName "AppData\Local"
                 $UserRoamingAppData = Join-Path $userProfile.FullName "AppData\Roaming"
-                
+                    
                 if (-not (Test-Path $UserLocalAppData) -and -not (Test-Path $UserRoamingAppData)) {
                     continue
                 }
-                
+                    
                 $BrowserProfiles = @(
                     @{ Name = "Chrome"; Path = "$UserLocalAppData\Google\Chrome\User Data" },
                     @{ Name = "Edge"; Path = "$UserLocalAppData\Microsoft\Edge\User Data" },
@@ -953,15 +1051,15 @@ function Hunt-ForensicDump {
                     @{ Name = "Opera"; Path = "$UserRoamingAppData\Opera Software\Opera Stable" },
                     @{ Name = "Firefox"; Path = "$UserRoamingAppData\Mozilla\Firefox\Profiles" }
                 )
-                
+                    
                 foreach ($browser in $BrowserProfiles) {
                     $browserName = $browser.Name
                     $basePath = $browser.Path
-                    
+                        
                     if (-Not (Test-Path $basePath)) {
                         continue
                     }
-                    
+                        
                     $profiles = if ($browserName -eq "Firefox") {
                         Get-ChildItem -Path $basePath -Directory -ErrorAction SilentlyContinue | Where-Object { 
                             $_.Name -like "*.default*" -or $_.Name -like "*-default" 
@@ -972,37 +1070,37 @@ function Hunt-ForensicDump {
                             $_.Name -eq 'Default' -or $_.Name -like 'Profile *'
                         }
                     }
-                    
+                        
                     foreach ($profile in $profiles) {
                         if ($browserName -eq "Firefox") {
                             $extensionsPath = Join-Path $profile.FullName "extensions"
                             if (-Not (Test-Path $extensionsPath)) { continue }
-                            
+                                
                             $xpiFiles = Get-ChildItem $extensionsPath -Filter *.xpi -File -ErrorAction SilentlyContinue
                             foreach ($xpi in $xpiFiles) {
                                 $tempDir = Join-Path $env:TEMP ([System.IO.Path]::GetRandomFileName())
                                 $zipPath = Join-Path $env:TEMP ([System.IO.Path]::GetRandomFileName() + ".zip")
-                                
+                                    
                                 try {
                                     Copy-Item -Path $xpi.FullName -Destination $zipPath -Force -ErrorAction Stop
                                     Expand-Archive -LiteralPath $zipPath -DestinationPath $tempDir -Force -ErrorAction Stop
-                                    
+                                        
                                     $manifestPath = Join-Path $tempDir "manifest.json"
                                     if (Test-Path $manifestPath) {
                                         $manifest = Get-Content $manifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
-                                        
+                                            
                                         $name = if ($manifest.name -like "__MSG_*__") {
                                             $msgKey = $manifest.name -replace "^__MSG_(.+?)__$", '$1'
                                             Resolve-Message -BasePath $tempDir -msgKey $msgKey
                                         }
                                         else { $manifest.name }
-                                        
+                                            
                                         $desc = if ($manifest.description -like "__MSG_*__") {
                                             $msgKey = $manifest.description -replace "^__MSG_(.+?)__$", '$1'
                                             Resolve-Message -BasePath $tempDir -msgKey $msgKey
                                         }
                                         else { $manifest.description }
-                                        
+                                            
                                         $extensionId = if ($manifest.applications -and $manifest.applications.gecko -and $manifest.applications.gecko.id) {
                                             $manifest.applications.gecko.id
                                         }
@@ -1012,7 +1110,7 @@ function Hunt-ForensicDump {
                                         else {
                                             [System.IO.Path]::GetFileNameWithoutExtension($xpi.Name)
                                         }
-                                        
+                                            
                                         $extensions += [PSCustomObject]@{
                                             Hostname    = $hostname
                                             User        = $Username
@@ -1034,34 +1132,34 @@ function Hunt-ForensicDump {
                         else {
                             $extensionsPath = Join-Path $profile.FullName "Extensions"
                             if (-Not (Test-Path $extensionsPath)) { continue }
-                            
+                                
                             $extensionDirs = Get-ChildItem -Path $extensionsPath -Directory -ErrorAction SilentlyContinue
                             foreach ($ext in $extensionDirs) {
                                 $extId = $ext.Name
                                 $versions = Get-ChildItem -Path $ext.FullName -Directory -ErrorAction SilentlyContinue | 
                                 Sort-Object { [version]($_.Name -replace '_.*$', '') } -Descending
-                                
+                                    
                                 if ($versions.Count -eq 0) { continue }
-                                
+                                    
                                 $latest = $versions[0]
                                 $manifestPath = Join-Path $latest.FullName "manifest.json"
-                                
+                                    
                                 if (Test-Path $manifestPath) {
                                     try {
                                         $manifest = Get-Content $manifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
-                                        
+                                            
                                         $name = if ($manifest.name -like "__MSG_*__") {
                                             $msgKey = $manifest.name -replace "^__MSG_(.+?)__$", '$1'
                                             Resolve-Message -BasePath $latest.FullName -msgKey $msgKey
                                         }
                                         else { $manifest.name }
-                                        
+                                            
                                         $desc = if ($manifest.description -like "__MSG_*__") {
                                             $msgKey = $manifest.description -replace "^__MSG_(.+?)__$", '$1'
                                             Resolve-Message -BasePath $latest.FullName -msgKey $msgKey
                                         }
                                         else { $manifest.description }
-                                        
+                                            
                                         $extensions += [PSCustomObject]@{
                                             Hostname    = $hostname
                                             User        = $Username
@@ -1080,13 +1178,15 @@ function Hunt-ForensicDump {
                     }
                 }
             }
-            
+                
             return $extensions
         }
         catch {
             return @()
         }
     }
+
+
     # Helper function: Get Logged In Users
     function Get-LoggedInUsers {
         try {
@@ -1746,12 +1846,18 @@ function Hunt-ForensicDump {
                 $sysInfo.DefaultBrowser = "Unknown"
             }
             
-            Write-Host "  [-] Getting browser extensions..." -ForegroundColor DarkGray
+            Write-Host "  [-] Getting filesystem and drive information..." -ForegroundColor DarkGray
             try {
-                $sysInfo.BrowserExtensions = Get-DetailedBrowserExtensions
+                $sysInfo.FilesystemInfo = Get-FilesystemInfo
             }
             catch {
-                $sysInfo.BrowserExtensions = @()
+                $sysInfo.FilesystemInfo = @{
+                    LogicalDrives = @()
+                    NetworkDrives = @()
+                    USBDrives     = @()
+                    OpticalDrives = @()
+                    NetworkShares = @()
+                }
             }
 
             if ($OutputDir) {
@@ -2132,15 +2238,34 @@ function Hunt-ForensicDump {
                 [void]$filteredData.Add([PSCustomObject]$newObj)
             }
 
-            # Convert to JSON
+            # Convert to JSON with comprehensive error handling
             try {
-                #Write-Host "  [-] Serializing $Type to JSON ($($filteredData.Count) records)..." -ForegroundColor DarkGray
+                # Validate data size before conversion
+                if ($filteredData.Count -gt 50000) {
+                    Write-Host "  [!] Large dataset ($($filteredData.Count) records) - JSON conversion may be slow" -ForegroundColor Yellow
+                }
                 
-                # CRITICAL: Convert ArrayList to regular array before JSON conversion
-                # This prevents ArrayList metadata from leaking into JSON
+                # Convert ArrayList to regular array before JSON conversion
                 $arrayData = @($filteredData.ToArray())
                 
-                $json = $arrayData | ConvertTo-Json -Depth 3 -Compress -ErrorAction Stop
+                # Attempt JSON conversion with retry logic
+                $retryCount = 0
+                $maxRetries = 2
+                $json = $null
+                
+                while ($retryCount -le $maxRetries -and $null -eq $json) {
+                    try {
+                        $json = $arrayData | ConvertTo-Json -Depth 3 -Compress -ErrorAction Stop
+                    }
+                    catch {
+                        $retryCount++
+                        if ($retryCount -gt $maxRetries) {
+                            throw
+                        }
+                        Write-Host "  [!] JSON conversion retry $retryCount/$maxRetries..." -ForegroundColor Yellow
+                        Start-Sleep -Milliseconds 500
+                    }
+                }
                 
                 # Verify JSON doesn't contain ArrayList references
                 if ($json -like '*ArrayList*' -or $json -like '*Enumerator*') {
@@ -2300,11 +2425,25 @@ function Hunt-ForensicDump {
         $filesJson = Prepare-DataForJSON -Data $ForensicData.Files.All -Type 'files' -MaxRows $MaxRows -OmitFields $omitFields['files']
 
         Write-Host "  [-] Preparing Registry JSON..." -ForegroundColor DarkGray
-        # Registry data is already in the correct format from Hunt-Registry
+        # Registry data validation and normalization
         $registryData = @()
-        if ($ForensicData.Registry -and $ForensicData.Registry.Count -gt 0) {
-            # Hunt-Registry returns PSCustomObjects with Hostname, Hive, KeyPath, ValueName, ValueType, ValueData, SearchTerm, MatchLocation
-            $registryData = $ForensicData.Registry
+        try {
+            if ($null -ne $ForensicData.Registry) {
+                if ($ForensicData.Registry -is [array]) {
+                    $registryData = $ForensicData.Registry
+                }
+                elseif ($ForensicData.Registry -is [hashtable]) {
+                    Write-Host "  [!] Registry data in hashtable format, converting to array" -ForegroundColor Yellow
+                    $registryData = @($ForensicData.Registry.Values)
+                }
+                else {
+                    $registryData = @($ForensicData.Registry)
+                }
+            }
+        }
+        catch {
+            Write-Host "  [!] Error processing registry data: $($_.Exception.Message)" -ForegroundColor Yellow
+            $registryData = @()
         }
         $registryJson = Prepare-DataForJSON -Data $registryData -Type 'registry' -MaxRows $MaxRows -OmitFields @('Hostname', 'SearchTerm', 'MatchLocation', 'CSVExportPath')
 
@@ -2926,7 +3065,7 @@ function Hunt-ForensicDump {
             <button class="tab-button" onclick="showTab('services')">Services ($($stats.Services))</button>
             <button class="tab-button" onclick="showTab('tasks')">Tasks ($($stats.Tasks))</button>
             <button class="tab-button" onclick="showTab('files')">Files ($($stats.Files))</button>
-            <button class="tab-button" onclick="showTab('csv')">CSV Downloads</button>
+            <button class="tab-button" onclick="showTab('csv')">Download CSVs</button>
             <button class="tab-button" onclick="showTab('export')">Export Info</button>
             <button class="tab-button" onclick="showTab('settings')">Settings</button>
         </div>
@@ -2949,8 +3088,22 @@ function Hunt-ForensicDump {
                     <div class="sysinfo-item"><span class="sysinfo-label">OS:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.OSInfo) { "$($ForensicData.SystemInfo.OSInfo.Caption) $($ForensicData.SystemInfo.OSInfo.Version)" } else { 'N/A' })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Architecture:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.OSInfo) { $ForensicData.SystemInfo.OSInfo.OSArchitecture } else { 'N/A' })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Build:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.OSInfo) { $ForensicData.SystemInfo.OSInfo.BuildNumber } else { 'N/A' })</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">Install Date:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.InstallDate) { $ForensicData.SystemInfo.SystemInfoCmd.InstallDate } else { 'N/A' })</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">System Locale:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.SystemLocale) { $ForensicData.SystemInfo.SystemInfoCmd.SystemLocale } else { 'N/A' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Install Date:</span><span class="sysinfo-value">$(
+                        if ($ForensicData.SystemInfo.SystemInfoCmd -and $ForensicData.SystemInfo.SystemInfoCmd.InstallDate) { 
+                            $ForensicData.SystemInfo.SystemInfoCmd.InstallDate 
+                        } elseif ($ForensicData.SystemInfo.OSInfo -and $ForensicData.SystemInfo.OSInfo.InstallDate) {
+                            $ForensicData.SystemInfo.OSInfo.InstallDate.ToString("yyyy-MM-dd HH:mm:ss")
+                        } else { 
+                            'Unknown' 
+                        }
+                    )</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">System Locale:</span><span class="sysinfo-value">$(
+                        if ($ForensicData.SystemInfo.SystemInfoCmd -and $ForensicData.SystemInfo.SystemInfoCmd.SystemLocale) { 
+                            $ForensicData.SystemInfo.SystemInfoCmd.SystemLocale 
+                        } else { 
+                            'Unknown' 
+                        }
+                    )</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Boot Time:</span><span class="sysinfo-value">$($ForensicData.SystemInfo.BootTime)</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Uptime:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.Uptime) { "$($ForensicData.SystemInfo.Uptime.Days)d $($ForensicData.SystemInfo.Uptime.Hours)h $($ForensicData.SystemInfo.Uptime.Minutes)m" } else { 'N/A' })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Time Zone:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.TimeZone) { $ForensicData.SystemInfo.TimeZone.DisplayName } else { 'N/A' })</span></div>
@@ -3021,9 +3174,14 @@ function Hunt-ForensicDump {
                 
                 <div class="sysinfo-card">
                     <h3>Network & Internet</h3>
-                    <div class="sysinfo-item"><span class="sysinfo-label">Internet Status:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.InternetConnectivity.Status -eq 'Online') { '#2ecc71' } else { '#e74c3c' })">$($ForensicData.SystemInfo.InternetConnectivity.Status)</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">Can Ping 1.1.1.1:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.InternetConnectivity.CanPingCloudflare) { 'Yes' } else { 'No' })</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">DNS Resolution:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.InternetConnectivity.CanResolveDNS) { 'Working' } else { 'Failed' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Internet Status:</span><span class="sysinfo-value" style="color: $(
+                        if ($ForensicData.SystemInfo.InternetConnectivity.Status -eq 'Online') { '#2ecc71' } 
+                        elseif ($ForensicData.SystemInfo.InternetConnectivity.Status -eq 'Limited') { '#f39c12' } 
+                        else { '#e74c3c' }
+                    )">$($ForensicData.SystemInfo.InternetConnectivity.Status)</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">DNS Resolution:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.InternetConnectivity.DNSWorking) { 'Working' } else { 'Failed' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">HTTP Connectivity:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.InternetConnectivity.HTTPWorking) { 'Working' } else { 'Failed' })</span></div>
+                    <div class="sysinfo-item" style="grid-column: 1 / -1;"><span class="sysinfo-label">Details:</span><span class="sysinfo-value" style="font-size: 0.85em;">$($ForensicData.SystemInfo.InternetConnectivity.Details)</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Primary DNS Server:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.PrimaryDNSServer) { $ForensicData.SystemInfo.PrimaryDNSServer } else { 'N/A' })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Logon Server:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.LogonServer) { $ForensicData.SystemInfo.LogonServer } else { 'N/A' })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Domain Controller:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.DomainController -and $ForensicData.SystemInfo.DomainController.Name -ne 'N/A') { "$($ForensicData.SystemInfo.DomainController.Name) ($($ForensicData.SystemInfo.DomainController.IPAddress))" } else { 'N/A' })</span></div>
@@ -3342,6 +3500,172 @@ $(
                 <div class="table-controls">
                     <input type="text" id="software-search" placeholder="Search software..." onkeyup="filterSystemTable('software-table')">
                 </div>
+                <div class="section-card">
+                <h3>Filesystem & Storage</h3>
+                
+                <h4 style="color: var(--accent-blue); margin-top: 20px; margin-bottom: 10px;">Local Fixed Drives ($(if ($ForensicData.SystemInfo.FilesystemInfo.LogicalDrives) { $ForensicData.SystemInfo.FilesystemInfo.LogicalDrives.Count } else { 0 }))</h4>
+                <div class="table-wrapper">
+                    <table id="drives-table">
+                        <thead>
+                            <tr>
+                                <th onclick="sortSystemTable('drives-table', 0)" style="position: relative;">Drive<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('drives-table', 1)" style="position: relative;">Label<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('drives-table', 2)" style="position: relative;">File System<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('drives-table', 3)" style="position: relative;">Total Size (GB)<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('drives-table', 4)" style="position: relative;">Used (GB)<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('drives-table', 5)" style="position: relative;">Free (GB)<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('drives-table', 6)" style="position: relative;">% Free<div class="resizer"></div></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+$(
+    if ($ForensicData.SystemInfo.FilesystemInfo.LogicalDrives -and $ForensicData.SystemInfo.FilesystemInfo.LogicalDrives.Count -gt 0) {
+        $drivesHtml = ""
+        foreach ($drive in $ForensicData.SystemInfo.FilesystemInfo.LogicalDrives) {
+            $label = [System.Web.HttpUtility]::HtmlEncode($drive.Label)
+            $percentColor = if ($drive.PercentFree -lt 10) { '#e74c3c' } elseif ($drive.PercentFree -lt 20) { '#f39c12' } else { '#2ecc71' }
+            $drivesHtml += "                            <tr><td><strong>$($drive.DriveLetter):\</strong></td><td>$label</td><td>$($drive.FileSystem)</td><td>$($drive.TotalSizeGB)</td><td>$($drive.UsedSpaceGB)</td><td>$($drive.FreeSpaceGB)</td><td style='color: $percentColor; font-weight: bold;'>$($drive.PercentFree)%</td></tr>`n"
+        }
+        $drivesHtml
+    } else {
+        "                            <tr><td colspan='7' style='text-align: center; color: #95a5a6;'>No local drives found</td></tr>"
+    }
+)
+                        </tbody>
+                    </table>
+                </div>
+                
+                <h4 style="color: var(--accent-blue); margin-top: 20px; margin-bottom: 10px;">Removable/USB Drives ($(if ($ForensicData.SystemInfo.FilesystemInfo.USBDrives) { $ForensicData.SystemInfo.FilesystemInfo.USBDrives.Count } else { 0 }))</h4>
+$(
+    if ($ForensicData.SystemInfo.FilesystemInfo.USBDrives -and $ForensicData.SystemInfo.FilesystemInfo.USBDrives.Count -gt 0) {
+        $usbHtml = @"
+                <div class="table-wrapper">
+                    <table id="usb-table">
+                        <thead>
+                            <tr>
+                                <th onclick="sortSystemTable('usb-table', 0)" style="position: relative;">Drive<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('usb-table', 1)" style="position: relative;">Label<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('usb-table', 2)" style="position: relative;">File System<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('usb-table', 3)" style="position: relative;">Total Size (GB)<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('usb-table', 4)" style="position: relative;">Free (GB)<div class="resizer"></div></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+"@
+        foreach ($usb in $ForensicData.SystemInfo.FilesystemInfo.USBDrives) {
+            $label = [System.Web.HttpUtility]::HtmlEncode($usb.Label)
+            $usbHtml += "                            <tr><td><strong>$($usb.DriveLetter):\</strong></td><td>$label</td><td>$($usb.FileSystem)</td><td>$($usb.TotalSizeGB)</td><td>$($usb.FreeSpaceGB)</td></tr>`n"
+        }
+        $usbHtml += @"
+                        </tbody>
+                    </table>
+                </div>
+"@
+        $usbHtml
+    } else {
+        "                <p style='color: #95a5a6;'>No removable drives currently connected</p>"
+    }
+)
+                
+                <h4 style="color: var(--accent-blue); margin-top: 20px; margin-bottom: 10px;">Network Mapped Drives ($(if ($ForensicData.SystemInfo.FilesystemInfo.NetworkDrives) { $ForensicData.SystemInfo.FilesystemInfo.NetworkDrives.Count } else { 0 }))</h4>
+$(
+    if ($ForensicData.SystemInfo.FilesystemInfo.NetworkDrives -and $ForensicData.SystemInfo.FilesystemInfo.NetworkDrives.Count -gt 0) {
+        $netHtml = @"
+                <div class="table-wrapper">
+                    <table id="network-drives-table">
+                        <thead>
+                            <tr>
+                                <th onclick="sortSystemTable('network-drives-table', 0)" style="position: relative;">Drive<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('network-drives-table', 1)" style="position: relative;">Network Path<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('network-drives-table', 2)" style="position: relative;">Label<div class="resizer"></div></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+"@
+        foreach ($net in $ForensicData.SystemInfo.FilesystemInfo.NetworkDrives) {
+            $label = [System.Web.HttpUtility]::HtmlEncode($net.Label)
+            $path = if ($net.ProviderName) { [System.Web.HttpUtility]::HtmlEncode($net.ProviderName) } else { "Unknown" }
+            $netHtml += "                            <tr><td><strong>$($net.DriveLetter):\</strong></td><td style='font-family: Consolas, monospace; font-size: 0.85em;'>$path</td><td>$label</td></tr>`n"
+        }
+        $netHtml += @"
+                        </tbody>
+                    </table>
+                </div>
+"@
+        $netHtml
+    } else {
+        "                <p style='color: #95a5a6;'>No network drives mapped</p>"
+    }
+)
+                
+                <h4 style="color: var(--accent-blue); margin-top: 20px; margin-bottom: 10px;">Network Shares ($(if ($ForensicData.SystemInfo.FilesystemInfo.NetworkShares) { $ForensicData.SystemInfo.FilesystemInfo.NetworkShares.Count } else { 0 }))</h4>
+$(
+    if ($ForensicData.SystemInfo.FilesystemInfo.NetworkShares -and $ForensicData.SystemInfo.FilesystemInfo.NetworkShares.Count -gt 0) {
+        $shareHtml = @"
+                <div class="table-wrapper">
+                    <table id="shares-table">
+                        <thead>
+                            <tr>
+                                <th onclick="sortSystemTable('shares-table', 0)" style="position: relative;">Share Name<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('shares-table', 1)" style="position: relative;">Local Path<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('shares-table', 2)" style="position: relative;">Type<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('shares-table', 3)" style="position: relative;">Description<div class="resizer"></div></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+"@
+        foreach ($share in $ForensicData.SystemInfo.FilesystemInfo.NetworkShares) {
+            $name = [System.Web.HttpUtility]::HtmlEncode($share.ShareName)
+            $path = [System.Web.HttpUtility]::HtmlEncode($share.Path)
+            $desc = if ($share.Description) { [System.Web.HttpUtility]::HtmlEncode($share.Description) } else { "" }
+            $shareHtml += "                            <tr><td><strong>$name</strong></td><td style='font-family: Consolas, monospace; font-size: 0.85em;'>$path</td><td>$($share.ShareType)</td><td>$desc</td></tr>`n"
+        }
+        $shareHtml += @"
+                        </tbody>
+                    </table>
+                </div>
+"@
+        $shareHtml
+    } else {
+        "                <p style='color: #95a5a6;'>No network shares configured</p>"
+    }
+)
+                
+                <h4 style="color: var(--accent-blue); margin-top: 20px; margin-bottom: 10px;">Optical Drives ($(if ($ForensicData.SystemInfo.FilesystemInfo.OpticalDrives) { $ForensicData.SystemInfo.FilesystemInfo.OpticalDrives.Count } else { 0 }))</h4>
+$(
+    if ($ForensicData.SystemInfo.FilesystemInfo.OpticalDrives -and $ForensicData.SystemInfo.FilesystemInfo.OpticalDrives.Count -gt 0) {
+        $optHtml = @"
+                <div class="table-wrapper">
+                    <table id="optical-table">
+                        <thead>
+                            <tr>
+                                <th onclick="sortSystemTable('optical-table', 0)" style="position: relative;">Drive<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('optical-table', 1)" style="position: relative;">Label<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('optical-table', 2)" style="position: relative;">Status<div class="resizer"></div></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+"@
+        foreach ($opt in $ForensicData.SystemInfo.FilesystemInfo.OpticalDrives) {
+            $label = if ($opt.Label -and $opt.Label -ne "(No label)") { [System.Web.HttpUtility]::HtmlEncode($opt.Label) } else { "No disc" }
+            $status = if ($opt.TotalSizeGB -gt 0) { "Media present" } else { "Empty" }
+            $optHtml += "                            <tr><td><strong>$($opt.DriveLetter):\</strong></td><td>$label</td><td>$status</td></tr>`n"
+        }
+        $optHtml += @"
+                        </tbody>
+                    </table>
+                </div>
+"@
+        $optHtml
+    } else {
+        "                <p style='color: #95a5a6;'>No optical drives detected</p>"
+    }
+)
+            </div>
+            
+        </div>
+        
+        <div id="persistence-tab" class="tab-content">
                 <div class="table-wrapper">
                     <table id="software-table">
                         <thead>
@@ -3371,11 +3695,6 @@ $(
                         </tbody>
                     </table>
                 </div>
-            </div>
-            
-        </div>
-        
-        <div id="persistence-tab" class="tab-content">
             <div id="persistence-content"></div>
         </div>
         
@@ -3478,76 +3797,56 @@ $(
         <div id="settings-tab" class="tab-content">
             <div class="csv-section">
                 <h2 style="color: #3498db; margin-bottom: 15px;">Display Settings</h2>
-                <p style="margin-bottom: 20px; color: #bdc3c7;">Adjust how data is displayed in tables. Changes apply immediately without regenerating the report.</p>
-                <div style="background: var(--bg-tertiary); padding: 20px; border-radius: 8px; max-width: 700px;">
-                <div style="background: #333; padding: 20px; border-radius: 8px; max-width: 700px;">
-                    <div style="background: var(--bg-quaternary); padding: 15px; border-radius: 6px; margin-bottom: 20px; border-left: 4px solid var(--accent-blue);">
-                        <p style="color: #bdc3c7; font-size: 0.9em; margin: 0; line-height: 1.6;">
-                            All forensic data is embedded in this HTML report. Changing these settings will re-process 
-                            and re-display the data with your new limits.
+                <p style="margin-bottom: 20px; color: #bdc3c7;">Adjust how data is displayed in tables. Changes apply when you switch between tabs.</p>
+                <div style="background: var(--bg-secondary); padding: 20px; border-radius: 8px; max-width: 700px; border: 1px solid var(--border-color);">
+                    <div style="background: var(--bg-tertiary); padding: 15px; border-radius: 6px; margin-bottom: 20px; border-left: 4px solid var(--accent-blue);">
+                        <p style="color: var(--text-secondary); font-size: 0.9em; margin: 0; line-height: 1.6;">
+                            Data up to the initial MaxRows limit ($MaxRows) is embedded in this report. 
+                            These settings control how much of that embedded data is displayed in tables. 
+                            Reducing limits improves browser performance with large datasets.
                         </p>
                     </div>
                     
                     <div style="margin-bottom: 20px;">
-                        <label style="display: block; color: #ecf0f1; margin-bottom: 10px; font-weight: bold;">
-                            <span style="font-size: 1.1em;">Display Limit (Max Rows Per Table)</span>
+                        <label style="display: block; color: var(--text-primary); margin-bottom: 10px; font-weight: bold;">
+                            <span style="font-size: 1.1em;">Maximum Rows Per Table</span>
                         </label>
-                        <p style="color: #95a5a6; font-size: 0.9em; margin-bottom: 10px;">
-                            Control how many records appear in each table. Set to 0 for unlimited (may be slow with large datasets).
+                        <p style="color: var(--text-muted); font-size: 0.9em; margin-bottom: 10px;">
+                            Limit how many records display in each table. Lower values improve browser performance. Set to 0 to show all embedded data.
                         </p>
                         <input type="number" id="settings-maxrows" value="$MaxRows" min="0" step="100" 
                             style="width: 100%; padding: 10px; background: var(--input-bg); border: 1px solid var(--input-border); color: var(--text-primary); border-radius: 4px; font-size: 1em;">
-                        <div style="display: flex; justify-content: space-between; margin-top: 8px;">
-                            <p style="color: #7f8c8d; font-size: 0.85em; margin: 0;">
-                                Current: <span id="current-maxrows" style="color: #3498db; font-weight: bold;">$(if ($MaxRows -eq 0) { 'Unlimited' } else { $MaxRows })</span> records
-                            </p>
-                            <div>
-                                <button onclick="document.getElementById('settings-maxrows').value=1000" 
-                                    style="padding: 4px 8px; background: var(--button-bg); color: #fff; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em; margin-left: 5px;">1K</button>
-                                <button onclick="document.getElementById('settings-maxrows').value=5000" 
-                                    style="padding: 4px 8px; background: #34495e; color: #fff; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em; margin-left: 5px;">5K</button>
-                                <button onclick="document.getElementById('settings-maxrows').value=0" 
-                                    style="padding: 4px 8px; background: #34495e; color: #fff; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em; margin-left: 5px;">All</button>
-                            </div>
-                        </div>
+                        <p style="color: var(--text-dark); font-size: 0.85em; margin-top: 8px;">
+                            Currently displaying: <span id="current-maxrows" style="color: var(--accent-blue); font-weight: bold;">$(if ($MaxRows -eq 0) { 'All' } else { $MaxRows })</span> rows per table
+                        </p>
                     </div>
                     
                     <div style="margin-bottom: 20px;">
-                        <label style="display: block; color: #ecf0f1; margin-bottom: 10px; font-weight: bold;">
-                            <span style="font-size: 1.1em;">Character Limit (Cell Truncation)</span>
+                        <label style="display: block; color: var(--text-primary); margin-bottom: 10px; font-weight: bold;">
+                            <span style="font-size: 1.1em;">Maximum Characters Per Cell</span>
                         </label>
-                        <p style="color: #95a5a6; font-size: 0.9em; margin-bottom: 10px;">
-                            Maximum characters per cell before truncation. Hover over truncated cells to see full content.
+                                        <p style="color: var(--text-muted); font-size: 0.9em; margin-bottom: 10px;">
+                            Text longer than this limit will be truncated with "..." Hover over truncated cells to see full content.
                         </p>
                         <input type="number" id="settings-maxchars" value="$MaxChars" min="50" step="50" 
                             style="width: 100%; padding: 10px; background: var(--input-bg); border: 1px solid var(--input-border); color: var(--text-primary); border-radius: 4px; font-size: 1em;">
-                        <div style="display: flex; justify-content: space-between; margin-top: 8px;">
-                            <p style="color: #7f8c8d; font-size: 0.85em; margin: 0;">
-                                Current: <span id="current-maxchars" style="color: #3498db; font-weight: bold;">$MaxChars</span> characters
-                            </p>
-                            <div>
-                                <button onclick="document.getElementById('settings-maxchars').value=200" 
-                                    style="padding: 4px 8px; background: #34495e; color: #fff; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em; margin-left: 5px;">200</button>
-                                <button onclick="document.getElementById('settings-maxchars').value=500" 
-                                    style="padding: 4px 8px; background: #34495e; color: #fff; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em; margin-left: 5px;">500</button>
-                                <button onclick="document.getElementById('settings-maxchars').value=1000" 
-                                    style="padding: 4px 8px; background: #34495e; color: #fff; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em; margin-left: 5px;">1K</button>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <button onclick="applySettings()" 
-                        style="width: 100%; padding: 15px; background: linear-gradient(135deg, #3498db, #2980b9); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1.1em; font-weight: bold; transition: all 0.3s;"
-                        onmouseover="this.style.background='linear-gradient(135deg, #2980b9, #3498db)'"
-                        onmouseout="this.style.background='linear-gradient(135deg, #3498db, #2980b9)'">
-                        Apply Settings and Reload Data
-                    </button>
-                    
-                    <div style="margin-top: 15px; padding: 12px; background: rgba(243, 156, 18, 0.1); border-radius: 4px; border-left: 4px solid #f39c12;">
-                        <p style="color: #f39c12; font-size: 0.85em; margin: 0;">
-                            <strong>Note:</strong> Changes apply to future tab loads. Switch between tabs to see updated limits in action.
+                        <p style="color: var(--text-dark); font-size: 0.85em; margin-top: 8px;">
+                            Currently truncating at: <span id="current-maxchars" style="color: var(--accent-blue); font-weight: bold;">$MaxChars</span> characters
                         </p>
-                    </div>
+                    </div>                    
+                    <button onclick="applySettings()" 
+                        style="width: 100%; padding: 15px; background: var(--accent-blue); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1.1em; font-weight: bold; transition: background 0.3s;"
+                        onmouseover="this.style.background='var(--accent-blue-hover)'"
+                        onmouseout="this.style.background='var(--accent-blue)'">
+                        Apply Settings
+                    </button>
+
+                    <div style="margin-top: 15px; padding: 12px; background: var(--bg-tertiary); border-radius: 4px; border-left: 4px solid var(--accent-yellow);">
+                        <p style="color: var(--text-secondary); font-size: 0.85em; margin: 0; line-height: 1.5;">
+                            <strong>Note:</strong> After applying, switch to any data tab to see the updated display limits. 
+                            For full datasets beyond the embedded limit, download CSV files.
+                        </p>
+                    </div>                
                 </div>
             </div>
         </div>
@@ -3845,12 +4144,22 @@ $(
                 return;
             }
 
-            // CRITICAL FIX: Always use full data, apply MAX_ROWS limit here
-            var fullData = data;
-            var displayData = fullData;
-            if (MAX_ROWS > 0 && fullData.length > MAX_ROWS) {
-                displayData = fullData.slice(0, MAX_ROWS);
-            }            
+            try {
+                // Memory safety: validate data before processing
+                if (data.length > 100000) {
+                    var proceed = confirm('Large dataset detected (' + data.length + ' records). Display may be slow. Continue?');
+                    if (!proceed) {
+                        content.innerHTML = '<div class="warning">Display cancelled. Use CSV files for large datasets.</div>';
+                        return;
+                    }
+                }
+
+                // Apply MAX_ROWS limit
+                var fullData = data;
+                var displayData = fullData;
+                if (MAX_ROWS > 0 && fullData.length > MAX_ROWS) {
+                    displayData = fullData.slice(0, MAX_ROWS);
+                }          
             var keys = [];
             var keySet = {};
             for (var i = 0; i < displayData.length; i++) {
@@ -3923,9 +4232,14 @@ $(
             }            
 
             html += '</tbody></table></div>';
-            content.innerHTML = html;
-            
-            makeColumnsResizable(type + '-table');
+                content.innerHTML = html;
+                
+                makeColumnsResizable(type + '-table');
+            }
+            catch (error) {
+                content.innerHTML = '<div class="error">Error rendering table: ' + error.message + '</div>';
+                console.error('renderTable error:', error);
+            }
         }
 
         function makeColumnsResizable(tableId) {
@@ -4514,7 +4828,7 @@ $(
             
             $browserResults = Hunt-Browser @browserParams
             
-            # Nuclear option: Clear ALL possible progress activities
+            # Clear progress bars with error handling
             $progressActivities = @(
                 "Hunt-Browser Analysis",
                 "Hunt-Browser",
@@ -4527,8 +4841,19 @@ $(
                 "Analyzing"
             )
             
-            foreach ($activity in $progressActivities) {
-                Write-Progress -Activity $activity -Completed -ErrorAction SilentlyContinue
+            try {
+                foreach ($activity in $progressActivities) {
+                    Write-Progress -Activity $activity -Completed -ErrorAction SilentlyContinue
+                }
+                
+                # Force UI refresh
+                Start-Sleep -Milliseconds 50
+                foreach ($activity in $progressActivities) {
+                    Write-Progress -Activity $activity -Completed -ErrorAction SilentlyContinue
+                }
+            }
+            catch {
+                Write-Verbose "Could not clear all progress bars: $($_.Exception.Message)"
             }
             
             # Force UI refresh with multiple cycles
@@ -4758,16 +5083,53 @@ $(
                 foreach ($task in $taskResults) {
                     if ($task.PSObject.Properties['TriggerType']) {
                         $triggerValue = $task.TriggerType
+                        
+                        # Handle null or empty
+                        if ($null -eq $triggerValue -or [string]::IsNullOrWhiteSpace($triggerValue.ToString())) {
+                            $task.TriggerType = "Not configured"
+                            continue
+                        }
+                        
+                        # Handle array types
                         if ($triggerValue -is [array] -or $triggerValue -is [System.Collections.ArrayList]) {
-                            # Clean up array: remove empty/whitespace, join with semicolon
-                            $cleaned = $triggerValue | Where-Object { ![string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.ToString().Trim() }
-                            $task.TriggerType = ($cleaned -join '; ')
+                            $cleaned = $triggerValue | Where-Object { 
+                                ![string]::IsNullOrWhiteSpace($_) -and $_ -ne ',' 
+                            } | ForEach-Object { $_.ToString().Trim() } | Select-Object -Unique
+                            
+                            if ($cleaned -and $cleaned.Count -gt 0) {
+                                $task.TriggerType = ($cleaned -join '; ')
+                            }
+                            else {
+                                $task.TriggerType = "Not configured"
+                            }
                         }
-                        elseif ($triggerValue -and $triggerValue.ToString().Contains(',')) {
-                            # Clean up comma-separated string
-                            $parts = $triggerValue.ToString() -split ',' | Where-Object { ![string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() }
-                            $task.TriggerType = ($parts -join '; ')
+                        # Handle string with commas
+                        elseif ($triggerValue.ToString().Contains(',')) {
+                            $parts = $triggerValue.ToString() -split ',' | Where-Object { 
+                                ![string]::IsNullOrWhiteSpace($_) 
+                            } | ForEach-Object { $_.Trim() } | Select-Object -Unique
+                            
+                            if ($parts -and $parts.Count -gt 0) {
+                                $task.TriggerType = ($parts -join '; ')
+                            }
+                            else {
+                                $task.TriggerType = "Not configured"
+                            }
                         }
+                        # Handle single value
+                        else {
+                            $cleanValue = $triggerValue.ToString().Trim()
+                            if ([string]::IsNullOrWhiteSpace($cleanValue) -or $cleanValue -eq ',') {
+                                $task.TriggerType = "Not configured"
+                            }
+                            else {
+                                $task.TriggerType = $cleanValue
+                            }
+                        }
+                    }
+                    else {
+                        # Add TriggerType property if missing
+                        $task | Add-Member -NotePropertyName 'TriggerType' -NotePropertyValue 'Not configured' -Force
                     }
                 }
             }
