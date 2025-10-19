@@ -22,18 +22,38 @@
 # - Make Wiki
 # - Spend genuine time building and tuning the IOC and string lists
 # - !!!  add caching functionality to other subfunctions (add -DontCache switch, use in ForensicDump to avoid extra PS session vars)... cache cmdlet search results in PS variable for quicker subsequent searching 
-# - ADD switch to Hunt-Browser to get the browser extensions loaded on the machine for all browsers.. can copy existing logic
+# - ADD switch "-BrowserExtensions" to Hunt-Browser to get the browser extensions loaded on the machine for all browsers.. can copy existing logic.. return as objects...
 # - will packaging as PS2EXE make it work on older windows computers? research
-# - add defensive powershell version check to each function init... add defensive input param validation/sanitization too
+# - add defensive powershell version check to each function init... add defensive input param validation/sanitization, admin checks, internet checks, etc...
 # - add a native "-More" or "-Page" or "-Paging" switch to the Hunt-Logs (and maybe Hunt-Files) function (paging ability while keeping coloring)
-
+# - add path filtering/searching to Hunt-Tasks
+# - review logic for getting the hash of the executable vs the scriptFile... make sure its sound and expected output... sometimes fields are getting mixed up...
+# - review CSV outputs for all Forensic Dump data...
 
 # Forensic Dump
 # -------------
 # - cross reference and fix the flagging logic in ForensicDump... its using deafult criticality levels... not proper or by design... fix logic to run and display all native flags direct from cmdlet..
-# - research and add any more interesting Registry Key/Values to the reg colelction. Pretty thin now. 
+# - research and add any more interesting Registry Key/Values to the reg colelction. Pretty thin now. e.g. UAC values, RDP settings, etc....
 # - Consider reordering tabs in importance/likelihood of usage
 # - take the extra space printing out of the Hunt-Browser execution for the forensic dump... printing an extra newline, not clean
+# - fix and review the "current tab" highlighting... when hitting 'view in tab' or going a tab without manually clicking, there is no blue underline highlight...
+# - add a loading logo/spinning logo wheel for when a page or search is loading, that way it doesnt seem to be stalling
+# - add one liner descriptions at the top of main tabs for a description of what is shown-- i.e. "All known autoruns shown below.."
+# - review the table cell/header/field resizing feature. in some of the tabs, the feature is not working. i should be able to make a field/column bigger or smaller as i please. some of them are snapping back and not applying resize changes. review logic
+# - could add a filtering type of feature, where you can color rows... right click and color red or green, etc... then add filter button to show all filtered... excel style
+# - add more hyperlink features.. IPs open scamalytics, 'References' open their URL, Browser History URLs open VirusTotal, DNS client cache IPs/URLs, etc....
+# ---- ^^^ --- probably only want hyperlink URLs if "loadTool" mode is used... --- ^^^ ------------
+# - fix the "TriggerType" vs "TriggerTypes" duplicate fields in the tasks... duplicate, only need one...
+# - should probably remove task file SHA256 from the Sched Tasks tab... i think this hash will always be different.. not sure its useful.. adding clutter... 
+# - add more data to Bitlocker status.. list if enforced or not and on which drives... this could be a field in the filesystem section
+# - review and double check logic for different filesystem drive outputs... i.e. USB or Optical, etc... Use device manager, double check accuracy, etc.... review logic
+# - add the "Source" field into the display table for currently logged in users...
+# - make the MD5 hash of AMSI DLLs link to VT.... maybe also make the Font normal size
+# - change the "Light Mode" to use a soft grey color scheme... the white is way too bright.. maybe also adjust other colors so its easier to read... too bright
+# - can we change it so hovering over a "..." will give the FULL text? its still truncated in the hover pop-up
+# - can we parse out PIDs/ThreadIDs for the event logs? not sure if useful or not...
+# - logic for Search "View in Tab" of 'browser extension' entries is bad.. its routing to the 'System Info' tab instead of the 'Browser' tab.... review and fix this logic.
+
 
 
 #   Final/Full Review & Pass-Through
@@ -3683,7 +3703,7 @@ function Hunt-ForensicDump {
             <div class="export-info-card">
                 <h3>Output Locations</h3>
                 <div class="export-info-item">
-                    <span class="export-info-label">Main Output Directory:</span>
+                    <span class="export-info-label">Output Folder:</span>
                     <span class="export-info-value">$OutputDir</span>
                 </div>
                 <div class="export-info-item">
@@ -3730,7 +3750,7 @@ function Hunt-ForensicDump {
         </div>
         
         <div id="sysinfo-tab" class="tab-content">
-            <h2 style="color: #3498db; margin-bottom: 20px;">Detailed System Information</h2>
+            <h2 style="color: #3498db; margin-bottom: 20px;">System Information</h2>
             
             <div class="section-card">
                 <h3>PowerShell Command History</h3>
@@ -3917,7 +3937,7 @@ $(
                 </div>
             
             <div class="section-card">
-                <h3>AntiVirus Protection</h3>
+                <h3>AntiVirus Providers</h3>
                 
                 <h4 style="color: var(--accent-blue); margin-top: 20px; margin-bottom: 10px;">Registered AntiVirus Products ($(if ($ForensicData.SystemInfo.AntiVirusInfo.SecurityCenter) { $ForensicData.SystemInfo.AntiVirusInfo.SecurityCenter.Count } else { 0 }))</h4>
                 <div class="table-wrapper">
@@ -4310,12 +4330,12 @@ $(
         
         <div id="search-tab" class="tab-content">
             <div class="csv-section">
-                <h2 style="color: #3498db; margin-bottom: 15px;">Search All Data</h2>
-                <p style="margin-bottom: 20px; color: #bdc3c7;">Search across all forensic data including persistence, files, registry, browser history, event logs, services, and scheduled tasks.</p>
+                <h2 style="color: #3498db; margin-bottom: 15px;">Search</h2>
+                <p style="margin-bottom: 20px; color: #bdc3c7;">Search across all forensic data.</p>
                 
                 <div style="background: var(--bg-secondary); padding: 25px; border-radius: 8px; border: 1px solid var(--border-color);">
                     <div style="display: flex; gap: 10px; margin-bottom: 20px;">
-                        <input type="text" id="global-search-input" placeholder="Enter search term (minimum 3 characters)..." 
+                        <input type="text" id="global-search-input" placeholder="Enter search string (minimum 3 characters)..." 
                             style="flex: 1; padding: 12px; background: var(--input-bg); border: 2px solid var(--input-border); color: var(--text-primary); border-radius: 4px; font-size: 16px;"
                             onkeypress="if(event.key === 'Enter') performGlobalSearch()">
                         <button onclick="performGlobalSearch()" 
@@ -4366,7 +4386,6 @@ $(
         <div id="settings-tab" class="tab-content">
             <div class="csv-section">
                 <h2 style="color: #3498db; margin-bottom: 15px;">Display Settings</h2>
-                <p style="margin-bottom: 20px; color: #bdc3c7;">Adjust how data is displayed in tables. Changes apply when you switch between tabs.</p>
                 <div style="background: var(--bg-secondary); padding: 20px; border-radius: 8px; max-width: 700px; border: 1px solid var(--border-color);">
                     <div style="background: var(--bg-tertiary); padding: 15px; border-radius: 6px; margin-bottom: 20px; border-left: 4px solid var(--accent-blue);">
                         <p style="color: var(--text-secondary); font-size: 0.9em; margin: 0; line-height: 1.6;">
@@ -4381,7 +4400,7 @@ $(
                             <span style="font-size: 1.1em;">Maximum Rows Per Table</span>
                         </label>
                         <p style="color: var(--text-muted); font-size: 0.9em; margin-bottom: 10px;">
-                            Limit how many records display in each table. Lower values improve browser performance. Set to 0 to show all embedded data.
+                            Limit how many records/rows display in each table. Set to 0 to show all embedded data.
                         </p>
                         <input type="number" id="settings-maxrows" value="$MaxRows" min="0" step="100" 
                             style="width: 100%; padding: 10px; background: var(--input-bg); border: 1px solid var(--input-border); color: var(--text-primary); border-radius: 4px; font-size: 1em;">
@@ -4395,7 +4414,7 @@ $(
                             <span style="font-size: 1.1em;">Maximum Characters Per Cell</span>
                         </label>
                                         <p style="color: var(--text-muted); font-size: 0.9em; margin-bottom: 10px;">
-                            Text longer than this limit will be truncated with "..." Hover over truncated cells to see full content.
+                            Text longer than this limit will be truncated with "..." Hover over truncated cells to see preview of content.
                         </p>
                         <input type="number" id="settings-maxchars" value="$MaxChars" min="50" step="50" 
                             style="width: 100%; padding: 10px; background: var(--input-bg); border: 1px solid var(--input-border); color: var(--text-primary); border-radius: 4px; font-size: 1em;">
