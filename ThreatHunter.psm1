@@ -22,17 +22,18 @@
 # - Make Wiki
 # - Spend genuine time building and tuning the IOC and string lists
 # - !!!  add caching functionality to other subfunctions (add -DontCache switch, use in ForensicDump to avoid extra PS session vars)... cache cmdlet search results in PS variable for quicker subsequent searching 
-# - ADD switch to Hunt-Browser to get the browser extensions loaded on the machine for all browsers
+# - ADD switch to Hunt-Browser to get the browser extensions loaded on the machine for all browsers.. can copy existing logic
 # - will packaging as PS2EXE make it work on older windows computers? research
 # - add defensive powershell version check to each function init... add defensive input param validation/sanitization too
 # - add a native "-More" or "-Page" or "-Paging" switch to the Hunt-Logs (and maybe Hunt-Files) function (paging ability while keeping coloring)
+
+
+# Forensic Dump
+# -------------
+# - cross reference and fix the flagging logic in ForensicDump... its using deafult criticality levels... not proper or by design... fix logic to run and display all native flags direct from cmdlet..
+# - research and add any more interesting Registry Key/Values to the reg colelction. Pretty thin now. 
+# - Consider reordering tabs in importance/likelihood of usage
 # - take the extra space printing out of the Hunt-Browser execution for the forensic dump... printing an extra newline, not clean
-
-
-
-
-# - cross reference and fix the flagging logic in ForensicDump... its using wierd criticality levels now... not proper or by design... fix logic to run and display all flags..
-# - research and add any more interesting Registry Key/Values to the reg colelction. Pretty thin now. Maybe reorder the tabs.
 
 
 #   Final/Full Review & Pass-Through
@@ -308,14 +309,33 @@ function Hunt-ForensicDump {
                             }
                         }
                         
-                        # Check if DLL exists on disk
+                        # Check if DLL exists on disk and calculate MD5
                         $dllExists = $false
                         $dllSize = 0
+                        $dllMD5 = "N/A"
                         if ($dllPath -ne "N/A" -and (Test-Path $dllPath -ErrorAction SilentlyContinue)) {
                             $dllExists = $true
                             $dllFile = Get-Item $dllPath -ErrorAction SilentlyContinue
                             if ($dllFile) {
                                 $dllSize = [math]::Round($dllFile.Length / 1KB, 2)
+                                
+                                # Calculate MD5 hash
+                                try {
+                                    $md5 = [System.Security.Cryptography.MD5]::Create()
+                                    $fileStream = [System.IO.File]::OpenRead($dllPath)
+                                    try {
+                                        $hashBytes = $md5.ComputeHash($fileStream)
+                                        $dllMD5 = [System.BitConverter]::ToString($hashBytes) -replace '-', ''
+                                    }
+                                    finally {
+                                        $fileStream.Close()
+                                        $fileStream.Dispose()
+                                    }
+                                }
+                                catch {
+                                    $dllMD5 = "Error"
+                                    Write-Verbose "Failed to calculate MD5 for $dllPath : $($_.Exception.Message)"
+                                }
                             }
                         }
                         
@@ -325,6 +345,7 @@ function Hunt-ForensicDump {
                             DLLPath         = $dllPath
                             DLLExists       = $dllExists
                             DLLSizeKB       = $dllSize
+                            DLLMd5          = $dllMD5
                             ThreadingModel  = $threadingModel
                             DetectionMethod = "Registry"
                         }
@@ -389,10 +410,24 @@ function Hunt-ForensicDump {
                         # Add as new provider (not in registry but loaded)
                         $dllExists = Test-Path $modInfo.ModulePath -ErrorAction SilentlyContinue
                         $dllSize = 0
+                        $dllMD5 = "N/A"
                         if ($dllExists) {
                             $dllFile = Get-Item $modInfo.ModulePath -ErrorAction SilentlyContinue
                             if ($dllFile) {
                                 $dllSize = [math]::Round($dllFile.Length / 1KB, 2)
+                                
+                                # Calculate MD5 hash
+                                try {
+                                    $md5 = [System.Security.Cryptography.MD5]::Create()
+                                    $fileStream = [System.IO.File]::OpenRead($modInfo.ModulePath)
+                                    $hashBytes = $md5.ComputeHash($fileStream)
+                                    $fileStream.Close()
+                                    $dllMD5 = [System.BitConverter]::ToString($hashBytes) -replace '-', ''
+                                }
+                                catch {
+                                    $dllMD5 = "Error"
+                                    Write-Verbose "Failed to calculate MD5 for $($modInfo.ModulePath) : $($_.Exception.Message)"
+                                }
                             }
                         }
                         
@@ -402,6 +437,7 @@ function Hunt-ForensicDump {
                             DLLPath           = $modInfo.ModulePath
                             DLLExists         = $dllExists
                             DLLSizeKB         = $dllSize
+                            DLLMd5            = $dllMD5
                             ThreadingModel    = "N/A"
                             DetectionMethod   = "Process"
                             LoadedInProcesses = ($modInfo.Processes -join '; ')
@@ -429,12 +465,29 @@ function Hunt-ForensicDump {
                             $dllFile = Get-Item $defenderAmsiPath -ErrorAction SilentlyContinue
                             $dllSize = if ($dllFile) { [math]::Round($dllFile.Length / 1KB, 2) } else { 0 }
                             
+                            # Calculate MD5 hash
+                            $dllMD5 = "N/A"
+                            if ($dllFile) {
+                                try {
+                                    $md5 = [System.Security.Cryptography.MD5]::Create()
+                                    $fileStream = [System.IO.File]::OpenRead($defenderAmsiPath)
+                                    $hashBytes = $md5.ComputeHash($fileStream)
+                                    $fileStream.Close()
+                                    $dllMD5 = [System.BitConverter]::ToString($hashBytes) -replace '-', ''
+                                }
+                                catch {
+                                    $dllMD5 = "Error"
+                                    Write-Verbose "Failed to calculate MD5 for Defender AMSI: $($_.Exception.Message)"
+                                }
+                            }
+                            
                             $amsiProviders += [PSCustomObject]@{
                                 GUID            = "N/A"
                                 Name            = "Windows Defender AMSI"
                                 DLLPath         = $defenderAmsiPath
                                 DLLExists       = $true
                                 DLLSizeKB       = $dllSize
+                                DLLMd5          = $dllMD5
                                 ThreadingModel  = "N/A"
                                 DetectionMethod = "Defender Integration"
                             }
@@ -451,6 +504,193 @@ function Hunt-ForensicDump {
         catch {
             Write-Verbose "AMSI provider enumeration failed: $($_.Exception.Message)"
             return @()
+        }
+    }
+
+
+    # Helper function: Get Comprehensive AntiVirus Information
+    function Get-AntiVirusInfo {
+        try {
+            $avInfo = @{
+                SecurityCenter = @()
+                DefenderStatus = $null
+                InstalledAV    = @()
+                AVServices     = @()
+                AVDrivers      = @()
+            }
+            
+            # Phase 1: SecurityCenter2 AntiVirus Products
+            Write-Verbose "Querying SecurityCenter2 for AV products..."
+            try {
+                $avProducts = Get-CimInstance -Namespace 'root/SecurityCenter2' -ClassName 'AntivirusProduct' -ErrorAction SilentlyContinue
+                if ($avProducts) {
+                    foreach ($av in $avProducts) {
+                        # Decode productState to determine status
+                        $productState = $av.productState
+                        $hex = [Convert]::ToString($productState, 16).PadLeft(6, '0')
+                        $enabled = $hex.Substring(2, 2) -eq '10'
+                        $upToDate = $hex.Substring(4, 2) -eq '00'
+                        
+                        $avInfo.SecurityCenter += [PSCustomObject]@{
+                            DisplayName              = $av.displayName
+                            InstanceGuid             = $av.instanceGuid
+                            PathToSignedProductExe   = $av.pathToSignedProductExe
+                            PathToSignedReportingExe = $av.pathToSignedReportingExe
+                            ProductState             = $productState
+                            Enabled                  = $enabled
+                            UpToDate                 = $upToDate
+                            Timestamp                = $av.timestamp
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "SecurityCenter2 query failed: $($_.Exception.Message)"
+            }
+            
+            # Phase 2: Windows Defender Detailed Status
+            Write-Verbose "Querying Windows Defender status..."
+            try {
+                $defenderStatus = Get-MpComputerStatus -ErrorAction SilentlyContinue
+                if ($defenderStatus) {
+                    $avInfo.DefenderStatus = [PSCustomObject]@{
+                        AMRunning                     = $defenderStatus.AMRunningMode
+                        AMServiceEnabled              = $defenderStatus.AMServiceEnabled
+                        AMProductVersion              = $defenderStatus.AMProductVersion
+                        AntivirusEnabled              = $defenderStatus.AntivirusEnabled
+                        RealTimeProtectionEnabled     = $defenderStatus.RealTimeProtectionEnabled
+                        BehaviorMonitorEnabled        = $defenderStatus.BehaviorMonitorEnabled
+                        IoavProtectionEnabled         = $defenderStatus.IoavProtectionEnabled
+                        OnAccessProtectionEnabled     = $defenderStatus.OnAccessProtectionEnabled
+                        AntivirusSignatureLastUpdated = $defenderStatus.AntivirusSignatureLastUpdated
+                        QuickScanAge                  = $defenderStatus.QuickScanAge
+                        FullScanAge                   = $defenderStatus.FullScanAge
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Windows Defender query failed: $($_.Exception.Message)"
+            }
+            
+            # Phase 3: Registry-based AV Software Detection
+            Write-Verbose "Scanning registry for installed AV software..."
+            try {
+                $regPaths = @(
+                    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+                )
+                
+                $avKeywords = @('AV', 'Antivirus', 'Anti-virus', 'ESET', 'McAfee', 'Symantec', 'Norton', 
+                    'Trend', 'Sophos', 'Kaspersky', 'Bitdefender', 'Avast', 'AVG', 'Malwarebytes',
+                    'Defender', 'CrowdStrike', 'SentinelOne', 'Carbon Black', 'Cylance')
+                
+                foreach ($path in $regPaths) {
+                    $items = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+                    foreach ($item in $items) {
+                        if ($item.DisplayName) {
+                            foreach ($keyword in $avKeywords) {
+                                if ($item.DisplayName -match $keyword) {
+                                    # Check if already added (avoid duplicates)
+                                    $exists = $avInfo.InstalledAV | Where-Object { 
+                                        $_.DisplayName -eq $item.DisplayName -and 
+                                        $_.DisplayVersion -eq $item.DisplayVersion 
+                                    }
+                                    
+                                    if (-not $exists) {
+                                        $avInfo.InstalledAV += [PSCustomObject]@{
+                                            DisplayName     = $item.DisplayName
+                                            DisplayVersion  = $item.DisplayVersion
+                                            Publisher       = $item.Publisher
+                                            InstallDate     = $item.InstallDate
+                                            InstallLocation = $item.InstallLocation
+                                        }
+                                    }
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Registry AV scan failed: $($_.Exception.Message)"
+            }
+            
+            # Phase 4: AV-Related Services
+            Write-Verbose "Scanning for AV-related services..."
+            try {
+                $avServiceKeywords = @('Defend', 'McAfee', 'Symantec', 'Sophos', 'ESET', 'Trend', 'Kaspersky', 
+                    'Bitdefender', 'Avast', 'AVG', 'Malwarebytes', 'CrowdStrike', 'Sentinel',
+                    'Carbon', 'Cylance', 'AV', 'Virus', 'Malware')
+                
+                $services = Get-Service -ErrorAction SilentlyContinue | Where-Object {
+                    $serviceName = $_.DisplayName + $_.Name
+                    $match = $false
+                    foreach ($keyword in $avServiceKeywords) {
+                        if ($serviceName -match $keyword) {
+                            $match = $true
+                            break
+                        }
+                    }
+                    $match
+                }
+                
+                foreach ($svc in $services) {
+                    $avInfo.AVServices += [PSCustomObject]@{
+                        Name        = $svc.Name
+                        DisplayName = $svc.DisplayName
+                        Status      = $svc.Status
+                        StartType   = $svc.StartType
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Service scan failed: $($_.Exception.Message)"
+            }
+            
+            # Phase 5: AV-Related Drivers
+            Write-Verbose "Scanning for AV-related drivers..."
+            try {
+                $avDriverKeywords = @('av', 'virus', 'malware', 'defender', 'mfet', 'symm', 'kav', 
+                    'sophos', 'eset', 'trend', 'bit', 'crowd', 'sentinel', 'carbon', 'cylance')
+                
+                $drivers = Get-CimInstance -ClassName Win32_SystemDriver -ErrorAction SilentlyContinue | Where-Object {
+                    $driverName = $_.Name + $_.DisplayName
+                    $match = $false
+                    foreach ($keyword in $avDriverKeywords) {
+                        if ($driverName -match $keyword) {
+                            $match = $true
+                            break
+                        }
+                    }
+                    $match -and $_.State -eq 'Running'
+                }
+                
+                foreach ($drv in $drivers) {
+                    $avInfo.AVDrivers += [PSCustomObject]@{
+                        Name        = $drv.Name
+                        DisplayName = $drv.DisplayName
+                        State       = $drv.State
+                        StartMode   = $drv.StartMode
+                        PathName    = $drv.PathName
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Driver scan failed: $($_.Exception.Message)"
+            }
+            
+            return $avInfo
+        }
+        catch {
+            Write-Verbose "AntiVirus info collection failed: $($_.Exception.Message)"
+            return @{
+                SecurityCenter = @()
+                DefenderStatus = $null
+                InstalledAV    = @()
+                AVServices     = @()
+                AVDrivers      = @()
+            }
         }
     }
 
@@ -615,13 +855,28 @@ function Hunt-ForensicDump {
             Write-Verbose "systeminfo returned $($systemInfoOutput.Count) lines of output"
             
             foreach ($line in $systemInfoOutput) {
+                # Special handling for Virtual Memory lines (format: "Virtual Memory: Max Size:  value")
+                if ($line -match '^Virtual Memory:\s*Max Size:\s*(.+)$') {
+                    $systemInfoData.VirtualMemoryMax = $matches[1].Trim()
+                    continue
+                }
+                if ($line -match '^Virtual Memory:\s*Available:\s*(.+)$') {
+                    $systemInfoData.VirtualMemoryAvailable = $matches[1].Trim()
+                    continue
+                }
+                if ($line -match '^Virtual Memory:\s*In Use:\s*(.+)$') {
+                    $systemInfoData.VirtualMemoryInUse = $matches[1].Trim()
+                    continue
+                }
+                
                 # Parse key-value pairs (format: "Key: Value")
                 if ($line -match '^([^:]+):\s+(.+)$') {
                     $key = $matches[1].Trim()
                     $value = $matches[2].Trim()
                     
-                    # Skip if value is completely empty or exactly "N/A"
-                    if ([string]::IsNullOrWhiteSpace($value) -or $value -eq 'N/A') {
+                    # Don't skip empty values - we'll handle them in display
+                    # Only skip completely blank lines
+                    if ([string]::IsNullOrWhiteSpace($key)) {
                         continue
                     }
                     
@@ -699,15 +954,6 @@ function Hunt-ForensicDump {
                         'Available Physical Memory' { 
                             $systemInfoData.AvailablePhysicalMemory = $value 
                         }
-                        'Virtual Memory: Max Size' { 
-                            $systemInfoData.VirtualMemoryMax = $value 
-                        }
-                        'Virtual Memory: Available' { 
-                            $systemInfoData.VirtualMemoryAvailable = $value 
-                        }
-                        'Virtual Memory: In Use' { 
-                            $systemInfoData.VirtualMemoryInUse = $value 
-                        }
                         'Page File Location(s)' { 
                             $systemInfoData.PageFileLocation = $value 
                         }
@@ -730,7 +976,24 @@ function Hunt-ForensicDump {
                     if (-not $systemInfoData.ContainsKey('ProcessorDetails')) {
                         $systemInfoData.ProcessorDetails = @()
                     }
-                    $systemInfoData.ProcessorDetails += $procDetails
+                    
+                    # Only add if not already present (avoid duplicates)
+                    if ($systemInfoData.ProcessorDetails -notcontains $procDetails) {
+                        $systemInfoData.ProcessorDetails += $procDetails
+                    }
+                }
+            }
+            
+            # Post-processing: If we don't have processor details but have processor count, try WMI
+            if (-not $systemInfoData.ContainsKey('ProcessorDetails') -or $systemInfoData.ProcessorDetails.Count -eq 0) {
+                try {
+                    $wmiProc = Get-CimInstance -ClassName Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($wmiProc -and $wmiProc.Name) {
+                        $systemInfoData.ProcessorDetails = @($wmiProc.Name)
+                    }
+                }
+                catch {
+                    Write-Verbose "WMI processor fallback failed: $($_.Exception.Message)"
                 }
             }
             
@@ -1013,17 +1276,46 @@ function Hunt-ForensicDump {
                 
             function Resolve-Message {
                 param([string]$BasePath, [string]$msgKey)
-                $localePath = Join-Path $BasePath "_locales\en\messages.json"
-                if (Test-Path $localePath) {
-                    try {
-                        $rawMessages = Get-Content $localePath -Raw -ErrorAction Stop | ConvertFrom-Json
-                        if ($rawMessages.$msgKey -and $rawMessages.$msgKey.message) {
-                            return $rawMessages.$msgKey.message
+                
+                # Try multiple locale paths
+                $localePaths = @(
+                    (Join-Path $BasePath "_locales\en\messages.json"),
+                    (Join-Path $BasePath "_locales\en_US\messages.json"),
+                    (Join-Path $BasePath "_locales\en_GB\messages.json")
+                )
+                
+                foreach ($localePath in $localePaths) {
+                    if (Test-Path $localePath) {
+                        try {
+                            $rawMessages = Get-Content $localePath -Raw -ErrorAction Stop | ConvertFrom-Json
+                            
+                            # Try direct property access
+                            if ($rawMessages.$msgKey -and $rawMessages.$msgKey.message) {
+                                $resolvedMessage = $rawMessages.$msgKey.message
+                                if (![string]::IsNullOrWhiteSpace($resolvedMessage)) {
+                                    return $resolvedMessage
+                                }
+                            }
+                            
+                            # Try case-insensitive search
+                            foreach ($prop in $rawMessages.PSObject.Properties) {
+                                if ($prop.Name -ieq $msgKey -and $prop.Value.message) {
+                                    $resolvedMessage = $prop.Value.message
+                                    if (![string]::IsNullOrWhiteSpace($resolvedMessage)) {
+                                        return $resolvedMessage
+                                    }
+                                }
+                            }
+                        }
+                        catch { 
+                            Write-Verbose "Failed to read locale file: $localePath - $($_.Exception.Message)"
                         }
                     }
-                    catch { }
                 }
-                return "__MSG_$msgKey__"
+                
+                # Fallback: return empty string instead of __MSG_ format
+                # This will allow the extension ID to be the identifier
+                return ""
             }
                 
             if (-not (Test-Path 'C:\Users')) {
@@ -1079,11 +1371,11 @@ function Hunt-ForensicDump {
                             $xpiFiles = Get-ChildItem $extensionsPath -Filter *.xpi -File -ErrorAction SilentlyContinue
                             foreach ($xpi in $xpiFiles) {
                                 $tempDir = Join-Path $env:TEMP ([System.IO.Path]::GetRandomFileName())
-                                $zipPath = Join-Path $env:TEMP ([System.IO.Path]::GetRandomFileName() + ".zip")
                                     
                                 try {
-                                    Copy-Item -Path $xpi.FullName -Destination $zipPath -Force -ErrorAction Stop
-                                    Expand-Archive -LiteralPath $zipPath -DestinationPath $tempDir -Force -ErrorAction Stop
+                                    # Use .NET ZipFile directly - no copy needed
+                                    Add-Type -AssemblyName System.IO.Compression.FileSystem
+                                    [System.IO.Compression.ZipFile]::ExtractToDirectory($xpi.FullName, $tempDir)
                                         
                                     $manifestPath = Join-Path $tempDir "manifest.json"
                                     if (Test-Path $manifestPath) {
@@ -1124,7 +1416,6 @@ function Hunt-ForensicDump {
                                     }
                                 }
                                 catch { } finally {
-                                    if (Test-Path $zipPath) { Remove-Item $zipPath -Force -ErrorAction SilentlyContinue }
                                     if (Test-Path $tempDir) { Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
                                 }
                             }
@@ -1137,7 +1428,21 @@ function Hunt-ForensicDump {
                             foreach ($ext in $extensionDirs) {
                                 $extId = $ext.Name
                                 $versions = Get-ChildItem -Path $ext.FullName -Directory -ErrorAction SilentlyContinue | 
-                                Sort-Object { [version]($_.Name -replace '_.*$', '') } -Descending
+                                Sort-Object { 
+                                    try {
+                                        # Try to parse as version (e.g., "1.0.0_0" or "34.0.1847.116")
+                                        $versionPart = $_.Name -replace '_.*$', ''
+                                        # Ensure at least two parts for version parsing (add .0 if needed)
+                                        if ($versionPart -notmatch '\.') {
+                                            $versionPart = "$versionPart.0"
+                                        }
+                                        [version]$versionPart
+                                    }
+                                    catch {
+                                        # If version parsing fails, sort alphabetically as fallback
+                                        $_.Name
+                                    }
+                                } -Descending
                                     
                                 if ($versions.Count -eq 0) { continue }
                                     
@@ -1150,15 +1455,27 @@ function Hunt-ForensicDump {
                                             
                                         $name = if ($manifest.name -like "__MSG_*__") {
                                             $msgKey = $manifest.name -replace "^__MSG_(.+?)__$", '$1'
-                                            Resolve-Message -BasePath $latest.FullName -msgKey $msgKey
+                                            $resolved = Resolve-Message -BasePath $latest.FullName -msgKey $msgKey
+                                            if ([string]::IsNullOrWhiteSpace($resolved)) {
+                                                # Use extension ID as fallback name
+                                                $extId
+                                            }
+                                            else {
+                                                $resolved
+                                            }
                                         }
-                                        else { $manifest.name }
+                                        else { 
+                                            if ([string]::IsNullOrWhiteSpace($manifest.name)) { $extId } else { $manifest.name }
+                                        }
                                             
                                         $desc = if ($manifest.description -like "__MSG_*__") {
                                             $msgKey = $manifest.description -replace "^__MSG_(.+?)__$", '$1'
-                                            Resolve-Message -BasePath $latest.FullName -msgKey $msgKey
+                                            $resolved = Resolve-Message -BasePath $latest.FullName -msgKey $msgKey
+                                            if ([string]::IsNullOrWhiteSpace($resolved)) { "" } else { $resolved }
                                         }
-                                        else { $manifest.description }
+                                        else { 
+                                            if ($manifest.description) { $manifest.description } else { "" }
+                                        }
                                             
                                         $extensions += [PSCustomObject]@{
                                             Hostname    = $hostname
@@ -1415,12 +1732,30 @@ function Hunt-ForensicDump {
                             $objSID = New-Object System.Security.Principal.SecurityIdentifier($sid)
                             $username = try { $objSID.Translate([System.Security.Principal.NTAccount]).Value } catch { $sid }
                             
+                            # Determine account type more accurately
+                            $accountType = "Profile"
+                            if ($username -match '^NT AUTHORITY\\') {
+                                $accountType = "System"
+                            }
+                            elseif ($username -match '^S-1-5-21-') {
+                                $accountType = "Domain"
+                            }
+                            elseif ($username -match '\\') {
+                                # Check if it's a well-known system account
+                                if ($username -match '^(NT AUTHORITY|NT SERVICE|APPLICATION PACKAGE AUTHORITY|Window Manager)\\') {
+                                    $accountType = "System"
+                                }
+                                else {
+                                    $accountType = "Domain"
+                                }
+                            }
+                            
                             $users += [PSCustomObject]@{
                                 Username    = $username
                                 Created     = $profile.LastUseTime
                                 LastLogon   = $profile.LastUseTime
                                 Enabled     = $true
-                                Type        = if ($username -match '\\') { "Domain" } else { "Profile" }
+                                Type        = $accountType
                                 SID         = $sid
                                 ProfilePath = $profile.LocalPath
                                 Description = ""
@@ -1477,48 +1812,7 @@ function Hunt-ForensicDump {
             [ref]$StepTimes
         )
         
-        if ($null -eq $StepTimes.Value) {
-            $StepTimes.Value = @{}
-        }
-        
-        $currentTime = Get-Date
-        $StepTimes.Value[$PercentComplete] = $currentTime
-        
-        # Only show estimates after 25% completion for better accuracy
-        # Early stages (system info, persistence) are fast; later stages (files, logs) are slow
-        if ($PercentComplete -gt 25 -and $PercentComplete -lt 95) {
-            $elapsed = ($currentTime - $script:StartTime).TotalSeconds
-            if ($elapsed -gt 5) {
-                # Only estimate if we have at least 5 seconds of data
-                # Use exponential smoothing factor to account for non-linear progress
-                # Later stages take disproportionately longer
-                $adjustedRate = $PercentComplete / $elapsed
-                
-                # Apply correction factor: later stages are slower
-                if ($PercentComplete -gt 50) {
-                    $adjustedRate = $adjustedRate * 0.7  # Assume 30% slower after halfway
-                }
-                
-                $remainingPercent = 100 - $PercentComplete
-                $estimatedRemaining = [math]::Round($remainingPercent / $adjustedRate)
-                
-                # Cap unrealistic estimates
-                if ($estimatedRemaining -gt 3600) {
-                    # More than 1 hour seems wrong
-                    $estimatedRemaining = 3600
-                }
-                
-                if ($estimatedRemaining -ge 60) {
-                    $minutes = [math]::Floor($estimatedRemaining / 60)
-                    $seconds = $estimatedRemaining % 60
-                    $Status = "$Status (~${minutes}m remaining)"
-                }
-                else {
-                    $Status = "$Status (~${estimatedRemaining}s remaining)"
-                }
-            }
-        }
-        
+        # Simple progress display without time estimation
         Write-Progress -Activity $Activity -Status $Status -PercentComplete $PercentComplete
     }
 
@@ -1540,7 +1834,7 @@ function Hunt-ForensicDump {
             
             # Diagnostic: Check if SystemInfoCmd was populated
             if ($sysInfo.SystemInfoCmd -and $sysInfo.SystemInfoCmd.Count -gt 0) {
-                Write-Host "  [+] Captured $($sysInfo.SystemInfoCmd.Count) systeminfo data points" -ForegroundColor Green
+                Write-Host "  [+] Captured $($sysInfo.SystemInfoCmd.Count) SystemInfo objects" -ForegroundColor Green
             }
             else {
                 Write-Host "  [!] WARNING: systeminfo command returned no data - run with -Verbose to diagnose" -ForegroundColor Yellow
@@ -1766,6 +2060,20 @@ function Hunt-ForensicDump {
                 $sysInfo.DefenderPreferences = $null
             }
             
+            Write-Host "  [-] Getting antivirus information..." -ForegroundColor DarkGray
+            try {
+                $sysInfo.AntiVirusInfo = Get-AntiVirusInfo
+            }
+            catch {
+                $sysInfo.AntiVirusInfo = @{
+                    SecurityCenter = @()
+                    DefenderStatus = $null
+                    InstalledAV    = @()
+                    AVServices     = @()
+                    AVDrivers      = @()
+                }
+            }
+            
             Write-Host "  [-] Checking AMSI providers..." -ForegroundColor DarkGray
             try {
                 $sysInfo.AMSIProviders = Get-AMSIProviders
@@ -1858,6 +2166,14 @@ function Hunt-ForensicDump {
                     OpticalDrives = @()
                     NetworkShares = @()
                 }
+            }
+            
+            Write-Host "  [-] Getting browser extensions..." -ForegroundColor DarkGray
+            try {
+                $sysInfo.BrowserExtensions = Get-DetailedBrowserExtensions
+            }
+            catch {
+                $sysInfo.BrowserExtensions = @()
             }
 
             if ($OutputDir) {
@@ -2086,7 +2402,7 @@ function Hunt-ForensicDump {
                 browser     = $browserOmitFields
                 services    = @('Hostname')
                 tasks       = @('TaskFileExists', 'TaskFileModified', 'ExecutableExists', 'ScriptFileExists', 'Hostname')
-                files       = @('IsDirectory', 'MatchedContent', 'MatchedNames')
+                files       = @('MatchReason', 'IsDirectory', 'MatchedContent', 'MatchedNames')
             }
         }
         else {
@@ -2153,11 +2469,11 @@ function Hunt-ForensicDump {
 
             # Define critical fields that should always be included if they exist (regardless of having values)
             $criticalFields = @{
-                'persistence' = @('Flag', 'Severity', 'Risk', 'Category')
-                'files'       = @('Flag', 'Risk')
-                'services'    = @('Status', 'StartType', 'State')
-                'tasks'       = @('State', 'Enabled')
-                'logs'        = @('Level', 'LevelDisplayName')
+                'persistence' = @('Flag')
+                'files'       = @('SHA256')
+                'services'    = @()
+                'tasks'       = @()
+                'logs'        = @()
             }
     
             $typeCriticalFields = if ($criticalFields.ContainsKey($Type)) { $criticalFields[$Type] } else { @() }
@@ -2370,23 +2686,35 @@ function Hunt-ForensicDump {
         if ($ForensicData.Services -and $ForensicData.Services.Count -gt 0) {
             foreach ($service in $ForensicData.Services) {
                 try {
-                    # Create new object with translated values
-                    $props = @{}
+                    # Create ordered hashtable with ServiceName and DisplayName first
+                    $orderedProps = [ordered]@{}
+                    
+                    # Add ServiceName and DisplayName first
+                    if ($service.PSObject.Properties['ServiceName']) {
+                        $orderedProps['ServiceName'] = $service.ServiceName
+                    }
+                    if ($service.PSObject.Properties['DisplayName']) {
+                        $orderedProps['DisplayName'] = $service.DisplayName
+                    }
+                    
+                    # Add all other properties
                     foreach ($prop in $service.PSObject.Properties) {
-                        $props[$prop.Name] = $prop.Value
+                        if ($prop.Name -ne 'ServiceName' -and $prop.Name -ne 'DisplayName') {
+                            $orderedProps[$prop.Name] = $prop.Value
+                        }
                     }
                     
                     # Translate Status field
-                    if ($props.ContainsKey('Status')) {
-                        $props['Status'] = ConvertTo-ServiceStatusString -Status $props['Status']
+                    if ($orderedProps.ContainsKey('Status')) {
+                        $orderedProps['Status'] = ConvertTo-ServiceStatusString -Status $orderedProps['Status']
                     }
                     
                     # Translate StartType field
-                    if ($props.ContainsKey('StartType')) {
-                        $props['StartType'] = ConvertTo-ServiceStartTypeString -StartType $props['StartType']
+                    if ($orderedProps.ContainsKey('StartType')) {
+                        $orderedProps['StartType'] = ConvertTo-ServiceStartTypeString -StartType $orderedProps['StartType']
                     }
                     
-                    $servicesTranslated += [PSCustomObject]$props
+                    $servicesTranslated += [PSCustomObject]$orderedProps
                 }
                 catch {
                     Write-Verbose "Service translation error: $($_.Exception.Message)"
@@ -2422,7 +2750,25 @@ function Hunt-ForensicDump {
         $tasksJson = Prepare-DataForJSON -Data $tasksTranslated -Type 'tasks' -MaxRows $MaxRows -OmitFields $omitFields['tasks']
     
         Write-Host "  [-] Preparing Files JSON..." -ForegroundColor DarkGray
-        $filesJson = Prepare-DataForJSON -Data $ForensicData.Files.All -Type 'files' -MaxRows $MaxRows -OmitFields $omitFields['files']
+        # Validate Files data structure
+        $filesData = @()
+        if ($null -ne $ForensicData.Files) {
+            if ($ForensicData.Files -is [hashtable] -and $ForensicData.Files.ContainsKey('All')) {
+                $filesData = $ForensicData.Files.All
+            }
+            elseif ($ForensicData.Files -is [array]) {
+                $filesData = $ForensicData.Files
+            }
+        }
+        
+        if ($null -eq $filesData -or $filesData.Count -eq 0) {
+            Write-Host "  [!] WARNING: No files data found" -ForegroundColor Yellow
+            $filesJson = '[]'
+        }
+        else {
+            Write-Host "  [-] Processing $($filesData.Count) files..." -ForegroundColor DarkGray
+            $filesJson = Prepare-DataForJSON -Data $filesData -Type 'files' -MaxRows $MaxRows -OmitFields $omitFields['files']
+        }
 
         Write-Host "  [-] Preparing Registry JSON..." -ForegroundColor DarkGray
         # Registry data validation and normalization
@@ -2538,11 +2884,57 @@ function Hunt-ForensicDump {
         <tbody>
 "@
             foreach ($dns in $ForensicData.SystemInfo.DNSCache) {
-                $name = if ($dns.Name) { [System.Web.HttpUtility]::HtmlEncode($dns.Name) } else { "N/A" }
-                $type = if ($dns.Type) { $dns.Type } else { "N/A" }
-                $data = if ($dns.Data) { [System.Web.HttpUtility]::HtmlEncode($dns.Data) } else { "N/A" }
-                $ttl = if ($dns.TTL) { $dns.TTL } else { "N/A" }
-                $dnsHtml += "            <tr><td>$name</td><td>$type</td><td>$data</td><td>$ttl</td></tr>`n"
+                # Extract actual record name (Entry or RecordName property)
+                $name = if ($dns.Entry) { 
+                    [System.Web.HttpUtility]::HtmlEncode($dns.Entry) 
+                }
+                elseif ($dns.RecordName) { 
+                    [System.Web.HttpUtility]::HtmlEncode($dns.RecordName) 
+                }
+                elseif ($dns.Name) { 
+                    [System.Web.HttpUtility]::HtmlEncode($dns.Name) 
+                }
+                else { 
+                    "N/A" 
+                }
+                
+                # Get record type
+                $type = if ($dns.Type) { 
+                    $dns.Type 
+                }
+                elseif ($dns.RecordType) { 
+                    $dns.RecordType 
+                }
+                else { 
+                    "N/A" 
+                }
+                
+                # Get data/record value
+                $data = if ($dns.Data) { 
+                    [System.Web.HttpUtility]::HtmlEncode($dns.Data) 
+                }
+                elseif ($dns.Record) { 
+                    [System.Web.HttpUtility]::HtmlEncode($dns.Record) 
+                }
+                else { 
+                    "N/A" 
+                }
+                
+                # Get TTL
+                $ttl = if ($dns.TimeToLive) { 
+                    $dns.TimeToLive 
+                }
+                elseif ($dns.TTL) { 
+                    $dns.TTL 
+                }
+                else { 
+                    "N/A" 
+                }
+                
+                # Only add row if we have meaningful data (skip AAAA NoRecords entries)
+                if ($name -ne "N/A" -or $data -ne "N/A") {
+                    $dnsHtml += "            <tr><td>$name</td><td>$type</td><td>$data</td><td>$ttl</td></tr>`n"
+                }
             }
             $dnsHtml += @"
         </tbody>
@@ -3057,6 +3449,7 @@ function Hunt-ForensicDump {
     <div class="tab-container">
         <div class="tabs">
             <button class="tab-button active" onclick="showTab('overview')">Overview</button>
+            <button class="tab-button" onclick="showTab('search')">Search</button>
             <button class="tab-button" onclick="showTab('sysinfo')">System Info</button>
             <button class="tab-button" onclick="showTab('persistence')">Persistence ($($stats.Persistence))</button>
             <button class="tab-button" onclick="showTab('registry')">Registry ($($stats.Registry))</button>
@@ -3065,7 +3458,6 @@ function Hunt-ForensicDump {
             <button class="tab-button" onclick="showTab('services')">Services ($($stats.Services))</button>
             <button class="tab-button" onclick="showTab('tasks')">Tasks ($($stats.Tasks))</button>
             <button class="tab-button" onclick="showTab('files')">Files ($($stats.Files))</button>
-            <button class="tab-button" onclick="showTab('csv')">Download CSVs</button>
             <button class="tab-button" onclick="showTab('export')">Export Info</button>
             <button class="tab-button" onclick="showTab('settings')">Settings</button>
         </div>
@@ -3099,7 +3491,7 @@ function Hunt-ForensicDump {
                     )</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">System Locale:</span><span class="sysinfo-value">$(
                         if ($ForensicData.SystemInfo.SystemInfoCmd -and $ForensicData.SystemInfo.SystemInfoCmd.SystemLocale) { 
-                            $ForensicData.SystemInfo.SystemInfoCmd.SystemLocale 
+                            $ForensicData.SystemInfo.SystemInfoCmd.SystemLocale -replace ';', ' - '
                         } else { 
                             'Unknown' 
                         }
@@ -3112,11 +3504,56 @@ function Hunt-ForensicDump {
                 
                 <div class="sysinfo-card">
                     <h3>Hardware</h3>
-                    <div class="sysinfo-item"><span class="sysinfo-label">System Manufacturer:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.SystemManufacturer) { $ForensicData.SystemInfo.SystemInfoCmd.SystemManufacturer } else { 'N/A' })</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">System Model:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.SystemModel) { $ForensicData.SystemInfo.SystemInfoCmd.SystemModel } else { 'N/A' })</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">System Type:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.SystemType) { $ForensicData.SystemInfo.SystemInfoCmd.SystemType } else { 'N/A' })</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">Processor:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.ProcessorDetails -and $ForensicData.SystemInfo.SystemInfoCmd.ProcessorDetails.Count -gt 0) { $ForensicData.SystemInfo.SystemInfoCmd.ProcessorDetails[0] } else { 'N/A' })</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">BIOS Version:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.SystemInfoCmd.BIOSVersion) { $ForensicData.SystemInfo.SystemInfoCmd.BIOSVersion } else { 'N/A' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">System Manufacturer:</span> <span class="sysinfo-value">$(
+                        $mfg = $null
+                        if ($ForensicData.SystemInfo.SystemInfoCmd.SystemManufacturer) { 
+                            $mfg = $ForensicData.SystemInfo.SystemInfoCmd.SystemManufacturer 
+                        }
+                        elseif ($ForensicData.SystemInfo.ComputerInfo.CsManufacturer) {
+                            $mfg = $ForensicData.SystemInfo.ComputerInfo.CsManufacturer
+                        }
+                        if ($mfg) { [System.Web.HttpUtility]::HtmlEncode($mfg) } else { 'Unknown' }
+                    )</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">System Model:</span> <span class="sysinfo-value">$(
+                        $model = $null
+                        if ($ForensicData.SystemInfo.SystemInfoCmd.SystemModel) { 
+                            $model = $ForensicData.SystemInfo.SystemInfoCmd.SystemModel 
+                        }
+                        elseif ($ForensicData.SystemInfo.ComputerInfo.CsModel) {
+                            $model = $ForensicData.SystemInfo.ComputerInfo.CsModel
+                        }
+                        if ($model) { [System.Web.HttpUtility]::HtmlEncode($model) } else { 'Unknown' }
+                    )</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">System Type:</span> <span class="sysinfo-value">$(
+                        $type = $null
+                        if ($ForensicData.SystemInfo.SystemInfoCmd.SystemType) { 
+                            $type = $ForensicData.SystemInfo.SystemInfoCmd.SystemType 
+                        }
+                        elseif ($ForensicData.SystemInfo.ComputerInfo.CsSystemType) {
+                            $type = $ForensicData.SystemInfo.ComputerInfo.CsSystemType
+                        }
+                        if ($type) { [System.Web.HttpUtility]::HtmlEncode($type) } else { 'Unknown' }
+                    )</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">Processor:</span> <span class="sysinfo-value">$(
+                        $proc = $null
+                        if ($ForensicData.SystemInfo.SystemInfoCmd.ProcessorDetails -and $ForensicData.SystemInfo.SystemInfoCmd.ProcessorDetails.Count -gt 0) { 
+                            $proc = $ForensicData.SystemInfo.SystemInfoCmd.ProcessorDetails[0] 
+                        }
+                        elseif ($ForensicData.SystemInfo.ComputerInfo.CsProcessors -and $ForensicData.SystemInfo.ComputerInfo.CsProcessors.Count -gt 0) {
+                            $proc = $ForensicData.SystemInfo.ComputerInfo.CsProcessors[0].Name
+                        }
+                        if ($proc) { [System.Web.HttpUtility]::HtmlEncode($proc) } else { 'Unknown' }
+                    )</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">BIOS Version:</span> <span class="sysinfo-value">$(
+                        $bios = $null
+                        if ($ForensicData.SystemInfo.SystemInfoCmd.BIOSVersion) { 
+                            $bios = $ForensicData.SystemInfo.SystemInfoCmd.BIOSVersion 
+                        }
+                        elseif ($ForensicData.SystemInfo.ComputerInfo.BiosVersion) {
+                            $bios = $ForensicData.SystemInfo.ComputerInfo.BiosVersion
+                        }
+                        if ($bios) { [System.Web.HttpUtility]::HtmlEncode($bios) } else { 'Unknown' }
+                    )</span></div>
                 </div>
                 
                 <div class="sysinfo-card">
@@ -3132,7 +3569,18 @@ function Hunt-ForensicDump {
                 <div class="sysinfo-card">
                     <h3>Security</h3>
                     <div class="sysinfo-item"><span class="sysinfo-label">Defender Status:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.DefenderStatus -and $ForensicData.SystemInfo.DefenderStatus.RealTimeProtectionEnabled) { '#2ecc71' } else { '#e74c3c' })">$(if ($ForensicData.SystemInfo.DefenderStatus) { if ($ForensicData.SystemInfo.DefenderStatus.RealTimeProtectionEnabled) { 'Enabled' } else { 'Disabled' } } else { 'N/A' })</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">AntiVirus:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.AntiVirus) { ($ForensicData.SystemInfo.AntiVirus | ForEach-Object { $_.displayName }) -join ', ' } else { 'None detected' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">AntiVirus:</span><span class="sysinfo-value">$(
+                        if ($ForensicData.SystemInfo.AntiVirus) { 
+                            $avNames = $ForensicData.SystemInfo.AntiVirus | ForEach-Object { $_.displayName } | Where-Object { $_ } | Select-Object -Unique
+                            if ($avNames) {
+                                ($avNames -join ', ')
+                            } else {
+                                'None detected'
+                            }
+                        } else { 
+                            'None detected' 
+                        }
+                    )</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">AMSI Providers:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.AMSIProviders) { $ForensicData.SystemInfo.AMSIProviders.Count } else { 0 })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Secure Boot:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.SecureBoot.Enabled) { '#2ecc71' } else { '#e74c3c' })">$($ForensicData.SystemInfo.SecureBoot.Status)</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">VBS Status:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.VBSStatus.VBSEnabled) { '#2ecc71' } else { '#e74c3c' })">$(if ($ForensicData.SystemInfo.VBSStatus.VBSEnabled) { 'Enabled' } else { 'Disabled' })</span></div>
@@ -3179,9 +3627,8 @@ function Hunt-ForensicDump {
                         elseif ($ForensicData.SystemInfo.InternetConnectivity.Status -eq 'Limited') { '#f39c12' } 
                         else { '#e74c3c' }
                     )">$($ForensicData.SystemInfo.InternetConnectivity.Status)</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">DNS Resolution:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.InternetConnectivity.DNSWorking) { 'Working' } else { 'Failed' })</span></div>
-                    <div class="sysinfo-item"><span class="sysinfo-label">HTTP Connectivity:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.InternetConnectivity.HTTPWorking) { 'Working' } else { 'Failed' })</span></div>
-                    <div class="sysinfo-item" style="grid-column: 1 / -1;"><span class="sysinfo-label">Details:</span><span class="sysinfo-value" style="font-size: 0.85em;">$($ForensicData.SystemInfo.InternetConnectivity.Details)</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">DNS Resolution:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.InternetConnectivity.DNSWorking) { '#2ecc71' } else { '#e74c3c' })">$(if ($ForensicData.SystemInfo.InternetConnectivity.DNSWorking) { 'Working' } else { 'Failed' })</span></div>
+                    <div class="sysinfo-item"><span class="sysinfo-label">HTTP Connectivity:</span><span class="sysinfo-value" style="color: $(if ($ForensicData.SystemInfo.InternetConnectivity.HTTPWorking) { '#2ecc71' } else { '#e74c3c' })">$(if ($ForensicData.SystemInfo.InternetConnectivity.HTTPWorking) { 'Working' } else { 'Failed' })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Primary DNS Server:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.PrimaryDNSServer) { $ForensicData.SystemInfo.PrimaryDNSServer } else { 'N/A' })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Logon Server:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.LogonServer) { $ForensicData.SystemInfo.LogonServer } else { 'N/A' })</span></div>
                     <div class="sysinfo-item"><span class="sysinfo-label">Domain Controller:</span><span class="sysinfo-value">$(if ($ForensicData.SystemInfo.DomainController -and $ForensicData.SystemInfo.DomainController.Name -ne 'N/A') { "$($ForensicData.SystemInfo.DomainController.Name) ($($ForensicData.SystemInfo.DomainController.IPAddress))" } else { 'N/A' })</span></div>
@@ -3441,7 +3888,8 @@ $(
                                 <th onclick="sortSystemTable('amsi-table', 1)" style="position: relative;">DLL Path<div class="resizer"></div></th>
                                 <th onclick="sortSystemTable('amsi-table', 2)" style="position: relative;">Exists<div class="resizer"></div></th>
                                 <th onclick="sortSystemTable('amsi-table', 3)" style="position: relative;">Size (KB)<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('amsi-table', 4)" style="position: relative;">GUID<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('amsi-table', 4)" style="position: relative;">MD5<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('amsi-table', 5)" style="position: relative;">GUID<div class="resizer"></div></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -3453,19 +3901,97 @@ $(
             $dllPath = if ($provider.DLLPath) { [System.Web.HttpUtility]::HtmlEncode($provider.DLLPath) } else { "N/A" }
             $dllExists = if ($provider.DLLExists) { "<span style='color: #2ecc71;'>Yes</span>" } else { "<span style='color: #e74c3c;'>No</span>" }
             $dllSize = if ($provider.DLLSizeKB -and $provider.DLLSizeKB -gt 0) { $provider.DLLSizeKB } else { "N/A" }
+            $dllMD5 = if ($provider.DLLMd5) { [System.Web.HttpUtility]::HtmlEncode($provider.DLLMd5) } else { "N/A" }
             $guid = [System.Web.HttpUtility]::HtmlEncode($provider.GUID)
-            $amsiHtml += "                            <tr><td><strong>$name</strong></td><td style='font-family: Consolas, monospace; font-size: 0.8em; max-width: 400px; overflow: hidden; text-overflow: ellipsis;' title='$dllPath'>$dllPath</td><td style='text-align: center;'>$dllExists</td><td style='text-align: center;'>$dllSize</td><td style='font-family: Consolas, monospace; font-size: 0.75em;'>$guid</td></tr>`n"
+            $amsiHtml += "                            <tr><td><strong>$name</strong></td><td style='font-family: Consolas, monospace; font-size: 0.8em; max-width: 400px; overflow: hidden; text-overflow: ellipsis;' title='$dllPath'>$dllPath</td><td style='text-align: center;'>$dllExists</td><td style='text-align: center;'>$dllSize</td><td style='font-family: Consolas, monospace; font-size: 0.75em;'>$dllMD5</td><td style='font-family: Consolas, monospace; font-size: 0.75em;'>$guid</td></tr>`n"
         }
         $amsiHtml
     } else {
-        "                            <tr><td colspan='5' style='text-align: center; color: #95a5a6;'>No AMSI providers detected</td></tr>"
+        "                            <tr><td colspan='6' style='text-align: center; color: #95a5a6;'>No AMSI providers detected</td></tr>"
     }
 )
                         </tbody>
                     </table>
                 </div>
-            </div>
+
+                </div>
             
+            <div class="section-card">
+                <h3>AntiVirus Protection</h3>
+                
+                <h4 style="color: var(--accent-blue); margin-top: 20px; margin-bottom: 10px;">Registered AntiVirus Products ($(if ($ForensicData.SystemInfo.AntiVirusInfo.SecurityCenter) { $ForensicData.SystemInfo.AntiVirusInfo.SecurityCenter.Count } else { 0 }))</h4>
+                <div class="table-wrapper">
+                    <table id="av-products-table">
+                        <thead>
+                            <tr>
+                                <th onclick="sortSystemTable('av-products-table', 0)" style="position: relative;">Product Name<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('av-products-table', 1)" style="position: relative;">Enabled<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('av-products-table', 2)" style="position: relative;">Up-to-Date<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('av-products-table', 3)" style="position: relative;">Product Executable<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('av-products-table', 4)" style="position: relative;">Last Updated<div class="resizer"></div></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+$(
+    if ($ForensicData.SystemInfo.AntiVirusInfo.SecurityCenter -and $ForensicData.SystemInfo.AntiVirusInfo.SecurityCenter.Count -gt 0) {
+        $avHtml = ""
+        foreach ($av in $ForensicData.SystemInfo.AntiVirusInfo.SecurityCenter) {
+            $name = [System.Web.HttpUtility]::HtmlEncode($av.DisplayName)
+            $enabled = if ($av.Enabled) { "<span style='color: #2ecc71; font-weight: bold;'>Yes</span>" } else { "<span style='color: #e74c3c; font-weight: bold;'>No</span>" }
+            $upToDate = if ($av.UpToDate) { "<span style='color: #2ecc71; font-weight: bold;'>Yes</span>" } else { "<span style='color: #f39c12; font-weight: bold;'>Out of Date</span>" }
+            $exe = if ($av.PathToSignedProductExe) { [System.Web.HttpUtility]::HtmlEncode($av.PathToSignedProductExe) } else { "N/A" }
+            $timestamp = if ($av.Timestamp) { $av.Timestamp } else { "Unknown" }
+            $avHtml += "                            <tr><td><strong>$name</strong></td><td style='text-align: center;'>$enabled</td><td style='text-align: center;'>$upToDate</td><td style='font-family: Consolas, monospace; font-size: 0.8em;'>$exe</td><td>$timestamp</td></tr>`n"
+        }
+        $avHtml
+    } else {
+        "                            <tr><td colspan='5' style='text-align: center; color: #95a5a6;'>No antivirus products registered in Security Center</td></tr>"
+    }
+)
+                        </tbody>
+                    </table>
+                </div>
+                
+                <h4 style="color: var(--accent-blue); margin-top: 20px; margin-bottom: 10px;">Windows Defender Status</h4>
+$(
+    if ($ForensicData.SystemInfo.AntiVirusInfo.DefenderStatus) {
+        $def = $ForensicData.SystemInfo.AntiVirusInfo.DefenderStatus
+        $defHtml = @"
+                <div style="background: var(--bg-tertiary); padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px;">
+                        <div>
+                            <span style="color: var(--text-muted);">Real-Time Protection:</span>
+                            <span style="color: $(if ($def.RealTimeProtectionEnabled) { '#2ecc71' } else { '#e74c3c' }); font-weight: bold; margin-left: 10px;">$(if ($def.RealTimeProtectionEnabled) { 'Enabled' } else { 'Disabled' })</span>
+                        </div>
+                        <div>
+                            <span style="color: var(--text-muted);">Behavior Monitor:</span>
+                            <span style="color: $(if ($def.BehaviorMonitorEnabled) { '#2ecc71' } else { '#e74c3c' }); font-weight: bold; margin-left: 10px;">$(if ($def.BehaviorMonitorEnabled) { 'Enabled' } else { 'Disabled' })</span>
+                        </div>
+                        <div>
+                            <span style="color: var(--text-muted);">Product Version:</span>
+                            <span style="color: var(--text-primary); margin-left: 10px;">$($def.AMProductVersion)</span>
+                        </div>
+                        <div>
+                            <span style="color: var(--text-muted);">Signature Updated:</span>
+                            <span style="color: var(--text-primary); margin-left: 10px;">$(if ($def.AntivirusSignatureLastUpdated) { $def.AntivirusSignatureLastUpdated.ToString('yyyy-MM-dd HH:mm') } else { 'Unknown' })</span>
+                        </div>
+                        <div>
+                            <span style="color: var(--text-muted);">Last Full Scan:</span>
+                            <span style="color: var(--text-primary); margin-left: 10px;">$(if ($def.FullScanAge -and $def.FullScanAge -ne 4294967295) { "$($def.FullScanAge) days ago" } else { 'Never' })</span>
+                        </div>
+                        <div>
+                            <span style="color: var(--text-muted);">Last Quick Scan:</span>
+                            <span style="color: var(--text-primary); margin-left: 10px;">$(if ($def.QuickScanAge -and $def.QuickScanAge -ne 4294967295) { "$($def.QuickScanAge) days ago" } else { 'Never' })</span>
+                        </div>
+                    </div>
+                </div>
+"@
+        $defHtml
+    } else {
+        "                <p style='color: #95a5a6;'>Windows Defender status unavailable</p>"
+    }
+)
+            </div>
             <div class="section-card">
                 <h3>Minifilter Drivers ($($ForensicData.SystemInfo.MinifilterDrivers.Count) drivers)</h3>
                 <div class="table-wrapper">
@@ -3500,7 +4026,38 @@ $(
                 <div class="table-controls">
                     <input type="text" id="software-search" placeholder="Search software..." onkeyup="filterSystemTable('software-table')">
                 </div>
-                <div class="section-card">
+                <div class="table-wrapper">
+                    <table id="software-table">
+                        <thead>
+                            <tr>
+                                <th onclick="sortSystemTable('software-table', 0)" style="position: relative;">Name<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('software-table', 1)" style="position: relative;">Version<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('software-table', 2)" style="position: relative;">Publisher<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('software-table', 3)" style="position: relative;">Install Date<div class="resizer"></div></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+$(
+    if ($ForensicData.SystemInfo.InstalledSoftware -and $ForensicData.SystemInfo.InstalledSoftware.Count -gt 0) {
+        $softwareHtml = ""
+        foreach ($software in $ForensicData.SystemInfo.InstalledSoftware) {
+            $name = [System.Web.HttpUtility]::HtmlEncode($software.DisplayName)
+            $version = if ($software.DisplayVersion) { [System.Web.HttpUtility]::HtmlEncode($software.DisplayVersion) } else { "N/A" }
+            $publisher = if ($software.Publisher) { [System.Web.HttpUtility]::HtmlEncode($software.Publisher) } else { "N/A" }
+            $installDate = if ($software.InstallDate) { $software.InstallDate } else { "Unknown" }
+            $softwareHtml += "                            <tr><td>$name</td><td>$version</td><td>$publisher</td><td>$installDate</td></tr>`n"
+        }
+        $softwareHtml
+    } else {
+        "                            <tr><td colspan='4' style='text-align: center; color: #95a5a6;'>No installed software found</td></tr>"
+    }
+)
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div class="section-card">
                 <h3>Filesystem & Storage</h3>
                 
                 <h4 style="color: var(--accent-blue); margin-top: 20px; margin-bottom: 10px;">Local Fixed Drives ($(if ($ForensicData.SystemInfo.FilesystemInfo.LogicalDrives) { $ForensicData.SystemInfo.FilesystemInfo.LogicalDrives.Count } else { 0 }))</h4>
@@ -3664,37 +4221,8 @@ $(
             </div>
             
         </div>
-        
+        </div>
         <div id="persistence-tab" class="tab-content">
-                <div class="table-wrapper">
-                    <table id="software-table">
-                        <thead>
-                            <tr>
-                                <th onclick="sortSystemTable('software-table', 0)" style="position: relative;">Name<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('software-table', 1)" style="position: relative;">Version<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('software-table', 2)" style="position: relative;">Publisher<div class="resizer"></div></th>
-                                <th onclick="sortSystemTable('software-table', 3)" style="position: relative;">Install Date<div class="resizer"></div></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-$(
-    if ($ForensicData.SystemInfo.InstalledSoftware -and $ForensicData.SystemInfo.InstalledSoftware.Count -gt 0) {
-        $softwareHtml = ""
-        foreach ($software in $ForensicData.SystemInfo.InstalledSoftware) {
-            $name = [System.Web.HttpUtility]::HtmlEncode($software.DisplayName)
-            $version = if ($software.DisplayVersion) { [System.Web.HttpUtility]::HtmlEncode($software.DisplayVersion) } else { "N/A" }
-            $publisher = if ($software.Publisher) { [System.Web.HttpUtility]::HtmlEncode($software.Publisher) } else { "N/A" }
-            $installDate = if ($software.InstallDate) { $software.InstallDate } else { "Unknown" }
-            $softwareHtml += "                            <tr><td>$name</td><td>$version</td><td>$publisher</td><td>$installDate</td></tr>`n"
-        }
-        $softwareHtml
-    } else {
-        "                            <tr><td colspan='4' style='text-align: center; color: #95a5a6;'>No installed software found</td></tr>"
-    }
-)
-                        </tbody>
-                    </table>
-                </div>
             <div id="persistence-content"></div>
         </div>
         
@@ -3736,8 +4264,10 @@ $(
                         <tbody>
 $(
     if ($ForensicData.SystemInfo.BrowserExtensions -and $ForensicData.SystemInfo.BrowserExtensions.Count -gt 0) {
+        # Sort by Name column before displaying
+        $sortedExtensions = $ForensicData.SystemInfo.BrowserExtensions | Sort-Object -Property Name
         $extHtml = ""
-        foreach ($ext in $ForensicData.SystemInfo.BrowserExtensions | Select-Object -First 200) {
+        foreach ($ext in $sortedExtensions | Select-Object -First 200) {
             $user = [System.Web.HttpUtility]::HtmlEncode($ext.User)
             $browser = [System.Web.HttpUtility]::HtmlEncode($ext.Browser)
             $profile = [System.Web.HttpUtility]::HtmlEncode($ext.Profile)
@@ -3759,6 +4289,11 @@ $(
                     "<p style='color: #f39c12; margin-top: 10px;'>Showing first 200 of $($ForensicData.SystemInfo.BrowserExtensions.Count) extensions. See CSV for complete data.</p>"
                 })
             </div>
+            <script>
+                // Mark extensions table as pre-sorted by Name (column 3)
+                if (typeof systemSortState === 'undefined') { systemSortState = {}; }
+                systemSortState['extensions-table-3'] = 'asc';
+            </script>
         </div>
         
         <div id="services-tab" class="tab-content">
@@ -3773,23 +4308,57 @@ $(
             <div id="files-content"></div>
         </div>
         
-        <div id="csv-tab" class="tab-content">
+        <div id="search-tab" class="tab-content">
             <div class="csv-section">
-                <h2 style="color: #3498db; margin-bottom: 15px;">CSV Data Files</h2>
-                <p style="margin-bottom: 15px; color: #bdc3c7;">Download complete datasets for offline analysis:</p>
-                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 10px;">
-"@
-
-        if (Test-Path $CSVDir) {
-            $csvFiles = Get-ChildItem -Path $CSVDir -Filter "*.csv" -ErrorAction SilentlyContinue
-            foreach ($csv in $csvFiles) {
-                $relPath = "ForensicData_CSV/$($csv.Name)"
-                $sizeMB = [math]::Round($csv.Length / 1KB, 1)
-                $html += "                    <a href='$relPath' class='csv-link'>$($csv.Name) ($sizeMB KB)</a>`n"
-            }
-        }
-
-        $html += @"
+                <h2 style="color: #3498db; margin-bottom: 15px;">Search All Data</h2>
+                <p style="margin-bottom: 20px; color: #bdc3c7;">Search across all forensic data including persistence, files, registry, browser history, event logs, services, and scheduled tasks.</p>
+                
+                <div style="background: var(--bg-secondary); padding: 25px; border-radius: 8px; border: 1px solid var(--border-color);">
+                    <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+                        <input type="text" id="global-search-input" placeholder="Enter search term (minimum 3 characters)..." 
+                            style="flex: 1; padding: 12px; background: var(--input-bg); border: 2px solid var(--input-border); color: var(--text-primary); border-radius: 4px; font-size: 16px;"
+                            onkeypress="if(event.key === 'Enter') performGlobalSearch()">
+                        <button onclick="performGlobalSearch()" 
+                            style="padding: 12px 30px; background: var(--accent-blue); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; font-weight: bold;"
+                            onmouseover="this.style.background='var(--accent-blue-hover)'"
+                            onmouseout="this.style.background='var(--accent-blue)'">
+                            Search
+                        </button>
+                        <button onclick="clearGlobalSearch()" 
+                            style="padding: 12px 30px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px; cursor: pointer; font-size: 16px;"
+                            onmouseover="this.style.background='var(--hover-bg)'"
+                            onmouseout="this.style.background='var(--bg-tertiary)'">
+                            Clear
+                        </button>
+                    </div>
+                    
+                    <div style="display: flex; gap: 15px; align-items: center; margin-bottom: 15px; flex-wrap: wrap;">
+                        <label style="color: var(--text-muted);">
+                            <input type="checkbox" id="search-case-sensitive" style="margin-right: 5px;">
+                            Case Sensitive
+                        </label>
+                        <label style="color: var(--text-muted);">
+                            <input type="checkbox" id="search-whole-word" style="margin-right: 5px;">
+                            Whole Word Only
+                        </label>
+                        <label style="color: var(--text-muted);">
+                            Search in:
+                            <select id="search-scope" style="margin-left: 10px; padding: 5px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px;">
+                                <option value="all">All Data</option>
+                                <option value="persistence">Persistence Only</option>
+                                <option value="files">Files Only</option>
+                                <option value="registry">Registry Only</option>
+                                <option value="browser">Browser Only</option>
+                                <option value="logs">Logs Only</option>
+                                <option value="services">Services Only</option>
+                                <option value="tasks">Tasks Only</option>
+                            </select>
+                        </label>
+                    </div>
+                    
+                    <div id="search-status" style="color: var(--text-muted); margin-bottom: 15px; min-height: 20px;"></div>
+                    
+                    <div id="search-results" style="margin-top: 20px;"></div>
                 </div>
             </div>
         </div>
@@ -3865,6 +4434,142 @@ $(
             tasks: $tasksJson,
             files: $filesJson
         };
+        
+        // System info data for searching - dynamically built from all system info
+        var systemInfoSearchData = [];
+        
+        // Add PowerShell History
+$(
+    if ($ForensicData.SystemInfo.PSHistory -and $ForensicData.SystemInfo.PSHistory.Count -gt 0) {
+        $psJson = "["
+        for ($i = 0; $i -lt $ForensicData.SystemInfo.PSHistory.Count; $i++) {
+            $cmd = [System.Web.HttpUtility]::JavaScriptStringEncode($ForensicData.SystemInfo.PSHistory[$i])
+            $psJson += "{Category:'PowerShell History',Field:'Command',Value:'$cmd',TableRef:'pshistory-table',RowIndex:$i}"
+            if ($i -lt $ForensicData.SystemInfo.PSHistory.Count - 1) { $psJson += "," }
+        }
+        $psJson += "]"
+        "        systemInfoSearchData = systemInfoSearchData.concat($psJson);`n"
+    }
+)
+        
+        // Add Processes
+$(
+    if ($ForensicData.SystemInfo.Processes -and $ForensicData.SystemInfo.Processes.Count -gt 0) {
+        $procJson = "["
+        $procLimit = [Math]::Min(500, $ForensicData.SystemInfo.Processes.Count)
+        for ($i = 0; $i -lt $procLimit; $i++) {
+            $proc = $ForensicData.SystemInfo.Processes[$i]
+            $name = [System.Web.HttpUtility]::JavaScriptStringEncode($proc.ProcessName)
+            $path = if ($proc.Path) { [System.Web.HttpUtility]::JavaScriptStringEncode($proc.Path) } else { "" }
+            $user = if ($proc.UserName) { [System.Web.HttpUtility]::JavaScriptStringEncode($proc.UserName) } else { "" }
+            $procJson += "{Category:'Processes',Field:'$name',Value:'$path $user',TableRef:'process-table',RowIndex:$i}"
+            if ($i -lt $procLimit - 1) { $procJson += "," }
+        }
+        $procJson += "]"
+        "        systemInfoSearchData = systemInfoSearchData.concat($procJson);`n"
+    }
+)
+        
+        // Add DNS Cache
+$(
+    if ($ForensicData.SystemInfo.DNSCache -and $ForensicData.SystemInfo.DNSCache.Count -gt 0) {
+        $dnsJson = "["
+        $dnsLimit = [Math]::Min(500, $ForensicData.SystemInfo.DNSCache.Count)
+        for ($i = 0; $i -lt $dnsLimit; $i++) {
+            $dns = $ForensicData.SystemInfo.DNSCache[$i]
+            $name = if ($dns.Entry) { [System.Web.HttpUtility]::JavaScriptStringEncode($dns.Entry) } elseif ($dns.RecordName) { [System.Web.HttpUtility]::JavaScriptStringEncode($dns.RecordName) } else { "" }
+            $data = if ($dns.Data) { [System.Web.HttpUtility]::JavaScriptStringEncode($dns.Data) } else { "" }
+            if (![string]::IsNullOrWhiteSpace($name) -or ![string]::IsNullOrWhiteSpace($data)) {
+                $dnsJson += "{Category:'DNS Cache',Field:'$name',Value:'$data',TableRef:'dns-table',RowIndex:$i}"
+                if ($i -lt $dnsLimit - 1) { $dnsJson += "," }
+            }
+        }
+        $dnsJson += "]"
+        "        systemInfoSearchData = systemInfoSearchData.concat($dnsJson);`n"
+    }
+)
+        
+        // Add Network Connections
+$(
+    if ($ForensicData.SystemInfo.NetworkConnections -and $ForensicData.SystemInfo.NetworkConnections.Count -gt 0) {
+        $netJson = "["
+        $netLimit = [Math]::Min(500, $ForensicData.SystemInfo.NetworkConnections.Count)
+        for ($i = 0; $i -lt $netLimit; $i++) {
+            $conn = $ForensicData.SystemInfo.NetworkConnections[$i]
+            $netJson += "{Category:'Network Connections',Field:'$($conn.LocalAddress):$($conn.LocalPort)',Value:'$($conn.RemoteAddress):$($conn.RemotePort) $($conn.State)',TableRef:'network-table',RowIndex:$i}"
+            if ($i -lt $netLimit - 1) { $netJson += "," }
+        }
+        $netJson += "]"
+        "        systemInfoSearchData = systemInfoSearchData.concat($netJson);`n"
+    }
+)
+        
+        // Add Installed Software
+$(
+    if ($ForensicData.SystemInfo.InstalledSoftware -and $ForensicData.SystemInfo.InstalledSoftware.Count -gt 0) {
+        $swJson = "["
+        for ($i = 0; $i -lt $ForensicData.SystemInfo.InstalledSoftware.Count; $i++) {
+            $sw = $ForensicData.SystemInfo.InstalledSoftware[$i]
+            $name = [System.Web.HttpUtility]::JavaScriptStringEncode($sw.DisplayName)
+            $pub = if ($sw.Publisher) { [System.Web.HttpUtility]::JavaScriptStringEncode($sw.Publisher) } else { "" }
+            $ver = if ($sw.DisplayVersion) { [System.Web.HttpUtility]::JavaScriptStringEncode($sw.DisplayVersion) } else { "" }
+            $swJson += "{Category:'Installed Software',Field:'$name',Value:'$pub $ver',TableRef:'software-table',RowIndex:$i}"
+            if ($i -lt $ForensicData.SystemInfo.InstalledSoftware.Count - 1) { $swJson += "," }
+        }
+        $swJson += "]"
+        "        systemInfoSearchData = systemInfoSearchData.concat($swJson);`n"
+    }
+)
+        
+        // Add Browser Extensions
+$(
+    if ($ForensicData.SystemInfo.BrowserExtensions -and $ForensicData.SystemInfo.BrowserExtensions.Count -gt 0) {
+        $extJson = "["
+        $extLimit = [Math]::Min(200, $ForensicData.SystemInfo.BrowserExtensions.Count)
+        for ($i = 0; $i -lt $extLimit; $i++) {
+            $ext = $ForensicData.SystemInfo.BrowserExtensions[$i]
+            $name = [System.Web.HttpUtility]::JavaScriptStringEncode($ext.Name)
+            $extId = [System.Web.HttpUtility]::JavaScriptStringEncode($ext.ID)
+            $browser = [System.Web.HttpUtility]::JavaScriptStringEncode($ext.Browser)
+            $extJson += "{Category:'Browser Extensions',Field:'$name',Value:'$browser $extId',TableRef:'extensions-table',RowIndex:$i}"
+            if ($i -lt $extLimit - 1) { $extJson += "," }
+        }
+        $extJson += "]"
+        "        systemInfoSearchData = systemInfoSearchData.concat($extJson);`n"
+    }
+)
+        
+        // Add User Accounts
+$(
+    if ($ForensicData.SystemInfo.AllUserAccounts -and $ForensicData.SystemInfo.AllUserAccounts.Count -gt 0) {
+        $userJson = "["
+        for ($i = 0; $i -lt $ForensicData.SystemInfo.AllUserAccounts.Count; $i++) {
+            $user = $ForensicData.SystemInfo.AllUserAccounts[$i]
+            $username = [System.Web.HttpUtility]::JavaScriptStringEncode($user.Username)
+            $profile = if ($user.ProfilePath) { [System.Web.HttpUtility]::JavaScriptStringEncode($user.ProfilePath) } else { "" }
+            $userJson += "{Category:'User Accounts',Field:'$username',Value:'$profile $($user.Type)',TableRef:'users-accounts-table',RowIndex:$i}"
+            if ($i -lt $ForensicData.SystemInfo.AllUserAccounts.Count - 1) { $userJson += "," }
+        }
+        $userJson += "]"
+        "        systemInfoSearchData = systemInfoSearchData.concat($userJson);`n"
+    }
+)
+        
+        // Add Network Adapters
+$(
+    if ($ForensicData.SystemInfo.NetworkAdapters -and $ForensicData.SystemInfo.NetworkAdapters.Count -gt 0) {
+        $adapterJson = "["
+        for ($i = 0; $i -lt $ForensicData.SystemInfo.NetworkAdapters.Count; $i++) {
+            $adapter = $ForensicData.SystemInfo.NetworkAdapters[$i]
+            $name = [System.Web.HttpUtility]::JavaScriptStringEncode($adapter.Name)
+            $mac = if ($adapter.MacAddress) { $adapter.MacAddress } else { "" }
+            $adapterJson += "{Category:'Network Adapters',Field:'$name',Value:'$mac $($adapter.Status)',TableRef:'adapters-table',RowIndex:$i}"
+            if ($i -lt $ForensicData.SystemInfo.NetworkAdapters.Count - 1) { $adapterJson += "," }
+        }
+        $adapterJson += "]"
+        "        systemInfoSearchData = systemInfoSearchData.concat($adapterJson);`n"
+    }
+)
         
         var logsByProvider = {
 "@
@@ -4082,14 +4787,30 @@ $(
                 
                 // Auto-sort browser by timestamp fields (newest first) on initial load
                 if (type === 'browser' && data.length > 0) {
-                    data.sort(function(a, b) {
-                        var dateA = a.FullString || a.Timestamp || a.VisitTime || '';
-                        var dateB = b.FullString || b.Timestamp || b.VisitTime || '';
-                        if (!dateA || dateA === 'N/A') return 1;
-                        if (!dateB || dateB === 'N/A') return -1;
-                        return dateB.localeCompare(dateA, undefined, {numeric: true});
-                    });
-                    sortState['browser-FullString'] = 'desc';
+                    // Check if this is LoadTool mode data by checking for VisitTime field
+                    var hasVisitTime = data[0] && data[0].VisitTime;
+                    
+                    if (hasVisitTime) {
+                        // LoadTool mode - sort by VisitTime
+                        data.sort(function(a, b) {
+                            var dateA = a.VisitTime || '';
+                            var dateB = b.VisitTime || '';
+                            if (!dateA || dateA === 'N/A') return 1;
+                            if (!dateB || dateB === 'N/A') return -1;
+                            return dateB.localeCompare(dateA, undefined, {numeric: true});
+                        });
+                        sortState['browser-VisitTime'] = 'desc';
+                    } else {
+                        // Standard mode - sort by FullString or Timestamp
+                        data.sort(function(a, b) {
+                            var dateA = a.FullString || a.Timestamp || '';
+                            var dateB = b.FullString || b.Timestamp || '';
+                            if (!dateA || dateA === 'N/A') return 1;
+                            if (!dateB || dateB === 'N/A') return -1;
+                            return dateB.localeCompare(dateA, undefined, {numeric: true});
+                        });
+                        sortState['browser-FullString'] = 'desc';
+                    }
                 }
                 
                 // Auto-sort registry by recent activity (newest first) on initial load
@@ -4434,6 +5155,441 @@ $(
             }, 100);
         }
 
+        // Global search functionality
+        function performGlobalSearch() {
+            var searchTerm = document.getElementById('global-search-input').value;
+            var caseSensitive = document.getElementById('search-case-sensitive').checked;
+            var wholeWord = document.getElementById('search-whole-word').checked;
+            var scope = document.getElementById('search-scope').value;
+            var statusDiv = document.getElementById('search-status');
+            var resultsDiv = document.getElementById('search-results');
+            
+            // Trim and validate search term
+            searchTerm = searchTerm.trim();
+            
+            if (!searchTerm || searchTerm.length < 3) {
+                statusDiv.innerHTML = '<span style="color: var(--accent-red);">Please enter at least 3 characters to search.</span>';
+                resultsDiv.innerHTML = '';
+                return;
+            }
+            
+            statusDiv.innerHTML = '<span style="color: var(--accent-blue);">Searching...</span>';
+            resultsDiv.innerHTML = '';
+            
+            // Normalize whitespace in search term (replace multiple spaces with single space)
+            searchTerm = searchTerm.replace(/\s+/g, ' ');
+            
+            // Prepare search term
+            var searchQuery = caseSensitive ? searchTerm : searchTerm.toLowerCase();
+            
+            // Build search pattern
+            var searchPattern;
+            if (wholeWord) {
+                var escapedTerm = searchQuery.replace(/[.*+?^`${}()|[\]\\]/g, '\\`$&');
+                searchPattern = new RegExp('\\b' + escapedTerm + '\\b', caseSensitive ? 'g' : 'gi');
+            } else {
+                searchPattern = caseSensitive ? searchQuery : null;
+            }
+            
+            var allResults = [];
+            var searchStartTime = Date.now();
+            
+            // Determine which datasets to search
+            var datasetsToSearch = [];
+            var includeSystemInfo = false;
+            if (scope === 'all') {
+                datasetsToSearch = ['persistence', 'files', 'registry', 'browser', 'logs', 'services', 'tasks'];
+                includeSystemInfo = true;
+            } else {
+                datasetsToSearch = [scope];
+            }
+            
+            // Search system info data if scope is 'all'
+            if (includeSystemInfo && systemInfoSearchData) {
+                for (var si = 0; si < systemInfoSearchData.length; si++) {
+                    var sysItem = systemInfoSearchData[si];
+                    var matchFound = false;
+                    var matchedFields = [];
+                    
+                    // Search Category, Field, and Value
+                    var searchableText = sysItem.Category + ' ' + sysItem.Field + ' ' + sysItem.Value;
+                    
+                    // Normalize whitespace in searchable text
+                    searchableText = searchableText.replace(/\s+/g, ' ').trim();
+                    
+                    var searchIn = caseSensitive ? searchableText : searchableText.toLowerCase();
+                    
+                    var foundMatch = false;
+                    if (wholeWord && searchPattern) {
+                        foundMatch = searchPattern.test(searchIn);
+                    } else {
+                        foundMatch = searchIn.indexOf(searchQuery) !== -1;
+                    }
+                    
+                    if (foundMatch) {
+                        // Find which specific field matched
+                        if (caseSensitive ? sysItem.Field.indexOf(searchQuery) !== -1 : sysItem.Field.toLowerCase().indexOf(searchQuery) !== -1) {
+                            matchedFields.push({
+                                field: 'Field',
+                                value: sysItem.Category + ' - ' + sysItem.Field,
+                                preview: getMatchPreview(sysItem.Field, searchTerm, caseSensitive)
+                            });
+                        }
+                        if (caseSensitive ? sysItem.Value.indexOf(searchQuery) !== -1 : sysItem.Value.toLowerCase().indexOf(searchQuery) !== -1) {
+                            matchedFields.push({
+                                field: 'Value',
+                                value: sysItem.Value,
+                                preview: getMatchPreview(sysItem.Value, searchTerm, caseSensitive)
+                            });
+                        }
+                        if (caseSensitive ? sysItem.Category.indexOf(searchQuery) !== -1 : sysItem.Category.toLowerCase().indexOf(searchQuery) !== -1) {
+                            matchedFields.push({
+                                field: 'Category',
+                                value: sysItem.Category,
+                                preview: getMatchPreview(sysItem.Category, searchTerm, caseSensitive)
+                            });
+                        }
+                        
+                        if (matchedFields.length > 0) {
+                            allResults.push({
+                                dataType: 'systeminfo',
+                                rowIndex: si,
+                                item: sysItem,
+                                matches: matchedFields
+                            });
+                        }
+                    }
+                }
+            }
+            
+            // Search each dataset
+            for (var i = 0; i < datasetsToSearch.length; i++) {
+                var dataType = datasetsToSearch[i];
+                var data = embeddedData[dataType];
+                
+                if (!data || data.length === 0) continue;
+                
+                // Handle logs specially (search by provider if needed)
+                if (dataType === 'logs' && currentLogProvider !== 'All') {
+                    data = logsByProvider[currentLogProvider] || [];
+                }
+                
+                // CRITICAL: Store reference to original data array for accurate indexing
+                var originalDataRef = data;
+                
+                // Search through data
+                for (var j = 0; j < data.length; j++) {
+                    var item = data[j];
+                    var matchFound = false;
+                    var matchedFields = [];
+                    
+                    // Search all fields in the item
+                    for (var key in item) {
+                        if (!item.hasOwnProperty(key)) continue;
+                        
+                        var value = item[key];
+                        if (value === null || value === undefined) continue;
+                        
+                        var valueStr = String(value);
+                        
+                        // Normalize whitespace in value (replace multiple spaces/tabs/newlines with single space)
+                        valueStr = valueStr.replace(/\s+/g, ' ').trim();
+                        
+                        var searchIn = caseSensitive ? valueStr : valueStr.toLowerCase();
+                        
+                        var foundMatch = false;
+                        if (wholeWord && searchPattern) {
+                            foundMatch = searchPattern.test(searchIn);
+                        } else {
+                            foundMatch = searchIn.indexOf(searchQuery) !== -1;
+                        }
+                        
+                        if (foundMatch) {
+                            matchFound = true;
+                            matchedFields.push({
+                                field: key,
+                                value: valueStr,
+                                preview: getMatchPreview(valueStr, searchTerm, caseSensitive)
+                            });
+                        }
+                    }
+                    
+                    if (matchFound) {
+                        // Store both the row index AND a copy of the actual item data
+                        // This ensures we can match it correctly even if table is sorted/filtered
+                        var itemCopy = {};
+                        for (var copyKey in item) {
+                            if (item.hasOwnProperty(copyKey)) {
+                                itemCopy[copyKey] = item[copyKey];
+                            }
+                        }
+                        
+                        allResults.push({
+                            dataType: dataType,
+                            rowIndex: j,
+                            item: itemCopy,
+                            matches: matchedFields
+                        });
+                    }
+                }
+            }
+            
+            var searchTime = Date.now() - searchStartTime;
+            
+            // Display results
+            if (allResults.length === 0) {
+                statusDiv.innerHTML = '<span style="color: var(--text-muted);">No results found for "' + searchTerm + '" (' + searchTime + 'ms)</span>';
+                resultsDiv.innerHTML = '<div style="padding: 30px; text-align: center; color: var(--text-muted);">No matches found. Try different search terms or adjust your filters.</div>';
+                return;
+            }
+            
+            statusDiv.innerHTML = '<span style="color: var(--accent-green);"><strong>' + allResults.length + '</strong> results found for "' + searchTerm + '" (' + searchTime + 'ms)</span>';
+            
+            // Limit displayed results for performance
+            var displayLimit = 500;
+            var displayResults = allResults.slice(0, displayLimit);
+            
+            var resultsHtml = '';
+            
+            if (allResults.length > displayLimit) {
+                resultsHtml += '<div style="background: var(--accent-yellow); color: #000; padding: 10px; border-radius: 4px; margin-bottom: 15px;">';
+                resultsHtml += 'Showing first ' + displayLimit + ' of ' + allResults.length + ' results. Refine your search for better results.';
+                resultsHtml += '</div>';
+            }
+            
+            resultsHtml += '<div style="display: flex; flex-direction: column; gap: 10px;">';
+            
+            for (var i = 0; i < displayResults.length; i++) {
+                var result = displayResults[i];
+                var typeLabel = result.dataType.charAt(0).toUpperCase() + result.dataType.slice(1);
+                var typeColor = getTypeColor(result.dataType);
+                
+                resultsHtml += '<div style="background: var(--bg-tertiary); padding: 15px; border-radius: 6px; border-left: 4px solid ' + typeColor + ';">';
+                resultsHtml += '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">';
+                resultsHtml += '<div style="display: flex; gap: 10px; align-items: center;">';
+                resultsHtml += '<span style="background: ' + typeColor + '; color: white; padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: bold;">' + typeLabel + '</span>';
+                resultsHtml += '<span style="color: var(--text-muted); font-size: 13px;">Row ' + (result.rowIndex + 1) + '</span>';
+                resultsHtml += '</div>';
+                var tableRefParam = result.item.TableRef ? ",'" + result.item.TableRef + "'" : ",'null'";
+                resultsHtml += '<button onclick="jumpToResult(\'' + result.dataType + '\', ' + result.rowIndex + tableRefParam + ')" style="background: var(--accent-blue); color: white; border: none; padding: 6px 15px; border-radius: 4px; cursor: pointer; font-size: 13px;">View in Tab</button>';
+                resultsHtml += '</div>';
+                
+                // Show matched fields
+                resultsHtml += '<div style="margin-top: 10px;">';
+                for (var m = 0; m < result.matches.length && m < 3; m++) {
+                    var match = result.matches[m];
+                    resultsHtml += '<div style="margin-bottom: 8px;">';
+                    resultsHtml += '<div style="color: var(--accent-blue); font-size: 12px; font-weight: bold; margin-bottom: 3px;">' + match.field + '</div>';
+                    resultsHtml += '<div style="color: var(--text-primary); font-size: 13px; font-family: Consolas, monospace; background: var(--bg-primary); padding: 8px; border-radius: 4px; overflow: hidden; text-overflow: ellipsis;">' + match.preview + '</div>';
+                    resultsHtml += '</div>';
+                }
+                if (result.matches.length > 3) {
+                    resultsHtml += '<div style="color: var(--text-muted); font-size: 12px; font-style: italic;">+ ' + (result.matches.length - 3) + ' more field(s) matched</div>';
+                }
+                resultsHtml += '</div>';
+                
+                resultsHtml += '</div>';
+            }
+            
+            resultsHtml += '</div>';
+            resultsDiv.innerHTML = resultsHtml;
+        }
+        
+        function getMatchPreview(text, searchTerm, caseSensitive) {
+            var maxLen = 200;
+            var searchIn = caseSensitive ? text : text.toLowerCase();
+            var searchFor = caseSensitive ? searchTerm : searchTerm.toLowerCase();
+            var index = searchIn.indexOf(searchFor);
+            
+            if (index === -1) return text.substring(0, maxLen);
+            
+            var start = Math.max(0, index - 50);
+            var end = Math.min(text.length, index + searchTerm.length + 150);
+            
+            var preview = (start > 0 ? '...' : '') + text.substring(start, end) + (end < text.length ? '...' : '');
+            
+            // Highlight the match
+            var highlightStart = (start > 0 ? 3 : 0) + (index - start);
+            var highlightEnd = highlightStart + searchTerm.length;
+            
+            var highlighted = preview.substring(0, highlightStart) + 
+                             '<span style="background: var(--accent-yellow); color: #000; font-weight: bold; padding: 2px 4px; border-radius: 2px;">' + 
+                             preview.substring(highlightStart, highlightEnd) + 
+                             '</span>' + 
+                             preview.substring(highlightEnd);
+            
+            return highlighted;
+        }
+        
+        function getTypeColor(dataType) {
+            var colors = {
+                'persistence': '#e74c3c',
+                'files': '#3498db',
+                'registry': '#9b59b6',
+                'browser': '#1abc9c',
+                'logs': '#f39c12',
+                'services': '#2ecc71',
+                'tasks': '#e67e22',
+                'systeminfo': '#34495e'
+            };
+            return colors[dataType] || '#95a5a6';
+        }
+        
+        function jumpToResult(dataType, rowIndex, tableRef) {
+            // Handle system info specially - go to sysinfo tab and try to scroll to table
+            if (dataType === 'systeminfo') {
+                showTab('sysinfo');
+                
+                // Wait for tab to render
+                setTimeout(function() {
+                    if (tableRef) {
+                        var table = document.getElementById(tableRef);
+                        if (table && table.rows && table.rows[rowIndex + 1]) {
+                            var row = table.rows[rowIndex + 1]; // +1 for header
+                            
+                            // Highlight the row
+                            row.style.background = 'var(--accent-yellow)';
+                            row.style.transition = 'background 2s';
+                            
+                            // Scroll to row
+                            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            
+                            // Remove highlight after 3 seconds
+                            setTimeout(function() {
+                                row.style.background = '';
+                            }, 3000);
+                        } else {
+                            // Just scroll to the table
+                            if (table) {
+                                table.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                            }
+                        }
+                    }
+                }, 500);
+                return;
+            }
+            
+            // Switch to the appropriate tab
+            showTab(dataType);
+            
+            // Wait for tab to load and ensure data is loaded
+            setTimeout(function() {
+                // Force data load if not already loaded
+                if (!loadedData[dataType]) {
+                    loadData(dataType);
+                    
+                    // Wait for data to render before trying to find row
+                    setTimeout(function() {
+                        scrollToAndHighlightRow(dataType, rowIndex);
+                    }, 800);
+                } else {
+                    // Data already loaded, find the row immediately
+                    scrollToAndHighlightRow(dataType, rowIndex);
+                }
+            }, 200);
+        }
+        
+        function scrollToAndHighlightRow(dataType, rowIndex) {
+            try {
+                var table = document.getElementById(dataType + '-table');
+                if (!table) {
+                    console.error('Table not found: ' + dataType + '-table');
+                    return;
+                }
+                
+                var tbody = table.getElementsByTagName('tbody')[0];
+                if (!tbody) {
+                    console.error('Table body not found for: ' + dataType);
+                    return;
+                }
+                
+                // CRITICAL FIX: Account for filtered/sorted data
+                // We need to find the row that matches our original data item
+                // since table display order may differ from original data order
+                var targetRow = null;
+                
+                // Get the original item from embedded data
+                var originalData = embeddedData[dataType];
+                if (dataType === 'logs' && currentLogProvider !== 'All') {
+                    originalData = logsByProvider[currentLogProvider];
+                }
+                
+                if (!originalData || rowIndex >= originalData.length) {
+                    console.error('Invalid row index: ' + rowIndex + ' for dataset size: ' + (originalData ? originalData.length : 0));
+                    return;
+                }
+                
+                var targetItem = originalData[rowIndex];
+                
+                // Find matching row in current table display
+                // Compare multiple fields to ensure correct match
+                var rows = tbody.getElementsByTagName('tr');
+                for (var i = 0; i < rows.length; i++) {
+                    var row = rows[i];
+                    var cells = row.getElementsByTagName('td');
+                    
+                    // Build comparison string from first few cells
+                    var rowText = '';
+                    for (var j = 0; j < Math.min(3, cells.length); j++) {
+                        rowText += cells[j].textContent.trim() + '|';
+                    }
+                    
+                    // Build comparison string from target item
+                    var targetText = '';
+                    var fieldCount = 0;
+                    for (var key in targetItem) {
+                        if (targetItem.hasOwnProperty(key) && fieldCount < 3) {
+                            var val = targetItem[key];
+                            if (val !== null && val !== undefined) {
+                                targetText += String(val).trim() + '|';
+                                fieldCount++;
+                            }
+                        }
+                    }
+                    
+                    // Check for match
+                    if (rowText === targetText) {
+                        targetRow = row;
+                        break;
+                    }
+                }
+                
+                // Fallback: if no match found, try using rowIndex directly
+                if (!targetRow && rows[rowIndex]) {
+                    console.warn('Using fallback row index for: ' + dataType);
+                    targetRow = rows[rowIndex];
+                }
+                
+                if (targetRow) {
+                    // Highlight the row
+                    targetRow.style.background = 'var(--accent-yellow)';
+                    targetRow.style.transition = 'background 2s';
+                    
+                    // Scroll to row
+                    targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    
+                    // Remove highlight after 3 seconds
+                    setTimeout(function() {
+                        targetRow.style.background = '';
+                    }, 3000);
+                } else {
+                    console.error('Could not find target row for index: ' + rowIndex);
+                    alert('Could not locate the exact record in the table. It may be filtered or sorted differently.');
+                }
+            } catch (error) {
+                console.error('Error in scrollToAndHighlightRow:', error);
+            }
+        }
+        
+        function clearGlobalSearch() {
+            document.getElementById('global-search-input').value = '';
+            document.getElementById('search-case-sensitive').checked = false;
+            document.getElementById('search-whole-word').checked = false;
+            document.getElementById('search-scope').value = 'all';
+            document.getElementById('search-status').innerHTML = '';
+            document.getElementById('search-results').innerHTML = '';
+        }
+
         window.onload = function() {
             console.log('Forensic report loaded successfully');
         };
@@ -4476,7 +5632,7 @@ $(
             <a href="https://github.com/blwhit/PS-DFIR-ThreatHunter/issues" target="_blank">Report Issues</a>
         </div>
         <div class="footer-info">
-            Generated by Hunt-ForensicDump from ThreatHunter
+            Created by ThreatHunter
         </div>
         <div class="footer-info" style="margin-top: 5px;">
             $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
@@ -4513,10 +5669,28 @@ $(
         Write-Warning "Not running as Administrator. Some data collection will be limited."
     }
     
-    # Setup output directory
+    # Setup output directory and expand to full path
     if ([string]::IsNullOrWhiteSpace($OutputDir)) {
         $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
         $OutputDir = "C:\ForensicDump_$($env:COMPUTERNAME)_$timestamp"
+    }
+    else {
+        # Expand relative paths and environment variables to absolute path
+        try {
+            # First resolve environment variables
+            $OutputDir = [System.Environment]::ExpandEnvironmentVariables($OutputDir)
+            
+            # Then resolve to absolute path
+            if (-not [System.IO.Path]::IsPathRooted($OutputDir)) {
+                $OutputDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDir)
+            }
+            
+            # Normalize path (remove ..\, ./, etc.)
+            $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
+        }
+        catch {
+            Write-Warning "Could not fully resolve path. Using as-is: $OutputDir"
+        }
     }
     
     try {
@@ -4737,7 +5911,15 @@ $(
             }
             
             Write-Host "  [-] Performing main file system scan..." -ForegroundColor DarkGray
-            $allFiles = Hunt-Files @fileParams
+            
+            try {
+                $allFiles = Hunt-Files @fileParams
+            }
+            catch {
+                Write-Host "  [!] File system scan encountered errors: $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Verbose "File scan error details: $($_.Exception.ToString())"
+                $allFiles = @()
+            }
     
             Write-Host "  [-] Filtering recycled files from cache..." -ForegroundColor DarkGray
             $recycledFiles = @($allFiles | Where-Object { $null -ne $_ -and $_.PSObject.Properties['IsRecycleBin'] -and $_.IsRecycleBin -eq $true })
@@ -4816,7 +5998,7 @@ $(
                 }
                 else {
                     # No path provided - will download
-                    Write-Host "  [-] Using LoadTool mode (will download from internet)..." -ForegroundColor DarkGray
+                    Write-Host "  [-] Using LoadTool mode (via NirSoft internet download)..." -ForegroundColor DarkGray
                 }
             }
             elseif ($Aggressive) {
