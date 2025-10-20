@@ -25,10 +25,13 @@
 # - ADD switch "-BrowserExtensions" to Hunt-Browser to get the browser extensions loaded on the machine for all browsers.. can copy existing logic.. return as objects...
 # - will packaging as PS2EXE make it work on older windows computers? research
 # - add defensive powershell version check to each function init... add defensive input param validation/sanitization, admin checks, internet checks, etc...
-# - add a native "-More" or "-Page" or "-Paging" switch to the Hunt-Logs (and maybe Hunt-Files) function (paging ability while keeping coloring)
+# - add a native "-Page" or "-Paging" switch to the Hunt-Logs (and maybe Hunt-Files) function (paging ability while keeping coloring)
 # - add path filtering/searching to Hunt-Tasks
 # - review logic for getting the hash of the executable vs the scriptFile... make sure its sound and expected output... sometimes fields are getting mixed up...
 # - review CSV outputs for all Forensic Dump data...
+# - Hunt-Persistence path errors.. error building paths for some reason... consider 'test-path' validations, etc.. 
+# - Hunt-Persistence ".json" vs ".js" extensions need seperated/fixed
+# - Hunt-Logs: Need to change the 'Highlight' vs 'Match' field colors. They are both red and clashing together, not cleanly readable.
 
 # Forensic Dump
 # -------------
@@ -38,7 +41,7 @@
 # - take the extra space printing out of the Hunt-Browser execution for the forensic dump... printing an extra newline, not clean
 # - fix and review the "current tab" highlighting... when hitting 'view in tab' or going a tab without manually clicking, there is no blue underline highlight...
 # - add a loading logo/spinning logo wheel for when a page or search is loading, that way it doesnt seem to be stalling
-# - add one liner descriptions at the top of main tabs for a description of what is shown-- i.e. "All known autoruns shown below.."
+# - add one liner descriptions at the top of main tabs for a description of what is shown-- i.e. "All known autoruns shown below.." for the persistence tab, etc...
 # - review the table cell/header/field resizing feature. in some of the tabs, the feature is not working. i should be able to make a field/column bigger or smaller as i please. some of them are snapping back and not applying resize changes. review logic
 # - could add a filtering type of feature, where you can color rows... right click and color red or green, etc... then add filter button to show all filtered... excel style
 # - add more hyperlink features.. IPs open scamalytics, 'References' open their URL, Browser History URLs open VirusTotal, DNS client cache IPs/URLs, etc....
