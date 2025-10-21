@@ -37,7 +37,6 @@
 
 # Forensic Dump (future options)
 # -------------
-# - can we parse out PIDs/ThreadIDs for the event logs? not sure if useful or not...??
 # - could add a filtering type of feature, where you can color rows... right click and color red or green, etc... then add filter button to show all filtered... excel style
 # - cross reference and fix the flagging logic in ForensicDump... its using deafult criticality levels... not proper or by design... fix logic to run and display all native flags direct from cmdlet..
 # - research and add any more interesting Registry Key/Values to the reg colelction. Pretty thin now. e.g. UAC values, RDP settings, etc....
@@ -2676,7 +2675,7 @@ function Hunt-ForensicDump {
                     }
                     # ADD THIS NEW CHECK: Validate the value is not corrupted before type checking
                     elseif ($propValue -is [System.Management.Automation.PSObject] -and 
-                            $propValue.GetType().Name -notmatch 'PSCustomObject') {
+                        $propValue.GetType().Name -notmatch 'PSCustomObject') {
                         # This might be a wrapped object - try to unwrap
                         Write-Verbose "Unwrapping PSObject for key '$key'"
                         try {
@@ -2922,15 +2921,15 @@ function Hunt-ForensicDump {
                         }
                     }
                     
-                # Translate Status field (use Contains() for OrderedDictionary, not ContainsKey())
-                if ($orderedProps.Contains('Status')) {
-                    $orderedProps['Status'] = ConvertTo-ServiceStatusString -Status $orderedProps['Status']
-                }
+                    # Translate Status field (use Contains() for OrderedDictionary, not ContainsKey())
+                    if ($orderedProps.Contains('Status')) {
+                        $orderedProps['Status'] = ConvertTo-ServiceStatusString -Status $orderedProps['Status']
+                    }
 
-                # Translate StartType field
-                if ($orderedProps.Contains('StartType')) {
-                    $orderedProps['StartType'] = ConvertTo-ServiceStartTypeString -StartType $orderedProps['StartType']
-                }
+                    # Translate StartType field
+                    if ($orderedProps.Contains('StartType')) {
+                        $orderedProps['StartType'] = ConvertTo-ServiceStartTypeString -StartType $orderedProps['StartType']
+                    }
                     
                     $servicesTranslated += [PSCustomObject]$orderedProps
                 }
