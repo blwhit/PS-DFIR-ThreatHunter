@@ -42,7 +42,8 @@
 # - research and add any more interesting Registry Key/Values to the reg colelction. Pretty thin now. e.g. UAC values, RDP settings, etc....
 # - Consider reordering tabs in importance/likelihood of usage
 # - take the extra space printing out of the Hunt-Browser execution for the forensic dump... printing an extra newline, not clean
-
+# - edit logo a bit... simplify or color.. etc.....
+# - report is kind of loading slow.. look for optimization....
 
 
 #   Final/Full Review & Pass-Through
