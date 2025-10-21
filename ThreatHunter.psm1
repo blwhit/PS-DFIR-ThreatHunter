@@ -31,31 +31,18 @@
 # - review CSV outputs for all Forensic Dump data...
 # - Hunt-Persistence path errors.. error building paths for some reason... consider 'test-path' validations, etc.. 
 # - Hunt-Persistence ".json" vs ".js" extensions need seperated/fixed
+# - Hunt-Persistence: General review of the logic. Review and make sure we are able to return ALL persistence objects if needed... verify that ALL get returned-- vaildate results...
 # - Hunt-Logs: Need to change the 'Highlight' vs 'Match' field colors. They are both red and clashing together, not cleanly readable.
 
-# Forensic Dump
+
+# Forensic Dump (future options)
 # -------------
+# - can we parse out PIDs/ThreadIDs for the event logs? not sure if useful or not...??
+# - could add a filtering type of feature, where you can color rows... right click and color red or green, etc... then add filter button to show all filtered... excel style
 # - cross reference and fix the flagging logic in ForensicDump... its using deafult criticality levels... not proper or by design... fix logic to run and display all native flags direct from cmdlet..
 # - research and add any more interesting Registry Key/Values to the reg colelction. Pretty thin now. e.g. UAC values, RDP settings, etc....
 # - Consider reordering tabs in importance/likelihood of usage
 # - take the extra space printing out of the Hunt-Browser execution for the forensic dump... printing an extra newline, not clean
-# - fix and review the "current tab" highlighting... when hitting 'view in tab' or going a tab without manually clicking, there is no blue underline highlight...
-# - add a loading logo/spinning logo wheel for when a page or search is loading, that way it doesnt seem to be stalling
-# - add one liner descriptions at the top of main tabs for a description of what is shown-- i.e. "All known autoruns shown below.." for the persistence tab, etc...
-# - review the table cell/header/field resizing feature. in some of the tabs, the feature is not working. i should be able to make a field/column bigger or smaller as i please. some of them are snapping back and not applying resize changes. review logic
-# - could add a filtering type of feature, where you can color rows... right click and color red or green, etc... then add filter button to show all filtered... excel style
-# - add more hyperlink features.. IPs open scamalytics, 'References' open their URL, Browser History URLs open VirusTotal, DNS client cache IPs/URLs, etc....
-# ---- ^^^ --- probably only want hyperlink URLs if "loadTool" mode is used... --- ^^^ ------------
-# - fix the "TriggerType" vs "TriggerTypes" duplicate fields in the tasks... duplicate, only need one...
-# - should probably remove task file SHA256 from the Sched Tasks tab... i think this hash will always be different.. not sure its useful.. adding clutter... 
-# - add more data to Bitlocker status.. list if enforced or not and on which drives... this could be a field in the filesystem section
-# - review and double check logic for different filesystem drive outputs... i.e. USB or Optical, etc... Use device manager, double check accuracy, etc.... review logic
-# - add the "Source" field into the display table for currently logged in users...
-# - make the MD5 hash of AMSI DLLs link to VT.... maybe also make the Font normal size
-# - change the "Light Mode" to use a soft grey color scheme... the white is way too bright.. maybe also adjust other colors so its easier to read... too bright
-# - can we change it so hovering over a "..." will give the FULL text? its still truncated in the hover pop-up
-# - can we parse out PIDs/ThreadIDs for the event logs? not sure if useful or not...
-# - logic for Search "View in Tab" of 'browser extension' entries is bad.. its routing to the 'System Info' tab instead of the 'Browser' tab.... review and fix this logic.
 
 
 
@@ -71,6 +58,8 @@
 # - Rename and standardize any variable names (loadtool vs loadbrowsertool, etc.)
 # - redo and update all Synopsis/Parameters/Notes/Examples sections
 # - check for multiple parameter combination edge cases that cause unexpected outputs/collision errors
+# - add github tag to the init?
+# - add help page? "-h"
 
 
 # ----------------------------------------------------------------
@@ -284,7 +273,10 @@ function Hunt-ForensicDump {
         [switch]$LoadBrowserTool,
         
         [Parameter(Mandatory = $false)]
-        [string]$LoadToolPath = ""
+        [string]$LoadToolPath = "",
+    
+        [Parameter(Mandatory = $false)]
+        [string]$LoadFromJson = ""
     )
 
     # PowerShell version check
@@ -1215,16 +1207,93 @@ function Hunt-ForensicDump {
                         $wmiDrive = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='$($drive.Name):'" -ErrorAction SilentlyContinue
                         
                         if ($wmiDrive) {
+                            # Enhanced drive type detection
+                            $driveTypeStr = "Unknown"
+                            $driveCategory = "LogicalDrives"
+                        
+                            # Primary classification from WMI
+                            switch ($wmiDrive.DriveType) {
+                                2 { 
+                                    $driveTypeStr = "Removable"
+                                    $driveCategory = "USBDrives"
+                                }
+                                3 { 
+                                    $driveTypeStr = "Local Fixed"
+                                    $driveCategory = "LogicalDrives"
+                                }
+                                4 { 
+                                    $driveTypeStr = "Network"
+                                    $driveCategory = "NetworkDrives"
+                                }
+                                5 { 
+                                    $driveTypeStr = "Optical"
+                                    $driveCategory = "OpticalDrives"
+                                }
+                                default { 
+                                    $driveTypeStr = "Unknown Type $($wmiDrive.DriveType)"
+                                    $driveCategory = "LogicalDrives"
+                                }
+                            }
+                        
+                            # Secondary validation using device information for removable drives
+                            if ($wmiDrive.DriveType -eq 2) {
+                                try {
+                                    # Check if it's actually a USB drive via disk information
+                                    $diskDrive = Get-CimInstance -ClassName Win32_DiskDrive -ErrorAction SilentlyContinue | Where-Object {
+                                        $partition = Get-CimInstance -Query "ASSOCIATORS OF {Win32_DiskDrive.DeviceID='$($_.DeviceID)'} WHERE AssocClass=Win32_DiskDriveToDiskPartition" -ErrorAction SilentlyContinue
+                                        if ($partition) {
+                                            $logicalDisk = Get-CimInstance -Query "ASSOCIATORS OF {Win32_DiskPartition.DeviceID='$($partition.DeviceID)'} WHERE AssocClass=Win32_LogicalDiskToPartition" -ErrorAction SilentlyContinue
+                                            return $logicalDisk -and $logicalDisk.DeviceID -eq "$($drive.Name):"
+                                        }
+                                        return $false
+                                    }
+                                
+                                    if ($diskDrive) {
+                                        # Check interface type
+                                        if ($diskDrive.InterfaceType -match 'USB') {
+                                            $driveTypeStr = "USB Removable"
+                                        }
+                                        elseif ($diskDrive.Caption -match 'SD|MMC|Flash') {
+                                            $driveTypeStr = "Flash Card"
+                                        }
+                                        elseif ($diskDrive.MediaType -match 'Removable') {
+                                            $driveTypeStr = "Removable Media"
+                                        }
+                                    }
+                                }
+                                catch {
+                                    Write-Verbose "Could not validate removable drive type for $($drive.Name): $($_.Exception.Message)"
+                                }
+                            }
+                        
+                            # Optical drive validation
+                            if ($wmiDrive.DriveType -eq 5) {
+                                try {
+                                    $cdrom = Get-CimInstance -ClassName Win32_CDROMDrive -ErrorAction SilentlyContinue | Where-Object {
+                                        $_.Drive -eq "$($drive.Name):"
+                                    }
+                                
+                                    if ($cdrom) {
+                                        if ($cdrom.MediaType -match 'DVD') {
+                                            $driveTypeStr = "DVD Drive"
+                                        }
+                                        elseif ($cdrom.MediaType -match 'CD') {
+                                            $driveTypeStr = "CD Drive"
+                                        }
+                                        elseif ($cdrom.MediaType -match 'Blu-ray|BD') {
+                                            $driveTypeStr = "Blu-ray Drive"
+                                        }
+                                    }
+                                }
+                                catch {
+                                    Write-Verbose "Could not validate optical drive type for $($drive.Name): $($_.Exception.Message)"
+                                }
+                            }
+                        
                             $driveObj = [PSCustomObject]@{
                                 DriveLetter  = $drive.Name
                                 Label        = if ($wmiDrive.VolumeName) { $wmiDrive.VolumeName } else { "(No label)" }
-                                DriveType    = switch ($wmiDrive.DriveType) {
-                                    2 { "Removable" }
-                                    3 { "Local Fixed" }
-                                    4 { "Network" }
-                                    5 { "CD-ROM" }
-                                    default { "Unknown" }
-                                }
+                                DriveType    = $driveTypeStr
                                 FileSystem   = $wmiDrive.FileSystem
                                 TotalSizeGB  = if ($wmiDrive.Size) { [math]::Round($wmiDrive.Size / 1GB, 2) } else { 0 }
                                 FreeSpaceGB  = if ($wmiDrive.FreeSpace) { [math]::Round($wmiDrive.FreeSpace / 1GB, 2) } else { 0 }
@@ -1232,13 +1301,13 @@ function Hunt-ForensicDump {
                                 PercentFree  = if ($wmiDrive.Size -and $wmiDrive.Size -gt 0) { [math]::Round(($wmiDrive.FreeSpace / $wmiDrive.Size) * 100, 1) } else { 0 }
                                 ProviderName = $wmiDrive.ProviderName
                             }
-                            
-                            # Categorize by drive type
-                            switch ($wmiDrive.DriveType) {
-                                2 { $fsInfo.USBDrives += $driveObj }
-                                3 { $fsInfo.LogicalDrives += $driveObj }
-                                4 { $fsInfo.NetworkDrives += $driveObj }
-                                5 { $fsInfo.OpticalDrives += $driveObj }
+                        
+                            # Categorize by detected type
+                            switch ($driveCategory) {
+                                "USBDrives" { $fsInfo.USBDrives += $driveObj }
+                                "LogicalDrives" { $fsInfo.LogicalDrives += $driveObj }
+                                "NetworkDrives" { $fsInfo.NetworkDrives += $driveObj }
+                                "OpticalDrives" { $fsInfo.OpticalDrives += $driveObj }
                                 default { $fsInfo.LogicalDrives += $driveObj }
                             }
                         }
@@ -1857,7 +1926,7 @@ function Hunt-ForensicDump {
             
             # Diagnostic: Check if SystemInfoCmd was populated
             if ($sysInfo.SystemInfoCmd -and $sysInfo.SystemInfoCmd.Count -gt 0) {
-                Write-Host "  [+] Captured $($sysInfo.SystemInfoCmd.Count) SystemInfo objects" -ForegroundColor Green
+                Write-Host "  [+] Captured $($sysInfo.SystemInfoCmd.Count) SystemInfo objects" -ForegroundColor DarkGray
             }
             else {
                 Write-Host "  [!] WARNING: systeminfo command returned no data - run with -Verbose to diagnose" -ForegroundColor Yellow
@@ -2289,7 +2358,7 @@ function Hunt-ForensicDump {
         )
     
         try {
-            Write-Host "  [-] Running comprehensive registry analysis..." -ForegroundColor DarkGray
+            Write-Host "  [-] Running registry collection..." -ForegroundColor DarkGray
             
             # Check if Hunt-Registry function exists
             if (Get-Command Hunt-Registry -ErrorAction SilentlyContinue) {
@@ -2322,7 +2391,7 @@ function Hunt-ForensicDump {
             [hashtable]$ForensicData
         )
     
-        $jsonDir = Join-Path $OutputDir "HTML_Files"
+        $jsonDir = Join-Path $OutputDir "JSON_Files"
         if (-not (Test-Path $jsonDir)) {
             New-Item -Path $jsonDir -ItemType Directory -Force | Out-Null
         }
@@ -2424,7 +2493,7 @@ function Hunt-ForensicDump {
                 logs        = @('Type', 'TimeCreated', 'RecordId', 'XML', 'Hostname', 'FilePath', 'FileName', 'CreationDate', 'LastModifiedDate', 'Text')
                 browser     = $browserOmitFields
                 services    = @('Hostname')
-                tasks       = @('TaskFileExists', 'TaskFileModified', 'ExecutableExists', 'ScriptFileExists', 'Hostname')
+                tasks       = @('TaskFileExists', 'TaskFileModified', 'ExecutableExists', 'ScriptFileExists', 'Hostname', 'TaskFileSHA256')
                 files       = @('MatchReason', 'IsDirectory', 'MatchedContent', 'MatchedNames')
             }
         }
@@ -2527,43 +2596,89 @@ function Hunt-ForensicDump {
                 }
             }
 
-            # Build filtered data - CRITICAL: Use ArrayList.Add() instead of += operator
-            # Ensure we have a valid capacity value
-            $capacity = if ($dataToProcess -and $dataToProcess.Count) { $dataToProcess.Count } else { 0 }
-            $filteredData = [System.Collections.ArrayList]::new($capacity)
+            # Build filtered data - CRITICAL: Use proper array building
+            $filteredData = [System.Collections.Generic.List[PSCustomObject]]::new()
             
             foreach ($item in $dataToProcess) {
                 $newObj = [ordered]@{}
                 
                 foreach ($key in $keysToKeep) {
-                    # Get property value using PSObject.Properties to avoid enumeration
-                    $prop = $item.PSObject.Properties[$key]
-                    if ($null -eq $prop) {
-                        $newObj[$key] = ''
-                        continue
+                    # Get property value safely with multiple fallback methods
+                    $propValue = $null
+                    $accessMethod = 'none'
+                    
+                    # Method 1: Try PSObject.Properties access (safest)
+                    try {
+                        $prop = $item.PSObject.Properties[$key]
+                        if ($null -ne $prop) {
+                            $propValue = $prop.Value
+                            $accessMethod = 'PSObject'
+                        }
+                    }
+                    catch {
+                        Write-Verbose "PSObject access failed for key '$key': $($_.Exception.Message)"
                     }
                     
-                    $propValue = $prop.Value
+                    # Method 2: Fallback to direct access if PSObject failed
+                    if ($null -eq $propValue -and $accessMethod -eq 'none') {
+                        try {
+                            $propValue = $item.$key
+                            $accessMethod = 'Direct'
+                        }
+                        catch {
+                            Write-Verbose "Direct access failed for key '$key': $($_.Exception.Message)"
+                        }
+                    }
+                    
+                    # Method 3: Fallback to GetType().GetProperty() for difficult cases
+                    if ($null -eq $propValue -and $accessMethod -eq 'none') {
+                        try {
+                            $reflectionProp = $item.GetType().GetProperty($key)
+                            if ($null -ne $reflectionProp) {
+                                $propValue = $reflectionProp.GetValue($item, $null)
+                                $accessMethod = 'Reflection'
+                            }
+                        }
+                        catch {
+                            Write-Verbose "Reflection access failed for key '$key': $($_.Exception.Message)"
+                        }
+                    }
+                    
+                    # Log if all access methods failed
+                    if ($null -eq $propValue -and $accessMethod -eq 'none') {
+                        Write-Verbose "All access methods failed for key '$key' in $Type data"
+                    }
                     
                     # CRITICAL: Handle each type explicitly to prevent enumeration corruption
-                    if ($null -eq $propValue -or $propValue -eq '') {
+                    if ($null -eq $propValue) {
                         $newObj[$key] = ''
                     }
-                    elseif ($propValue -is [datetime]) {
-                        $newObj[$key] = $propValue.ToString('yyyy-MM-dd HH:mm:ss')
+                    # NEW: Check for enumerator/iterator objects first (corruption indicator)
+                    elseif ($propValue.GetType().Name -match 'Enumerator' -or 
+                        $propValue.GetType().Name -match 'Iterator') {
+                        Write-Verbose "Detected enumerator object for key '$key' - attempting to enumerate values"
+                        try {
+                            # Try to get the actual collection
+                            $collection = @()
+                            if ($propValue -is [System.Collections.IEnumerable]) {
+                                foreach ($val in $propValue) {
+                                    if ($null -ne $val) {
+                                        $collection += $val.ToString()
+                                    }
+                                }
+                            }
+                            $newObj[$key] = if ($collection.Count -gt 0) { $collection -join ', ' } else { '' }
+                        }
+                        catch {
+                            Write-Verbose "Failed to enumerate - using empty string for key '$key'"
+                            $newObj[$key] = ''
+                        }
                     }
-                    elseif ($propValue -is [bool]) {
-                        $newObj[$key] = $propValue.ToString()
-                    }
-                    elseif ($propValue -is [int] -or $propValue -is [long] -or $propValue -is [double] -or $propValue -is [decimal]) {
-                        $newObj[$key] = $propValue
-                    }
-                    elseif ($propValue -is [string]) {
-                        # Already a string, keep as-is
-                        $newObj[$key] = $propValue
-                    }
-                    else {
-                        # Use .ToString() method for everything else
+                    # ADD THIS NEW CHECK: Validate the value is not corrupted before type checking
+                    elseif ($propValue -is [System.Management.Automation.PSObject] -and 
+                            $propValue.GetType().Name -notmatch 'PSCustomObject') {
+                        # This might be a wrapped object - try to unwrap
+                        Write-Verbose "Unwrapping PSObject for key '$key'"
                         try {
                             $newObj[$key] = $propValue.ToString()
                         }
@@ -2571,10 +2686,49 @@ function Hunt-ForensicDump {
                             $newObj[$key] = ''
                         }
                     }
+                    elseif ($propValue -is [string]) {
+                        # Already a string, keep as-is
+                        $newObj[$key] = $propValue
+                    }
+                    elseif ($propValue -is [datetime]) {
+                        $newObj[$key] = $propValue.ToString('yyyy-MM-dd HH:mm:ss')
+                    }
+                    elseif ($propValue -is [bool]) {
+                        $newObj[$key] = if ($propValue) { 'True' } else { 'False' }
+                    }
+                    elseif ($propValue -is [int] -or $propValue -is [long] -or $propValue -is [double] -or $propValue -is [decimal]) {
+                        $newObj[$key] = $propValue
+                    }
+                    elseif ($propValue -is [System.Collections.IEnumerable] -and $propValue -isnot [string]) {
+                        # Handle collections - convert to comma-separated string
+                        try {
+                            $strItems = @()
+                            foreach ($val in $propValue) {
+                                if ($null -ne $val) {
+                                    $strItems += $val.ToString()
+                                }
+                            }
+                            $newObj[$key] = if ($strItems.Count -gt 0) { $strItems -join ', ' } else { '' }
+                        }
+                        catch {
+                            Write-Verbose "Collection enumeration failed for key '$key'"
+                            $newObj[$key] = ''
+                        }
+                    }
+                    else {
+                        # Use .ToString() method for everything else
+                        try {
+                            $newObj[$key] = $propValue.ToString()
+                        }
+                        catch {
+                            Write-Verbose "ToString() failed for key '$key' - using empty string"
+                            $newObj[$key] = ''
+                        }
+                    }
                 }
                 
-                # Use ArrayList.Add() instead of += to prevent corruption
-                [void]$filteredData.Add([PSCustomObject]$newObj)
+                # Add to list
+                $filteredData.Add([PSCustomObject]$newObj)
             }
 
             # Convert to JSON with comprehensive error handling
@@ -2584,8 +2738,8 @@ function Hunt-ForensicDump {
                     Write-Host "  [!] Large dataset ($($filteredData.Count) records) - JSON conversion may be slow" -ForegroundColor Yellow
                 }
                 
-                # Convert ArrayList to regular array before JSON conversion
-                $arrayData = @($filteredData.ToArray())
+                # Convert List to regular array before JSON conversion
+                $arrayData = $filteredData.ToArray()
                 
                 # Attempt JSON conversion with retry logic
                 $retryCount = 0
@@ -2606,15 +2760,44 @@ function Hunt-ForensicDump {
                     }
                 }
                 
-                # Verify JSON doesn't contain ArrayList references
-                if ($json -like '*ArrayList*' -or $json -like '*Enumerator*') {
-                    Write-Verbose "  [!!!] JSON contains ArrayList/Enumerator references - POTENTIAL DATA CORRUPTION DETECTED"
+                # Verify JSON doesn't contain .NET type corruption indicators
+                # Check for specific .NET type serialization patterns, not just the words
+                if ($json -match 'System\.Collections\.ArrayList' -or 
+                    $json -match 'System\.Collections\.Generic\.List.*Enumerator' -or
+                    $json -match '\@\{.*Enumerator.*\}') {
+                    Write-Warning "  [!!!] JSON contains .NET type references - POTENTIAL DATA CORRUPTION DETECTED"
+                    Write-Warning "  [!] Type: $Type"
+                    Write-Warning "  [!] Sample: $($json.Substring(0, [Math]::Min(200, $json.Length)))"
+                
+                    # Try to identify which items are corrupted
+                    Write-Verbose "Attempting to identify corrupted items in $Type data..."
+                
+                    # Don't immediately fail - log it and return what we have
+                    # The JavaScript will handle empty data gracefully
+                    Write-Warning "  [!] Continuing with potentially corrupted data - check console for details"
+                }
+                
+                # Additional validation: ensure JSON is valid JavaScript
+                if ([string]::IsNullOrWhiteSpace($json)) {
+                    Write-Warning "JSON conversion produced empty result for $Type"
+                    return '[]'
+                }
+                
+                # Validate JSON syntax by attempting to parse it back
+                try {
+                    $testParse = $json | ConvertFrom-Json -ErrorAction Stop
+                    Write-Verbose "JSON validation passed for $Type"
+                }
+                catch {
+                    Write-Warning "JSON validation failed for $Type - produced invalid JSON"
+                    return '[]'
                 }
                 
                 return $json
             }
             catch {
                 Write-Warning "JSON conversion failed for $Type : $($_.Exception.Message)"
+                Write-Verbose "Stack trace: $($_.ScriptStackTrace)"
                 return '[]'
             }
         }
@@ -2699,9 +2882,21 @@ function Hunt-ForensicDump {
         # Prepare other data types
         Write-Host "  [-] Preparing Persistence JSON..." -ForegroundColor DarkGray
         $persistenceJson = Prepare-DataForJSON -Data $ForensicData.Persistence -Type 'persistence' -MaxRows $MaxRows -OmitFields $omitFields['persistence']
+        if ($persistenceJson -eq '[]') {
+            Write-Host "      WARNING: Persistence JSON is empty" -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "      Persistence JSON size: $([math]::Round($persistenceJson.Length / 1KB, 2)) KB" -ForegroundColor DarkGray
+        }
     
         Write-Host "  [-] Preparing Browser JSON..." -ForegroundColor DarkGray
         $browserJson = Prepare-DataForJSON -Data $ForensicData.Browser -Type 'browser' -MaxRows $MaxRows -OmitFields $omitFields['browser']
+        if ($browserJson -eq '[]') {
+            Write-Host "      WARNING: Browser JSON is empty" -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "      Browser JSON size: $([math]::Round($browserJson.Length / 1KB, 2)) KB" -ForegroundColor DarkGray
+        }
     
         Write-Host "  [-] Preparing Services JSON with translations..." -ForegroundColor DarkGray
         # Translate service status and start type values
@@ -2727,15 +2922,15 @@ function Hunt-ForensicDump {
                         }
                     }
                     
-                    # Translate Status field
-                    if ($orderedProps.ContainsKey('Status')) {
-                        $orderedProps['Status'] = ConvertTo-ServiceStatusString -Status $orderedProps['Status']
-                    }
-                    
-                    # Translate StartType field
-                    if ($orderedProps.ContainsKey('StartType')) {
-                        $orderedProps['StartType'] = ConvertTo-ServiceStartTypeString -StartType $orderedProps['StartType']
-                    }
+                # Translate Status field (use Contains() for OrderedDictionary, not ContainsKey())
+                if ($orderedProps.Contains('Status')) {
+                    $orderedProps['Status'] = ConvertTo-ServiceStatusString -Status $orderedProps['Status']
+                }
+
+                # Translate StartType field
+                if ($orderedProps.Contains('StartType')) {
+                    $orderedProps['StartType'] = ConvertTo-ServiceStartTypeString -StartType $orderedProps['StartType']
+                }
                     
                     $servicesTranslated += [PSCustomObject]$orderedProps
                 }
@@ -2908,17 +3103,26 @@ function Hunt-ForensicDump {
 "@
             foreach ($dns in $ForensicData.SystemInfo.DNSCache) {
                 # Extract actual record name (Entry or RecordName property)
-                $name = if ($dns.Entry) { 
-                    [System.Web.HttpUtility]::HtmlEncode($dns.Entry) 
+                $nameRaw = if ($dns.Entry) { 
+                    $dns.Entry 
                 }
                 elseif ($dns.RecordName) { 
-                    [System.Web.HttpUtility]::HtmlEncode($dns.RecordName) 
+                    $dns.RecordName 
                 }
                 elseif ($dns.Name) { 
-                    [System.Web.HttpUtility]::HtmlEncode($dns.Name) 
+                    $dns.Name 
                 }
                 else { 
                     "N/A" 
+                }
+                
+                # Create hyperlink for domain names
+                $name = if ($nameRaw -ne "N/A" -and $nameRaw -match '^[a-z0-9]+([\-\.]{1}[a-z0-9]+)*\.[a-z]{2,}$') {
+                    $encodedName = [System.Web.HttpUtility]::HtmlEncode($nameRaw)
+                    "<a href='https://www.virustotal.com/gui/domain/$encodedName' target='_blank' class='vt-link' title='Lookup on VirusTotal'>$encodedName</a>"
+                }
+                else {
+                    [System.Web.HttpUtility]::HtmlEncode($nameRaw)
                 }
                 
                 # Get record type
@@ -2933,14 +3137,33 @@ function Hunt-ForensicDump {
                 }
                 
                 # Get data/record value
-                $data = if ($dns.Data) { 
-                    [System.Web.HttpUtility]::HtmlEncode($dns.Data) 
+                $dataRaw = if ($dns.Data) { 
+                    $dns.Data 
                 }
                 elseif ($dns.Record) { 
-                    [System.Web.HttpUtility]::HtmlEncode($dns.Record) 
+                    $dns.Record 
                 }
                 else { 
                     "N/A" 
+                }
+                
+                # Create hyperlink for IP addresses or domains in data field
+                $data = if ($dataRaw -ne "N/A") {
+                    if ($dataRaw -match '^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$') {
+                        # It's an IP address
+                        "<a href='https://scamalytics.com/ip/$dataRaw' target='_blank' class='vt-link' title='Lookup on Scamalytics'>$dataRaw</a>"
+                    }
+                    elseif ($dataRaw -match '^[a-z0-9]+([\-\.]{1}[a-z0-9]+)*\.[a-z]{2,}$') {
+                        # It's a domain
+                        $encodedData = [System.Web.HttpUtility]::HtmlEncode($dataRaw)
+                        "<a href='https://www.virustotal.com/gui/domain/$encodedData' target='_blank' class='vt-link' title='Lookup on VirusTotal'>$encodedData</a>"
+                    }
+                    else {
+                        [System.Web.HttpUtility]::HtmlEncode($dataRaw)
+                    }
+                }
+                else {
+                    "N/A"
                 }
                 
                 # Get TTL
@@ -2955,7 +3178,7 @@ function Hunt-ForensicDump {
                 }
                 
                 # Only add row if we have meaningful data (skip AAAA NoRecords entries)
-                if ($name -ne "N/A" -or $data -ne "N/A") {
+                if ($nameRaw -ne "N/A" -or $dataRaw -ne "N/A") {
                     $dnsHtml += "            <tr><td>$name</td><td>$type</td><td>$data</td><td>$ttl</td></tr>`n"
                 }
             }
@@ -2991,7 +3214,22 @@ function Hunt-ForensicDump {
 "@
             $limitedConnections = $ForensicData.SystemInfo.NetworkConnections | Select-Object -First 500
             foreach ($conn in $limitedConnections) {
-                $networkHtml += "            <tr><td>$($conn.LocalAddress)</td><td>$($conn.LocalPort)</td><td>$($conn.RemoteAddress)</td><td>$($conn.RemotePort)</td><td>$($conn.State)</td><td>$($conn.OwningProcess)</td></tr>`n"
+                # Create hyperlinks for IP addresses
+                $localAddr = if ($conn.LocalAddress -and $conn.LocalAddress -ne '0.0.0.0' -and $conn.LocalAddress -ne '::' -and $conn.LocalAddress -ne '127.0.0.1' -and $conn.LocalAddress -notlike '*:*') {
+                    "<a href='https://scamalytics.com/ip/$($conn.LocalAddress)' target='_blank' class='vt-link' title='Lookup on Scamalytics'>$($conn.LocalAddress)</a>"
+                }
+                else {
+                    $conn.LocalAddress
+                }
+                
+                $remoteAddr = if ($conn.RemoteAddress -and $conn.RemoteAddress -ne '0.0.0.0' -and $conn.RemoteAddress -ne '::' -and $conn.RemoteAddress -notlike '*:*') {
+                    "<a href='https://scamalytics.com/ip/$($conn.RemoteAddress)' target='_blank' class='vt-link' title='Lookup on Scamalytics'>$($conn.RemoteAddress)</a>"
+                }
+                else {
+                    $conn.RemoteAddress
+                }
+                
+                $networkHtml += "            <tr><td>$localAddr</td><td>$($conn.LocalPort)</td><td>$remoteAddr</td><td>$($conn.RemotePort)</td><td>$($conn.State)</td><td>$($conn.OwningProcess)</td></tr>`n"
             }
             $networkHtml += @"
         </tbody>
@@ -3143,30 +3381,30 @@ function Hunt-ForensicDump {
         }
         
         [data-theme="light"] {
-            --bg-primary: #f5f5f5;
-            --bg-secondary: #ffffff;
-            --bg-tertiary: #f0f0f0;
-            --bg-quaternary: #fafafa;
-            --bg-header: linear-gradient(135deg, #4a90e2, #357abd);
-            --bg-card: linear-gradient(135deg, #5a9fd4, #4a90e2);
-            --text-primary: #2c3e50;
-            --text-secondary: #34495e;
-            --text-muted: #7f8c8d;
-            --text-dark: #95a5a6;
-            --border-color: #ddd;
-            --border-accent: #4a90e2;
-            --accent-blue: #2980b9;
-            --accent-blue-hover: #3498db;
-            --accent-green: #27ae60;
-            --accent-red: #c0392b;
-            --accent-yellow: #e67e22;
-            --hover-bg: #e8e8e8;
-            --table-header: #4a90e2;
-            --table-header-hover: #5a9fd4;
-            --input-bg: #ffffff;
-            --input-border: #ccc;
-            --button-bg: #4a90e2;
-            --shadow: rgba(0, 0, 0, 0.1);
+            --bg-primary: #e8eaed;
+            --bg-secondary: #f1f3f5;
+            --bg-tertiary: #e0e3e7;
+            --bg-quaternary: #ebedef;
+            --bg-header: linear-gradient(135deg, #5b7a9e, #4a6b8a);
+            --bg-card: linear-gradient(135deg, #6b8aae, #5b7a9e);
+            --text-primary: #2d3748;
+            --text-secondary: #4a5568;
+            --text-muted: #718096;
+            --text-dark: #a0aec0;
+            --border-color: #cbd5e0;
+            --border-accent: #5b7a9e;
+            --accent-blue: #4a7ba7;
+            --accent-blue-hover: #5a8bb7;
+            --accent-green: #48a564;
+            --accent-red: #d65745;
+            --accent-yellow: #db8b3a;
+            --hover-bg: #dde1e6;
+            --table-header: #5b7a9e;
+            --table-header-hover: #6b8aae;
+            --input-bg: #f7f9fb;
+            --input-border: #b8c5d0;
+            --button-bg: #5b7a9e;
+            --shadow: rgba(0, 0, 0, 0.08);
         }
         
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -3174,7 +3412,19 @@ function Hunt-ForensicDump {
             font-family: 'Segoe UI', Arial, sans-serif; 
             background: var(--bg-primary); 
             color: var(--text-primary);
-            transition: background-color 0.3s, color 0.3s;
+            transition: background-color 0.4s ease, color 0.4s ease;
+        }
+        html {
+            transition: background-color 0.4s ease;
+        }
+        [data-theme="light"] body {
+            filter: brightness(0.98);
+        }
+        [data-theme="light"] .header {
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+        [data-theme="light"] table {
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
         }
         .header { 
             background: var(--bg-header); 
@@ -3236,7 +3486,7 @@ function Hunt-ForensicDump {
             color: var(--text-muted); 
             cursor: pointer; 
             border-bottom: 3px solid transparent;
-            transition: all 0.3s;
+            transition: all 0.3s ease, background-color 0.4s ease, color 0.4s ease, border-color 0.4s ease;
             white-space: nowrap;
             font-size: 14px;
         }
@@ -3248,7 +3498,13 @@ function Hunt-ForensicDump {
         .tab-content.active { display: block; }
         
         .sysinfo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin: 20px 0; }
-        .sysinfo-card { background: var(--bg-secondary); padding: 20px; border-radius: 8px; border-left: 4px solid var(--accent-blue); }
+        .sysinfo-card { 
+            background: var(--bg-secondary); 
+            padding: 20px; 
+            border-radius: 8px; 
+            border-left: 4px solid var(--accent-blue);
+            transition: background-color 0.4s ease, border-color 0.4s ease;
+        }
         .sysinfo-card h3 { color: var(--accent-blue); margin-bottom: 15px; }
         .sysinfo-item { margin: 8px 0; }
         .sysinfo-label { color: var(--text-muted); display: inline-block; width: 150px; }
@@ -3353,6 +3609,7 @@ function Hunt-ForensicDump {
             margin: 10px 0; 
             font-size: 0.85em; 
             table-layout: auto;
+            transition: background-color 0.4s ease;
         }
 
         th { 
@@ -3377,13 +3634,27 @@ function Hunt-ForensicDump {
             position: absolute;
             top: 0;
             right: 0;
-            width: 5px;
+            width: 8px;
             cursor: col-resize;
             user-select: none;
             height: 100%;
-            z-index: 2;
+            z-index: 10;
+            background: transparent;
+            transition: background 0.2s ease;
         }
         .resizer:hover {
+            background: var(--accent-blue);
+            opacity: 0.5;
+        }
+        .resizer.active {
+            background: var(--accent-blue);
+            opacity: 0.8;
+        }
+        th.resizing {
+            border-right: 2px solid var(--accent-blue);
+            background: var(--hover-bg);
+        }
+        th.resizing .resizer {
             background: var(--accent-blue);
         }
         
@@ -3458,13 +3729,102 @@ function Hunt-ForensicDump {
     </style>
 </head>
 <body>
+    <!-- Initial page loading overlay -->
+    <div id="page-loader" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: var(--bg-primary); z-index: 9999; display: flex; align-items: center; justify-content: center; flex-direction: column;">
+        <div style="text-align: center;">
+            <!-- ThreatHunter Multi-Module Hunt Radar -->
+            <svg width="100" height="100" viewBox="0 0 50 50" style="color: var(--accent-blue); margin-bottom: 20px;">
+                
+                <!-- Outer targeting rings -->
+                <circle cx="25" cy="25" r="22" fill="none" stroke="currentColor" stroke-width="0.5" opacity="0.2"></circle>
+                <circle cx="25" cy="25" r="18" fill="none" stroke="currentColor" stroke-width="0.5" opacity="0.3"></circle>
+                <circle cx="25" cy="25" r="14" fill="none" stroke="currentColor" stroke-width="0.5" opacity="0.4"></circle>
+                
+                <!-- Crosshair -->
+                <line x1="25" y1="3" x2="25" y2="10" stroke="currentColor" stroke-width="1.5" opacity="0.6"></line>
+                <line x1="25" y1="40" x2="25" y2="47" stroke="currentColor" stroke-width="1.5" opacity="0.6"></line>
+                <line x1="3" y1="25" x2="10" y2="25" stroke="currentColor" stroke-width="1.5" opacity="0.6"></line>
+                <line x1="40" y1="25" x2="47" y2="25" stroke="currentColor" stroke-width="1.5" opacity="0.6"></line>
+                
+                <!-- Radar sweep line -->
+                <line x1="25" y1="25" x2="25" y2="7" stroke="currentColor" stroke-width="2" opacity="0.8"
+                      style="animation: radar-sweep 3s linear infinite; transform-origin: 25px 25px;"></line>
+                
+                <!-- Target indicators (representing different Hunt modules) -->
+                <g style="animation: module-activate 3s ease-in-out infinite;">
+                    <circle cx="35" cy="15" r="1.5" fill="currentColor"></circle>
+                    <text x="35" y="13" font-size="3" fill="currentColor" text-anchor="middle" opacity="0.8">P</text>
+                </g>
+                
+                <g style="animation: module-activate 3s ease-in-out infinite; animation-delay: 0.3s;">
+                    <circle cx="40" cy="25" r="1.5" fill="currentColor"></circle>
+                    <text x="40" y="23" font-size="3" fill="currentColor" text-anchor="middle" opacity="0.8">L</text>
+                </g>
+                
+                <g style="animation: module-activate 3s ease-in-out infinite; animation-delay: 0.6s;">
+                    <circle cx="35" cy="35" r="1.5" fill="currentColor"></circle>
+                    <text x="35" y="33" font-size="3" fill="currentColor" text-anchor="middle" opacity="0.8">B</text>
+                </g>
+                
+                <g style="animation: module-activate 3s ease-in-out infinite; animation-delay: 0.9s;">
+                    <circle cx="15" cy="35" r="1.5" fill="currentColor"></circle>
+                    <text x="15" y="33" font-size="3" fill="currentColor" text-anchor="middle" opacity="0.8">F</text>
+                </g>
+                
+                <g style="animation: module-activate 3s ease-in-out infinite; animation-delay: 1.2s;">
+                    <circle cx="10" cy="25" r="1.5" fill="currentColor"></circle>
+                    <text x="10" y="23" font-size="3" fill="currentColor" text-anchor="middle" opacity="0.8">R</text>
+                </g>
+                
+                <g style="animation: module-activate 3s ease-in-out infinite; animation-delay: 1.5s;">
+                    <circle cx="15" cy="15" r="1.5" fill="currentColor"></circle>
+                    <text x="15" y="13" font-size="3" fill="currentColor" text-anchor="middle" opacity="0.8">S</text>
+                </g>
+                
+                <!-- Center dot (no pulsing) -->
+                <circle cx="25" cy="25" r="1.5" fill="currentColor"></circle>
+                
+            </svg>
+            
+            <h2 style="color: var(--text-primary); margin-bottom: 10px;">Loading Forensic Report...</h2>
+            <p style="color: var(--text-muted); font-size: 0.9em;">ThreatHunter</p>
+            <div id="load-progress" style="margin-top: 15px; color: var(--text-dark); font-size: 0.85em;"></div>
+           
+            <!-- Loading bar -->
+            <div style="width: 300px; height: 4px; background: var(--bg-tertiary); border-radius: 2px; margin: 20px auto; overflow: hidden;">
+                <div style="width: 100%; height: 100%; background: linear-gradient(90deg, var(--accent-blue), var(--accent-green)); animation: loading-bar 2s ease-in-out infinite;"></div>
+            </div>
+            
+            <!-- Module legend -->
+            <p style="color: var(--text-dark); font-size: 0.75em; margin-top: 10px;">github.com/blwhit</p>
+        </div>
+    </div>
+   
+    <style>
+        @keyframes radar-sweep {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        
+        @keyframes module-activate {
+            0%, 100% { opacity: 0.3; }
+            50% { opacity: 1; }
+        }
+       
+        @keyframes loading-bar {
+            0% { transform: translateX(-100%); }
+            50% { transform: translateX(0%); }
+            100% { transform: translateX(100%); }
+        }
+    </style>
+    
     <div class="header">
         <button class="theme-toggle" onclick="toggleTheme()" id="theme-toggle-btn">Light/Dark Mode</button>
         <h1>Forensic Analysis Report</h1>
         <div class="info">
             <strong>Host:</strong> $hostname | 
             <strong>Generated:</strong> $reportDate | 
-            <strong>Period:</strong> $StartDate to $EndDate | 
+            <strong>Time Range:</strong> $StartDate to $EndDate | 
             <strong>Mode:</strong> $Mode
         </div>
     </div>
@@ -3664,7 +4024,10 @@ function Hunt-ForensicDump {
                                 }
                             }
                             if ($dnsAddresses.Count -gt 0) {
-                                ($dnsAddresses | Select-Object -First 3 -Unique) -join ', '
+                                $dnsLinks = ($dnsAddresses | Select-Object -First 3 -Unique) | ForEach-Object {
+                                    "<a href='https://scamalytics.com/ip/$_' target='_blank' class='vt-link' title='Lookup on Scamalytics'>$_</a>"
+                                }
+                                $dnsLinks -join ', '
                             } else {
                                 'N/A'
                             }
@@ -3707,15 +4070,15 @@ function Hunt-ForensicDump {
                 <h3>Output Locations</h3>
                 <div class="export-info-item">
                     <span class="export-info-label">Output Folder:</span>
-                    <span class="export-info-value">$OutputDir</span>
+                    <span class="export-info-value"><a href="file:///$($OutputDir.Replace('\', '/'))" class="export-link" title="Open folder in Explorer">$OutputDir</a></span>
                 </div>
                 <div class="export-info-item">
                     <span class="export-info-label">HTML Report:</span>
-                    <span class="export-info-value"><a href="ForensicReport.html" class="export-link">ForensicReport.html</a></span>
+                    <span class="export-info-value"><a href="file:///$($OutputDir.Replace('\', '/'))/ForensicReport.html" class="export-link" title="Open HTML report">$(Join-Path $OutputDir 'ForensicReport.html')</a></span>
                 </div>
                 <div class="export-info-item">
                     <span class="export-info-label">CSV Data Folder:</span>
-                    <span class="export-info-value"><a href="ForensicData_CSV/" class="export-link">ForensicData_CSV/</a></span>
+                    <span class="export-info-value"><a href="file:///$($OutputDir.Replace('\', '/'))/ForensicData_CSV/" class="export-link" title="Open CSV folder">$(Join-Path $OutputDir 'ForensicData_CSV')</a></span>
                 </div>
             </div>
             
@@ -3846,6 +4209,7 @@ $(
                                 <th onclick="sortSystemTable('loggedin-table', 3)" style="position: relative;">State<div class="resizer"></div></th>
                                 <th onclick="sortSystemTable('loggedin-table', 4)" style="position: relative;">Idle Time<div class="resizer"></div></th>
                                 <th onclick="sortSystemTable('loggedin-table', 5)" style="position: relative;">Logon Time<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('loggedin-table', 6)" style="position: relative;">Source<div class="resizer"></div></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -3856,11 +4220,12 @@ $(
             $username = [System.Web.HttpUtility]::HtmlEncode($loggedUser.Username)
             $sessionName = [System.Web.HttpUtility]::HtmlEncode($loggedUser.SessionName)
             $logonTime = if ($loggedUser.PSObject.Properties['LogonTime']) { $loggedUser.LogonTime } else { "Unknown" }
-            $loggedHtml += "                            <tr><td>$username</td><td>$sessionName</td><td>$($loggedUser.ID)</td><td>$($loggedUser.State)</td><td>$($loggedUser.IdleTime)</td><td>$logonTime</td></tr>`n"
+            $source = if ($loggedUser.PSObject.Properties['Source']) { $loggedUser.Source } else { "Unknown" }
+            $loggedHtml += "                            <tr><td>$username</td><td>$sessionName</td><td>$($loggedUser.ID)</td><td>$($loggedUser.State)</td><td>$($loggedUser.IdleTime)</td><td>$logonTime</td><td>$source</td></tr>`n"
         }
         $loggedHtml
     } else {
-        "                            <tr><td colspan='6' style='text-align: center; color: #95a5a6;'>No users currently logged in (or detection failed)</td></tr>"
+        "                            <tr><td colspan='7' style='text-align: center; color: #95a5a6;'>No users currently logged in (or detection failed)</td></tr>"
     }
 )
                         </tbody>
@@ -3925,8 +4290,9 @@ $(
             $dllExists = if ($provider.DLLExists) { "<span style='color: #2ecc71;'>Yes</span>" } else { "<span style='color: #e74c3c;'>No</span>" }
             $dllSize = if ($provider.DLLSizeKB -and $provider.DLLSizeKB -gt 0) { $provider.DLLSizeKB } else { "N/A" }
             $dllMD5 = if ($provider.DLLMd5) { [System.Web.HttpUtility]::HtmlEncode($provider.DLLMd5) } else { "N/A" }
+            $dllMD5Link = if ($dllMD5 -ne "N/A" -and $dllMD5 -ne "Error") { "<a href='https://www.virustotal.com/gui/file/$dllMD5' target='_blank' class='vt-link' title='Lookup on VirusTotal'>$dllMD5</a>" } else { $dllMD5 }
             $guid = [System.Web.HttpUtility]::HtmlEncode($provider.GUID)
-            $amsiHtml += "                            <tr><td><strong>$name</strong></td><td style='font-family: Consolas, monospace; font-size: 0.8em; max-width: 400px; overflow: hidden; text-overflow: ellipsis;' title='$dllPath'>$dllPath</td><td style='text-align: center;'>$dllExists</td><td style='text-align: center;'>$dllSize</td><td style='font-family: Consolas, monospace; font-size: 0.75em;'>$dllMD5</td><td style='font-family: Consolas, monospace; font-size: 0.75em;'>$guid</td></tr>`n"
+            $amsiHtml += "                            <tr><td><strong>$name</strong></td><td style='font-family: Consolas, monospace; max-width: 400px; overflow: hidden; text-overflow: ellipsis;' title='$dllPath'>$dllPath</td><td style='text-align: center;'>$dllExists</td><td style='text-align: center;'>$dllSize</td><td style='font-family: Consolas, monospace;'>$dllMD5Link</td><td style='font-family: Consolas, monospace;'>$guid</td></tr>`n"
         }
         $amsiHtml
     } else {
@@ -4095,6 +4461,7 @@ $(
                                 <th onclick="sortSystemTable('drives-table', 4)" style="position: relative;">Used (GB)<div class="resizer"></div></th>
                                 <th onclick="sortSystemTable('drives-table', 5)" style="position: relative;">Free (GB)<div class="resizer"></div></th>
                                 <th onclick="sortSystemTable('drives-table', 6)" style="position: relative;">% Free<div class="resizer"></div></th>
+                                <th onclick="sortSystemTable('drives-table', 7)" style="position: relative;">BitLocker<div class="resizer"></div></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -4104,11 +4471,31 @@ $(
         foreach ($drive in $ForensicData.SystemInfo.FilesystemInfo.LogicalDrives) {
             $label = [System.Web.HttpUtility]::HtmlEncode($drive.Label)
             $percentColor = if ($drive.PercentFree -lt 10) { '#e74c3c' } elseif ($drive.PercentFree -lt 20) { '#f39c12' } else { '#2ecc71' }
-            $drivesHtml += "                            <tr><td><strong>$($drive.DriveLetter):\</strong></td><td>$label</td><td>$($drive.FileSystem)</td><td>$($drive.TotalSizeGB)</td><td>$($drive.UsedSpaceGB)</td><td>$($drive.FreeSpaceGB)</td><td style='color: $percentColor; font-weight: bold;'>$($drive.PercentFree)%</td></tr>`n"
+            
+            # Get BitLocker status for this drive
+            $bitlockerInfo = "Not Encrypted"
+            $bitlockerColor = "#95a5a6"
+            if ($ForensicData.SystemInfo.BitlockerStatus) {
+                $blVolume = $ForensicData.SystemInfo.BitlockerStatus | Where-Object { $_.MountPoint -eq "$($drive.DriveLetter):" }
+                if ($blVolume) {
+                    if ($blVolume.ProtectionStatus -eq 'On') {
+                        $bitlockerInfo = "Protected ($($blVolume.EncryptionPercentage)%)"
+                        $bitlockerColor = "#2ecc71"
+                    } elseif ($blVolume.ProtectionStatus -eq 'Off') {
+                        $bitlockerInfo = "Encrypted but Suspended"
+                        $bitlockerColor = "#f39c12"
+                    } else {
+                        $bitlockerInfo = "Status: $($blVolume.VolumeStatus)"
+                        $bitlockerColor = "#f39c12"
+                    }
+                }
+            }
+            
+            $drivesHtml += "                            <tr><td><strong>$($drive.DriveLetter):\</strong></td><td>$label</td><td>$($drive.FileSystem)</td><td>$($drive.TotalSizeGB)</td><td>$($drive.UsedSpaceGB)</td><td>$($drive.FreeSpaceGB)</td><td style='color: $percentColor; font-weight: bold;'>$($drive.PercentFree)%</td><td style='color: $bitlockerColor; font-weight: bold;'>$bitlockerInfo</td></tr>`n"
         }
         $drivesHtml
     } else {
-        "                            <tr><td colspan='7' style='text-align: center; color: #95a5a6;'>No local drives found</td></tr>"
+        "                            <tr><td colspan='8' style='text-align: center; color: #95a5a6;'>No local drives found</td></tr>"
     }
 )
                         </tbody>
@@ -4246,24 +4633,36 @@ $(
         </div>
         </div>
         <div id="persistence-tab" class="tab-content">
+            <h2 style="color: #3498db; margin-bottom: 15px;">Persistence Mechanisms</h2>
+            <p style="color: var(--text-muted); margin-bottom: 20px;">A list of all autoruns and persistence mechanisms.</p>
             <div id="persistence-content"></div>
         </div>
-        
+
         <div id="registry-tab" class="tab-content">
-            <div id="registry-content"></div>
+            <h2 style="color: #3498db; margin-bottom: 15px;">Registry Analysis</h2>
+            <p style="color: var(--text-muted); margin-bottom: 20px;">A small list of commonly abused registry paths.</p>
+            <div id="registry-content">
+                </div>
+            </div>
         </div>
-        
+
         <div id="logs-tab" class="tab-content">
+            <h2 style="color: #3498db; margin-bottom: 15px;">Event Logs</h2>
+            <p style="color: var(--text-muted); margin-bottom: 20px;">A collection of Windows Event Logs (EVTX) matching the report's time range.</p>
             <div class="log-provider-selector">
                 <label for="log-provider-select">Filter by Log Provider:</label>
                 <select id="log-provider-select" onchange="changeLogProvider()">
                 </select>
             </div>
-            <div id="logs-content"></div>
+            <div id="logs-content">
+            </div>
         </div>
-        
+
         <div id="browser-tab" class="tab-content">
-            <div id="browser-content"></div>
+            <h2 style="color: #3498db; margin-bottom: 15px;">Browser History & Extensions</h2>
+            <p style="color: var(--text-muted); margin-bottom: 20px;">Browser history and browser extensions found on this machine.</p>
+            <div id="browser-content">
+            </div>
             
             <div class="section-card" style="margin-top: 20px;">
                 <h3>Browser Extensions ($($ForensicData.SystemInfo.BrowserExtensions.Count) extensions)</h3>
@@ -4318,16 +4717,24 @@ $(
                 systemSortState['extensions-table-3'] = 'asc';
             </script>
         </div>
-        
+
         <div id="services-tab" class="tab-content">
-            <div id="services-content"></div>
+            <h2 style="color: #3498db; margin-bottom: 15px;">Windows Services</h2>
+            <p style="color: var(--text-muted); margin-bottom: 20px;">All Windows Services found on the machine.</p>
+            <div id="services-content">
+            </div>
         </div>
         
         <div id="tasks-tab" class="tab-content">
-            <div id="tasks-content"></div>
+            <h2 style="color: #3498db; margin-bottom: 15px;">Scheduled Tasks</h2>
+            <p style="color: var(--text-muted); margin-bottom: 20px;">All Scheduled Tasks found on the machine.</p>
+            <div id="tasks-content">
+            </div>
         </div>
         
         <div id="files-tab" class="tab-content">
+            <h2 style="color: #3498db; margin-bottom: 15px;">File System Analysis</h2>
+            <p style="color: var(--text-muted); margin-bottom: 20px;">Recently accessed, modified, or created files matching the report's time range.</p>
             <div id="files-content"></div>
         </div>
         
@@ -4691,12 +5098,65 @@ $(
             if (!/^[a-f0-9]{32,64}$/i.test(cleanHash)) return hash;
             return '<a href="https://www.virustotal.com/gui/file/' + cleanHash + '" target="_blank" class="vt-link" title="Lookup on VirusTotal">' + cleanHash + '</a>';
         }
+        
+        function isIPAddress(value) {
+            if (!value) return false;
+            var ipv4Regex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+            return ipv4Regex.test(String(value).trim());
+        }
+        
+        function createIPLink(ip) {
+            var cleanIP = String(ip).trim();
+            return '<a href="https://scamalytics.com/ip/' + cleanIP + '" target="_blank" class="vt-link" title="Lookup on Scamalytics">' + cleanIP + '</a>';
+        }
+        
+        function isDomainOrURL(value) {
+            if (!value) return false;
+            var str = String(value).trim();
+            // Check for URL patterns
+            if (str.match(/^https?:\/\//i)) return 'url';
+            // Check for domain patterns (simple check)
+            if (str.match(/^[a-z0-9]+([\-\.]{1}[a-z0-9]+)*\.[a-z]{2,}$/i)) return 'domain';
+            return false;
+        }
+
+        function extractDomainFromURL(url) {
+            try {
+                var str = String(url).trim();
+                // Remove protocol
+                var withoutProtocol = str.replace(/^https?:\/\//i, '');
+                // Extract domain (everything before first /)
+                var domain = withoutProtocol.split('/')[0];
+                // Remove port if present
+                domain = domain.split(':')[0];
+                return domain;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function createDomainLink(value) {
+            var type = isDomainOrURL(value);
+            if (!type) return value;
+            
+            var domain = type === 'url' ? extractDomainFromURL(value) : value;
+            if (!domain) return value;
+            
+            // More specific title based on whether it's a URL or domain
+            var titleText = type === 'url' ? 'Lookup Domain on VirusTotal' : 'Lookup on VirusTotal';
+            
+            return '<a href="https://www.virustotal.com/gui/domain/' + domain + '" target="_blank" class="vt-link" title="' + titleText + '">' + value + '</a>';
+        }
 
         function truncateCell(value) {
             if (value === null || value === undefined) return '';
             var strValue = String(value);
             if (strValue.length > MAX_CHARS) {
-                return '<span class="truncated" title="' + strValue.replace(/"/g, '&quot;') + '">' + 
+                // Escape HTML entities for title attribute
+                var escapedValue = strValue.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+                // Limit hover preview to 5000 characters to avoid browser issues
+                var hoverPreview = escapedValue.length > 5000 ? escapedValue.substring(0, 5000) + '... (truncated for display)' : escapedValue;
+                return '<span class="truncated" title="' + hoverPreview + '">' + 
                        strValue.substring(0, MAX_CHARS) + '...' + '</span>';
             }
             return strValue;
@@ -4713,7 +5173,7 @@ $(
             // If loadedData exists but we're forcing reload, we'll re-process it
             var forceReload = window.forceDataReload || false;
             
-            // If data already loaded and not forcing reload, skip
+            // If data already loaded and not forcing reload, skip loading entirely
             if (loadedData[type] && !forceReload) {
                 return;
             }
@@ -4738,14 +5198,30 @@ $(
                 
                 // Handle empty or missing data
                 if (!data || data.length === 0) {
-                    var emptyMessage = '<div style="padding: 40px; text-align: center; background: #2c2c2c; border-radius: 8px; margin: 20px 0;">';
-                    emptyMessage += '<p style="color: #95a5a6; font-size: 1.2em; margin-bottom: 10px;">No ' + type + ' data available</p>';
+                    var typeNames = {
+                        'persistence': 'Persistence Mechanisms',
+                        'registry': 'Registry Entries',
+                        'logs': 'Event Logs',
+                        'browser': 'Browser History',
+                        'services': 'Services',
+                        'tasks': 'Scheduled Tasks',
+                        'files': 'Files'
+                    };
+                    var typeName = typeNames[type] || type.charAt(0).toUpperCase() + type.slice(1);
+                    
+                    var emptyMessage = '<div style="padding: 40px; text-align: center; background: var(--bg-secondary); border-radius: 8px; margin: 20px 0; border: 1px solid var(--border-color);">';
+                    emptyMessage += '<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted); margin-bottom: 15px;">';
+                    emptyMessage += '<circle cx="12" cy="12" r="10"></circle>';
+                    emptyMessage += '<line x1="12" y1="8" x2="12" y2="12"></line>';
+                    emptyMessage += '<line x1="12" y1="16" x2="12.01" y2="16"></line>';
+                    emptyMessage += '</svg>';
+                    emptyMessage += '<p style="color: var(--text-muted); font-size: 1.2em; margin-bottom: 10px; font-weight: 600;">No ' + typeName + ' Found</p>';
                     
                     if (type === 'logs' && currentLogProvider !== 'All') {
-                        emptyMessage += '<p style="color: #7f8c8d; font-size: 0.9em;">No events found for log provider: <strong>' + currentLogProvider + '</strong></p>';
-                        emptyMessage += '<p style="color: #7f8c8d; font-size: 0.9em; margin-top: 10px;">Try selecting a different log provider from the dropdown above.</p>';
+                        emptyMessage += '<p style="color: var(--text-dark); font-size: 0.95em; margin-bottom: 10px;">No events found for log provider: <strong>' + currentLogProvider + '</strong></p>';
+                        emptyMessage += '<p style="color: var(--text-dark); font-size: 0.9em; margin-top: 10px;">Try selecting a different log provider from the dropdown above.</p>';
                     } else {
-                        emptyMessage += '<p style="color: #7f8c8d; font-size: 0.9em;">No records match the current filter criteria.</p>';
+                        emptyMessage += '<p style="color: var(--text-dark); font-size: 0.95em; line-height: 1.6; max-width: 600px; margin: 10px auto;">No data was collected for this category. This could mean no items matched the criteria, this module was not included in the scan, or the date range excluded all relevant data.</p>';
                     }
                     
                     emptyMessage += '</div>';
@@ -4859,12 +5335,12 @@ $(
                 }
                     
                 
-                // Store the sorted data
+            // Store the sorted data
                 loadedData[type] = data;
                 
-                // Render the table
+                // Render the table immediately
                 renderTable(type, data);
-                
+            
             } catch (error) {
                 var errorHtml = '<div style="padding: 30px; background: #2c2c2c; border-radius: 8px; border-left: 4px solid #e74c3c; margin: 20px 0;">';
                 errorHtml += '<h3 style="color: #e74c3c; margin-bottom: 10px;">Error Loading Data</h3>';
@@ -4883,7 +5359,31 @@ $(
             if (!content) return;
             
             if (!data || data.length === 0) {
-                content.innerHTML = '<p style="color: #888;">No data available</p>';
+                var typeNames = {
+                    'persistence': 'Persistence Mechanisms',
+                    'registry': 'Registry Entries',
+                    'logs': 'Event Logs',
+                    'browser': 'Browser History',
+                    'services': 'Services',
+                    'tasks': 'Scheduled Tasks',
+                    'files': 'Files'
+                };
+                var typeName = typeNames[type] || type.charAt(0).toUpperCase() + type.slice(1);
+                
+                content.innerHTML = '<div style="padding: 40px; text-align: center; background: var(--bg-secondary); border-radius: 8px; margin: 20px 0; border: 1px solid var(--border-color);">' +
+                    '<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted); margin-bottom: 15px;">' +
+                    '<circle cx="12" cy="12" r="10"></circle>' +
+                    '<line x1="12" y1="8" x2="12" y2="12"></line>' +
+                    '<line x1="12" y1="16" x2="12.01" y2="16"></line>' +
+                    '</svg>' +
+                    '<p style="color: var(--text-muted); font-size: 1.2em; margin-bottom: 10px; font-weight: 600;">No ' + typeName + ' Found</p>' +
+                    '<p style="color: var(--text-dark); font-size: 0.95em; line-height: 1.6; max-width: 600px; margin: 0 auto;">No data was collected for this category during the forensic analysis. This could mean:</p>' +
+                    '<ul style="color: var(--text-dark); font-size: 0.9em; text-align: left; max-width: 500px; margin: 15px auto; line-height: 1.8;">' +
+                    '<li>No items matched the collection criteria</li>' +
+                    '<li>This module was not included in the scan configuration</li>' +
+                    '<li>The date range excluded all relevant data</li>' +
+                    '</ul>' +
+                    '</div>';
                 return;
             }
 
@@ -4927,7 +5427,7 @@ $(
             html += '<table id="' + type + '-table"><thead><tr>';
             
             for (var i = 0; i < keys.length; i++) {
-                html += '<th onclick="sortTable(\'' + type + '\', \'' + keys[i] + '\')" title="Click to sort by ' + keys[i] + '" style="position: relative;">' + keys[i] + '<div class="resizer"></div></th>';
+                html += '<th onclick="if(!this.classList.contains(\'resizing\')) sortTable(\'' + type + '\', \'' + keys[i] + '\')" title="Click to sort by ' + keys[i] + '" style="position: relative;">' + keys[i] + '<div class="resizer" onclick="event.stopPropagation();"></div></th>';
             }
             
             html += '</tr></thead><tbody>';
@@ -4935,12 +5435,16 @@ $(
             for (var i = 0; i < displayData.length; i++) {
                 var item = displayData[i];
                 html += '<tr>';
+                
                 for (var j = 0; j < keys.length; j++) {
                     var key = keys[j];
                     
                     // Access property value directly from the object
                     // Avoid using displayData[i][key] which can cause enumeration issues
                     var val = item[key];
+
+                    // Check if this is the Reference field in persistence data
+                    var isReferenceField = (type === 'persistence' && key === 'Reference');
                     
                     // Check if we got an enumerator instead of actual value (corruption detection)
                     if (val && typeof val === 'object' && val.constructor && 
@@ -4966,18 +5470,38 @@ $(
                     if (isHashField(key)) {
                         val = createVTLink(val);
                         html += '<td>' + val + '</td>';
+                    } else if (isIPAddress(val)) {
+                        val = createIPLink(val);
+                        html += '<td>' + val + '</td>';
+                    } else if (isDomainOrURL(val)) {
+                        val = createDomainLink(val);
+                        html += '<td>' + val + '</td>';
+                    } else if (isReferenceField && val && val.match(/^https?:\/\//i)) {
+                        // Reference field with URL - create direct hyperlink (not VirusTotal lookup)
+                        var escaped = val.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+                        html += '<td><a href="' + escaped + '" target="_blank" class="vt-link" title="Open reference: ' + escaped + '">' + truncateCell(escaped) + '</a></td>';
                     } else {
                         var escaped = val.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
                         html += '<td>' + truncateCell(escaped) + '</td>';
                     }
                 }
                 html += '</tr>';
-            }            
-
+            }
+            
             html += '</tbody></table></div>';
+                
+                // Clear any existing content and resize state
+                var existingTable = document.getElementById(type + '-table');
+                if (existingTable) {
+                    existingTable.removeAttribute('data-resizable-enabled');
+                }
+                
                 content.innerHTML = html;
                 
-                makeColumnsResizable(type + '-table');
+                // Small delay to ensure DOM is ready
+                setTimeout(function() {
+                    makeColumnsResizable(type + '-table');
+                }, 10);
             }
             catch (error) {
                 content.innerHTML = '<div class="error">Error rendering table: ' + error.message + '</div>';
@@ -4987,37 +5511,132 @@ $(
 
         function makeColumnsResizable(tableId) {
             var table = document.getElementById(tableId);
-            if (!table) return;
+            if (!table) {
+                console.warn('Table not found for resizing: ' + tableId);
+                return;
+            }
+            
+            // Check if table already has resizing enabled
+            if (table.hasAttribute('data-resizable-enabled')) {
+                console.log('Table already has resizing enabled: ' + tableId);
+                return;
+            }
+            
+            // Mark table as having resizing enabled
+            table.setAttribute('data-resizable-enabled', 'true');
             
             var headers = table.querySelectorAll('th');
+            if (!headers || headers.length === 0) {
+                console.warn('No headers found in table: ' + tableId);
+                return;
+            }
+            
             for (var i = 0; i < headers.length; i++) {
                 var header = headers[i];
                 var resizer = header.querySelector('.resizer');
-                if (!resizer) continue;
                 
-                resizer.addEventListener('mousedown', function(e) {
-                    e.stopPropagation();
-                    var th = this.parentElement;
-                    var startX = e.pageX;
-                    var startWidth = th.offsetWidth;
+                if (!resizer) {
+                    console.warn('No resizer found in header ' + i + ' of table: ' + tableId);
+                    continue;
+                }
+                
+                // Store reference to avoid closure issues
+                (function(th, resizerElement) {
+                    var isResizing = false;
+                    var startX = 0;
+                    var startWidth = 0;
+                    var currentDragHandler = null;
+                    var currentStopHandler = null;
                     
-                    function doDrag(e) {
-                        var width = startWidth + e.pageX - startX;
-                        if (width > 50) {
-                            th.style.width = width + 'px';
-                            th.style.minWidth = width + 'px';
+                    function handleMouseDown(e) {
+                        // Prevent if already resizing
+                        if (isResizing) {
+                            console.log('Already resizing, ignoring mousedown');
+                            return;
                         }
+                        
+                        e.preventDefault();
+                        e.stopPropagation();
+                        
+                        isResizing = true;
+                        startX = e.pageX;
+                        startWidth = th.offsetWidth;
+                        
+                        // Visual feedback
+                        th.classList.add('resizing');
+                        resizerElement.classList.add('active');
+                        document.body.style.cursor = 'col-resize';
+                        document.body.style.userSelect = 'none';
+                        
+                        // Define handlers in this scope
+                        currentDragHandler = function(e) {
+                            if (!isResizing) return;
+                            
+                            e.preventDefault();
+                            e.stopPropagation();
+                            
+                            var deltaX = e.pageX - startX;
+                            var newWidth = startWidth + deltaX;
+                            
+                            // Enforce minimum width
+                            if (newWidth < 50) {
+                                newWidth = 50;
+                            }
+                            
+                            // Apply width with important to override any conflicting styles
+                            th.style.width = newWidth + 'px';
+                            th.style.minWidth = newWidth + 'px';
+                            th.style.maxWidth = newWidth + 'px';
+                        };
+                        
+                        currentStopHandler = function(e) {
+                            if (!isResizing) return;
+                            
+                            e.preventDefault();
+                            e.stopPropagation();
+                            
+                            isResizing = false;
+                            
+                            // Remove visual feedback
+                            th.classList.remove('resizing');
+                            resizerElement.classList.remove('active');
+                            document.body.style.cursor = '';
+                            document.body.style.userSelect = '';
+                            
+                            // Remove event listeners
+                            if (currentDragHandler) {
+                                document.removeEventListener('mousemove', currentDragHandler);
+                                currentDragHandler = null;
+                            }
+                            if (currentStopHandler) {
+                                document.removeEventListener('mouseup', currentStopHandler);
+                                currentStopHandler = null;
+                            }
+                            
+                            console.log('Resize complete for column: ' + th.textContent.trim());
+                        };
+                        
+                        // Add listeners
+                        document.addEventListener('mousemove', currentDragHandler);
+                        document.addEventListener('mouseup', currentStopHandler);
+                        
+                        console.log('Started resizing column: ' + th.textContent.trim());
                     }
                     
-                    function stopDrag() {
-                        document.removeEventListener('mousemove', doDrag);
-                        document.removeEventListener('mouseup', stopDrag);
-                    }
+                    // Remove any existing listener by cloning
+                    var newResizer = resizerElement.cloneNode(true);
+                    resizerElement.parentNode.replaceChild(newResizer, resizerElement);
                     
-                    document.addEventListener('mousemove', doDrag);
-                    document.addEventListener('mouseup', stopDrag);
-                });
+                    // Add new listener
+                    newResizer.addEventListener('mousedown', handleMouseDown);
+                    
+                    // Store reference for potential cleanup
+                    newResizer.setAttribute('data-resize-initialized', 'true');
+                    
+                })(header, resizer);
             }
+            
+            console.log('Resizing enabled for table: ' + tableId + ' with ' + headers.length + ' columns');
         }
 
         function filterTable(type) {
@@ -5037,6 +5656,13 @@ $(
         }
 
         function sortTable(type, key) {
+            // Check if we're currently resizing - if so, ignore sort
+            var resizingHeaders = document.querySelectorAll('th.resizing');
+            if (resizingHeaders.length > 0) {
+                console.log('Resizing in progress, ignoring sort');
+                return;
+            }
+            
             var data = loadedData[type];
             if (!data) return;
             
@@ -5456,11 +6082,34 @@ $(
             };
             return colors[dataType] || '#95a5a6';
         }
+
+        function highlightTabButton(tabName) {
+            // Remove active class from all buttons
+            var buttons = document.querySelectorAll('.tab-button');
+            for (var i = 0; i < buttons.length; i++) {
+                buttons[i].classList.remove('active');
+            }
+            
+            // Find and highlight the correct button
+            for (var i = 0; i < buttons.length; i++) {
+                var button = buttons[i];
+                var buttonText = button.textContent.toLowerCase();
+                
+                // Match button by checking if it contains the tab name or starts with it
+                if (buttonText.indexOf(tabName.toLowerCase()) !== -1 || 
+                    button.getAttribute('onclick') === "showTab('" + tabName + "')") {
+                    button.classList.add('active');
+                    break;
+                }
+            }
+        }
         
         function jumpToResult(dataType, rowIndex, tableRef) {
             // Handle system info specially - go to sysinfo tab and try to scroll to table
             if (dataType === 'systeminfo') {
                 showTab('sysinfo');
+                // Ensure tab button is highlighted
+                highlightTabButton('sysinfo');
                 
                 // Wait for tab to render
                 setTimeout(function() {
@@ -5491,11 +6140,40 @@ $(
                 return;
             }
             
-            // Switch to the appropriate tab
-            showTab(dataType);
+            // FIXED: Determine correct tab based on data category
+            var targetTab = dataType;
             
-            // Wait for tab to load and ensure data is loaded
-            setTimeout(function() {
+            // Map browser extensions to browser tab
+            if (tableRef === 'extensions-table') {
+                targetTab = 'browser';
+            }
+            // Map other system info tables to sysinfo tab
+            else if (tableRef && (tableRef.indexOf('users-') === 0 || 
+                                   tableRef.indexOf('process-') === 0 || 
+                                   tableRef.indexOf('dns-') === 0 || 
+                                   tableRef.indexOf('network-') === 0 ||
+                                   tableRef.indexOf('software-') === 0 ||
+                                   tableRef.indexOf('adapters-') === 0 ||
+                                   tableRef.indexOf('drives-') === 0 ||
+                                   tableRef.indexOf('usb-') === 0 ||
+                                   tableRef.indexOf('shares-') === 0 ||
+                                   tableRef.indexOf('optical-') === 0 ||
+                                   tableRef.indexOf('runmru-') === 0 ||
+                                   tableRef.indexOf('loggedin-') === 0 ||
+                                   tableRef.indexOf('shadow-') === 0 ||
+                                   tableRef.indexOf('amsi-') === 0 ||
+                                   tableRef.indexOf('av-') === 0 ||
+                                   tableRef.indexOf('minifilter-') === 0 ||
+                                   tableRef === 'pshistory-table')) {
+                targetTab = 'sysinfo';
+            }
+            
+            // Switch to the appropriate tab
+            showTab(targetTab);
+            highlightTabButton(targetTab);
+                
+                // Wait for tab to load and ensure data is loaded
+                setTimeout(function() {
                 // Force data load if not already loaded
                 if (!loadedData[dataType]) {
                     loadData(dataType);
@@ -5612,9 +6290,85 @@ $(
             document.getElementById('search-results').innerHTML = '';
         }
 
-        window.onload = function() {
-            console.log('Forensic report loaded successfully');
-        };
+        // Critical: Remove loader immediately and handle errors
+        function removeLoader() {
+            try {
+                var loader = document.getElementById('page-loader');
+                if (loader) {
+                    console.log('Removing page loader');
+                    loader.style.transition = 'opacity 0.3s ease';
+                    loader.style.opacity = '0';
+                    setTimeout(function() {
+                        loader.style.display = 'none';
+                        loader.remove();
+                    }, 300);
+                }
+            } catch (error) {
+                console.error('Error removing loader:', error);
+                // Force remove even if there's an error
+                var loader = document.getElementById('page-loader');
+                if (loader) {
+                    loader.style.display = 'none';
+                }
+            }
+        }
+        
+        // Remove loader as soon as DOM is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() {
+                console.log('DOMContentLoaded - removing loader');
+                removeLoader();
+            });
+        } else {
+            // DOM is already loaded
+            console.log('DOM already loaded - removing loader immediately');
+            removeLoader();
+        }
+        
+        // Additional safeguards
+        window.addEventListener('load', function() {
+            console.log('Window loaded - ensuring loader is removed');
+            removeLoader();
+        });
+        
+        // Emergency fallback - force remove after 3 seconds
+        setTimeout(function() {
+            var loader = document.getElementById('page-loader');
+            if (loader && loader.style.display !== 'none') {
+                console.warn('Emergency: Force removing loader after 3 seconds');
+                loader.style.display = 'none';
+                if (loader.parentNode) {
+                    loader.parentNode.removeChild(loader);
+                }
+            }
+        }, 3000);
+
+        // Global error handler to ensure loader is always removed
+        window.addEventListener('error', function(e) {
+            console.error('JavaScript error detected:', e.error);
+            console.error('Error message:', e.message);
+            console.error('Error at:', e.filename, 'line', e.lineno);
+            
+            // Ensure loader is removed even on error
+            var loader = document.getElementById('page-loader');
+            if (loader && loader.style.display !== 'none') {
+                console.warn('Removing loader due to JavaScript error');
+                loader.style.display = 'none';
+                if (loader.parentNode) {
+                    loader.parentNode.removeChild(loader);
+                }
+            }
+            
+            // Show error message to user
+            var errorDiv = document.createElement('div');
+            errorDiv.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: var(--bg-secondary); border: 2px solid var(--accent-red); padding: 20px; border-radius: 8px; z-index: 10000; max-width: 600px;';
+            errorDiv.innerHTML = '<h3 style="color: var(--accent-red); margin-bottom: 10px;">JavaScript Error</h3>' +
+                                '<p style="color: var(--text-primary);">An error occurred loading the report. The page may not function correctly.</p>' +
+                                '<p style="color: var(--text-muted); font-size: 0.9em; margin-top: 10px;">Error: ' + e.message + '</p>' +
+                                '<button onclick="this.parentElement.remove()" style="margin-top: 15px; padding: 8px 15px; background: var(--accent-blue); color: white; border: none; border-radius: 4px; cursor: pointer;">Close</button>';
+            document.body.appendChild(errorDiv);
+        });
+
 
         // Theme toggle functionality
         function toggleTheme() {
@@ -5647,11 +6401,11 @@ $(
     </script>
 <div class="footer">
         <div>
-            <a href="https://github.com/blwhit/PS-DFIR-ThreatHunter" target="_blank">GitHub Repository</a>
+            <a href="https://github.com/blwhit/ThreatHunter" target="_blank">GitHub Repository</a>
             <span style="color: var(--text-muted); margin: 0 10px;">|</span>
-            <a href="https://github.com/blwhit/PS-DFIR-ThreatHunter/wiki" target="_blank">Documentation</a>
+            <a href="https://github.com/blwhit/ThreatHunter/wiki" target="_blank">Documentation</a>
             <span style="color: var(--text-muted); margin: 0 10px;">|</span>
-            <a href="https://github.com/blwhit/PS-DFIR-ThreatHunter/issues" target="_blank">Report Issues</a>
+            <a href="https://github.com/blwhit/ThreatHunter/issues" target="_blank">Report Issues</a>
         </div>
         <div class="footer-info">
             Created by ThreatHunter
@@ -5689,6 +6443,197 @@ $(
     $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")
     if (-not $isAdmin) {
         Write-Warning "Not running as Administrator. Some data collection will be limited."
+    }
+
+    # Handle LoadFromJson mode
+    if (![string]::IsNullOrWhiteSpace($LoadFromJson)) {
+        Write-Host "[+] LoadFromJson mode detected" -ForegroundColor Yellow
+        
+        # Expand and normalize the path
+        try {
+            # Expand environment variables
+            $LoadFromJson = [System.Environment]::ExpandEnvironmentVariables($LoadFromJson)
+            
+            # Resolve to absolute path if relative
+            if (-not [System.IO.Path]::IsPathRooted($LoadFromJson)) {
+                $LoadFromJson = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($LoadFromJson)
+            }
+            
+            # Normalize path
+            $LoadFromJson = [System.IO.Path]::GetFullPath($LoadFromJson)
+            
+            Write-Host "[+] Loading data from: $LoadFromJson" -ForegroundColor Yellow
+        }
+        catch {
+            Write-Error "Could not resolve LoadFromJson path: $($_.Exception.Message)"
+            return
+        }
+    
+        # Validate path exists
+        if (-not (Test-Path $LoadFromJson)) {
+            Write-Error "LoadFromJson path does not exist: $LoadFromJson"
+            Write-Host "[!] Tried to access: $LoadFromJson" -ForegroundColor Yellow
+            return
+        }
+    
+        # Check if it's a directory
+        $jsonPath = $null
+        if (Test-Path $LoadFromJson -PathType Container) {
+            # It's a directory - look for JSON_Files subfolder first
+            $jsonPath = Join-Path $LoadFromJson "JSON_Files"
+            
+            # If JSON_Files doesn't exist, check if we're already IN the JSON_Files folder
+            if (-not (Test-Path $jsonPath)) {
+                # Check if LoadFromJson itself contains the JSON files
+                $testFile = Join-Path $LoadFromJson "persistence.json"
+                if (Test-Path $testFile) {
+                    Write-Host "[+] Detected JSON files in root folder (already in JSON_Files)" -ForegroundColor Green
+                    $jsonPath = $LoadFromJson
+                }
+                else {
+                    Write-Error "JSON_Files subfolder not found in: $LoadFromJson"
+                    Write-Host "[!] Expected either:" -ForegroundColor Yellow
+                    Write-Host "    - $LoadFromJson\JSON_Files\" -ForegroundColor Yellow
+                    Write-Host "    - OR JSON files directly in: $LoadFromJson" -ForegroundColor Yellow
+                    return
+                }
+            }
+        }
+        else {
+            Write-Error "LoadFromJson must point to a directory (either main output folder or JSON_Files folder)"
+            Write-Host "[!] Provided path appears to be a file, not a directory" -ForegroundColor Yellow
+            return
+        }
+    
+        Write-Host "[+] Loading JSON files from: $jsonPath" -ForegroundColor Green
+    
+        # Load JSON files
+        $forensicData = @{
+            SystemInfo  = $null
+            Persistence = @()
+            Files       = @{ All = @(); Recycled = @(); ADS = @() }
+            Registry    = @()
+            Browser     = @()
+            Logs        = @()
+            Services    = @()
+            Tasks       = @()
+        }
+    
+        try {
+            # Load each JSON file if it exists
+            $jsonFiles = @{
+                'persistence.json' = 'Persistence'
+                'logs.json'        = 'Logs'
+                'browser.json'     = 'Browser'
+                'services.json'    = 'Services'
+                'tasks.json'       = 'Tasks'
+                'files.json'       = 'Files'
+                'registry.json'    = 'Registry'
+            }
+        
+            foreach ($file in $jsonFiles.Keys) {
+                $filePath = Join-Path $jsonPath $file
+                if (Test-Path $filePath) {
+                    $dataType = $jsonFiles[$file]
+                    Write-Host "  [-] Loading $file..." -ForegroundColor DarkGray
+                
+                    $jsonContent = Get-Content -Path $filePath -Raw -ErrorAction Stop
+                    $loadedData = $jsonContent | ConvertFrom-Json -ErrorAction Stop
+                
+                    if ($dataType -eq 'Files') {
+                        $forensicData.Files.All = $loadedData
+                    }
+                    else {
+                        $forensicData[$dataType] = $loadedData
+                    }
+                
+                    Write-Host "  [+] Loaded $($loadedData.Count) records from $file" -ForegroundColor Green
+                }
+                else {
+                    Write-Host "  [!] $file not found - skipping" -ForegroundColor Yellow
+                }
+            }
+        
+            # Set output directory - either use provided or create new one based on loaded data location
+            if ([string]::IsNullOrWhiteSpace($OutputDir)) {
+                $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+                $OutputDir = Join-Path ([System.IO.Path]::GetDirectoryName($LoadFromJson)) "ForensicReport_$timestamp"
+            }
+        
+            # Expand to full path
+            if (-not [System.IO.Path]::IsPathRooted($OutputDir)) {
+                $OutputDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDir)
+            }
+            $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
+        
+            # Create output directory
+            if (-not (Test-Path $OutputDir)) {
+                New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null
+                Write-Host "[+] Created output directory: $OutputDir" -ForegroundColor Green
+            }
+        
+            # Set date range from loaded data or defaults
+            if (-not $StartDate) {
+                Write-Host "[!] No StartDate specified - using default (1970-01-01)" -ForegroundColor Yellow
+                $parsedStartDate = [datetime]::new(1970, 1, 1)
+            }
+            else {
+                try {
+                    $parsedStartDate = ConvertTo-DateTime -InputValue $StartDate
+                    Write-Host "[+] Using StartDate: $parsedStartDate" -ForegroundColor Green
+                }
+                catch {
+                    Write-Error "Invalid StartDate format: $StartDate"
+                    Write-Host "[!] StartDate must be a valid date or relative format (e.g., '7D', '24H')" -ForegroundColor Yellow
+                    return
+                }
+            }
+            
+            try {
+                $parsedEndDate = ConvertTo-DateTime -InputValue $EndDate
+                Write-Host "[+] Using EndDate: $parsedEndDate" -ForegroundColor Green
+            }
+            catch {
+                Write-Error "Invalid EndDate format: $EndDate"
+                Write-Host "[!] EndDate must be a valid date or relative format (e.g., 'Now')" -ForegroundColor Yellow
+                return
+            }
+            
+            # Validate date range
+            if ($parsedStartDate -gt $parsedEndDate) {
+                Write-Error "StartDate ($parsedStartDate) cannot be after EndDate ($parsedEndDate)"
+                return
+            }
+        
+            # Generate HTML report from loaded data
+            Write-Host "[+] Generating HTML report from loaded data..." -ForegroundColor Yellow
+        
+            $csvDir = Join-Path $OutputDir "ForensicData_CSV"
+            New-Item -Path $csvDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+        
+            $htmlPath = Join-Path $OutputDir "ForensicReport.html"
+            Generate-HTMLReport -ForensicData $forensicData -OutputPath $htmlPath -CSVDir $csvDir `
+                -StartDate $parsedStartDate -EndDate $parsedEndDate -Mode "LoadFromJson" `
+                -MaxChars $MaxChars -MaxRows $MaxRows -AllFields:$AllFields
+        
+            Write-Host ""
+            Write-Host "[!] HTML REPORT GENERATED FROM JSON DATA" -ForegroundColor Green -BackgroundColor DarkGray
+            Write-Host "[+] Output Directory: $OutputDir" -ForegroundColor Green
+            Write-Host "[+] Forensic Report: $htmlPath" -ForegroundColor Green
+            Write-Host ""
+        
+            return
+        }
+        catch {
+            Write-Error "Failed to load JSON data: $($_.Exception.Message)"
+            return
+        }
+    }
+
+    # Setup output directory and expand to full path
+    if ([string]::IsNullOrWhiteSpace($OutputDir)) {
+        $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+        $OutputDir = "C:\ForensicDump_$($env:COMPUTERNAME)_$timestamp"
     }
     
     # Setup output directory and expand to full path
@@ -5793,7 +6738,7 @@ $(
     }
     
     Write-Host ""
-    Write-Host "---------------------------`n[ FORENSIC DUMP INITIATED ]`n---------------------------" -ForegroundColor Yellow;
+    Write-Host "[!] FORENSIC DUMP INITIATED" -ForegroundColor Red -BackgroundColor Black
     Write-Host "[+] Output Directory: $OutputDir" -ForegroundColor Green
     Write-Host "[+] Mode: $(if ($Aggressive) { 'Aggressive' } else { 'Auto' })" -ForegroundColor Green
     Write-Host "[+] Date Range: $parsedStartDate to $parsedEndDate" -ForegroundColor Green
@@ -5805,7 +6750,7 @@ $(
     $csvDir = Join-Path $OutputDir "ForensicData_CSV"
     New-Item -Path $csvDir -ItemType Directory -Force | Out-Null
 
-    $jsonDir = Join-Path $OutputDir "HTML_Files"
+    $jsonDir = Join-Path $OutputDir "JSON_Files"
     New-Item -Path $jsonDir -ItemType Directory -Force | Out-Null
     
     # Initialize data collection results
@@ -6001,6 +6946,11 @@ $(
     if ($runBrowser) {
         Update-ProgressWithEstimate -Activity "Forensic Dump" -StepTimes ([ref]$progressTimes) -Status "Extracting browser history..." -PercentComplete 45
         Write-Host "[+] Extracting browser history..." -ForegroundColor Yellow
+    
+        # Recommend LoadTool if not using it
+        if (-not $LoadBrowserTool) {
+            Write-Host "  [i] TIP: Use -LoadBrowserTool for complete and accurate browser history extraction" -ForegroundColor Cyan
+        }
         try {
             $browserParams = @{
                 PassThru  = $true
@@ -6227,6 +7177,18 @@ $(
             
             $forensicData.Logs = Hunt-Logs @logParams
             
+            # VALIDATION: Check for corruption
+            if ($null -ne $forensicData.Logs -and $forensicData.Logs.Count -gt 0) {
+                $sampleLog = $forensicData.Logs[0]
+                foreach ($prop in $sampleLog.PSObject.Properties) {
+                    $val = $prop.Value
+                    if ($val -and $val.GetType().Name -match 'Enumerator|Iterator') {
+                        Write-Host "  [!!!] CORRUPTION DETECTED in log field: $($prop.Name)" -ForegroundColor Red
+                        Write-Host "  [!] Value type: $($val.GetType().FullName)" -ForegroundColor Yellow
+                    }
+                }
+            }
+
             if ($null -eq $forensicData.Logs) {
                 $forensicData.Logs = @()
                 Write-Host "  [!] No logs returned from Hunt-Logs" -ForegroundColor Yellow
@@ -6282,58 +7244,45 @@ $(
             
             $taskResults = Hunt-Tasks @taskParams
             
-            # Clean up TriggerType field for display
+            # Remove TriggerType field and clean up TriggerTypes field
             if ($taskResults -and $taskResults.Count -gt 0) {
                 foreach ($task in $taskResults) {
+                    # Remove TriggerType field completely if it exists
                     if ($task.PSObject.Properties['TriggerType']) {
-                        $triggerValue = $task.TriggerType
+                        $task.PSObject.Properties.Remove('TriggerType')
+                    }
+                    
+                    # Clean up TriggerTypes field (note the 's' at the end)
+                    if ($task.PSObject.Properties['TriggerTypes']) {
+                        $triggerValue = $task.TriggerTypes
                         
                         # Handle null or empty
                         if ($null -eq $triggerValue -or [string]::IsNullOrWhiteSpace($triggerValue.ToString())) {
-                            $task.TriggerType = "Not configured"
+                            $task.TriggerTypes = $null
                             continue
                         }
                         
-                        # Handle array types
-                        if ($triggerValue -is [array] -or $triggerValue -is [System.Collections.ArrayList]) {
-                            $cleaned = $triggerValue | Where-Object { 
-                                ![string]::IsNullOrWhiteSpace($_) -and $_ -ne ',' 
-                            } | ForEach-Object { $_.ToString().Trim() } | Select-Object -Unique
-                            
-                            if ($cleaned -and $cleaned.Count -gt 0) {
-                                $task.TriggerType = ($cleaned -join '; ')
-                            }
-                            else {
-                                $task.TriggerType = "Not configured"
-                            }
+                        # Convert to string and clean
+                        $triggerStr = $triggerValue.ToString().Trim()
+                        
+                        # Check if it's just commas and spaces
+                        if ($triggerStr -match '^[\s,]+$') {
+                            $task.TriggerTypes = $null
+                            continue
                         }
-                        # Handle string with commas
-                        elseif ($triggerValue.ToString().Contains(',')) {
-                            $parts = $triggerValue.ToString() -split ',' | Where-Object { 
-                                ![string]::IsNullOrWhiteSpace($_) 
-                            } | ForEach-Object { $_.Trim() } | Select-Object -Unique
-                            
-                            if ($parts -and $parts.Count -gt 0) {
-                                $task.TriggerType = ($parts -join '; ')
-                            }
-                            else {
-                                $task.TriggerType = "Not configured"
-                            }
+                        
+                        # Split by comma and clean each part
+                        $parts = $triggerStr -split ',' | Where-Object { 
+                            ![string]::IsNullOrWhiteSpace($_) 
+                        } | ForEach-Object { $_.Trim() } | Select-Object -Unique
+                        
+                        # Remove duplicates and rejoin
+                        if ($parts -and $parts.Count -gt 0) {
+                            $task.TriggerTypes = ($parts -join ', ')
                         }
-                        # Handle single value
                         else {
-                            $cleanValue = $triggerValue.ToString().Trim()
-                            if ([string]::IsNullOrWhiteSpace($cleanValue) -or $cleanValue -eq ',') {
-                                $task.TriggerType = "Not configured"
-                            }
-                            else {
-                                $task.TriggerType = $cleanValue
-                            }
+                            $task.TriggerTypes = $null
                         }
-                    }
-                    else {
-                        # Add TriggerType property if missing
-                        $task | Add-Member -NotePropertyName 'TriggerType' -NotePropertyValue 'Not configured' -Force
                     }
                 }
             }
@@ -6407,12 +7356,12 @@ $(
     }
     
     Write-Host ""
-    Write-Host "---------------------------`n[ FORENSIC DUMP COMPLETE ]`n---------------------------" -ForegroundColor Green
+    Write-Host "[!] FORENSIC DUMP COMPLETE" -ForegroundColor Red -BackgroundColor Black
     Write-Host "[+] Total Runtime: $($duration.Hours)h $($duration.Minutes)m $($duration.Seconds)s" -ForegroundColor Yellow
     Write-Host "[+] Output Directory: $OutputDir" -ForegroundColor Green
     Write-Host "[+] Forensic Report: $(Join-Path $OutputDir 'ForensicReport.html')" -ForegroundColor Green
     Write-Host "[+] Raw Data Exports: $(Join-Path $OutputDir 'ForensicData_CSV')" -ForegroundColor Green
-    #Write-Host "[+] HTML Data: $(Join-Path $OutputDir 'HTML_Files')" -ForegroundColor Green
+    #Write-Host "[+] HTML Data: $(Join-Path $OutputDir 'JSON_Files')" -ForegroundColor Green
     
     if ($ExportLogs) {
         Write-Host "[+] EVTX Export: $(Join-Path $OutputDir 'EVTX_Export')" -ForegroundColor Green
@@ -11510,9 +12459,9 @@ Default Behavior: Without date parameters, defaults to 7-day search with warning
     # ============================================================================
 
 
-    # Define global IOC list if not already defined
-    if ($null -eq (Get-Variable -Name "GlobalLogIOCs" -Scope Global -ErrorAction SilentlyContinue)) {
-        Write-Warning "GlobalLogIOCs not found. Defining default IOC list."
+    # Define script IOC list if not already defined
+    if ($null -eq (Get-Variable -Name "GlobalLogIOCs" -Scope Script -ErrorAction SilentlyContinue)) {
+        Write-Warning "Event Log IOCs not found. Defining default IOC list."
         $script:GlobalLogIOCs = @("")
     }
 
